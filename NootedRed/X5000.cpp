@@ -196,12 +196,18 @@ void X5000::processKext(KernelPatcher& patcher, const size_t id, const mach_vm_a
         PenguinWizardry::PatternSolveRequest solveRequest{"__ZN30AMDRadeonX5000_AMDGFX9Hardware15notifyGfxAccessEv",
                                                           this->notifyGfxAccess};
         PANIC_COND(!solveRequest.solve(patcher, id, slide, size), "X5000", "Failed to resolve notifyGfxAccess");
-        PANIC_COND(MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS, "X5000",
-                   "Failed to enable kernel writing");
-        this->orgPM4SubmitCommandBuffer = this->hwChannelSubmitCommandBuffer(pm4ComputeChannelVT);
-        this->hwChannelSubmitCommandBuffer(pm4ComputeChannelVT) =
-            reinterpret_cast<mach_vm_address_t>(computeSubmitCommandBuffer);
-        MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock);
+        // __ZTV 符号含 offset-to-top 和 RTTI；字段偏移以对象的虚表地址点为基准。
+        auto* const pm4ComputeChannelVTable = static_cast<UInt8*>(pm4ComputeChannelVT) + 2 * sizeof(void*);
+        if (this->hwChannelSubmitCommandBuffer(pm4ComputeChannelVTable) != this->orgPM4SubmitCommandBuffer) {
+            SYSLOG("X5000", "Compute submit hook skipped: vtable slot does not match resolved symbol");
+        }
+        else {
+            PANIC_COND(MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS, "X5000",
+                       "Failed to enable kernel writing");
+            this->hwChannelSubmitCommandBuffer(pm4ComputeChannelVTable) =
+                reinterpret_cast<mach_vm_address_t>(computeSubmitCommandBuffer);
+            MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock);
+        }
     }
 
     if (currentKernelVersion() >= MACOS_13_4) {

@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		EF0400010000000000000001 /* UserSurfaceSync.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EF0400020000000000000001 /* UserSurfaceSync.cpp */; };
 		1C748C2D1C21952C0024EED2 /* Plugin.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C748C2C1C21952C0024EED2 /* Plugin.cpp */; };
 		4003B5C330265153006F74E8 /* SurfaceInfo.hpp in Sources */ = {isa = PBXBuildFile; fileRef = 4003B5C230265145006F74E8 /* SurfaceInfo.hpp */; };
 		400909902E9932F2006EC1EA /* HWMemory.hpp in Headers */ = {isa = PBXBuildFile; fileRef = 4009098F2E9932F2006EC1EA /* HWMemory.hpp */; };
@@ -110,6 +111,9 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		EF0400020000000000000001 /* UserSurfaceSync.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = UserSurfaceSync.cpp; sourceTree = "<group>"; };
+		EF0400030000000000000001 /* UserSurfaceSync.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = UserSurfaceSync.hpp; sourceTree = "<group>"; };
+		EF0400040000000000000001 /* UserSurfaceSyncData.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = UserSurfaceSyncData.hpp; sourceTree = "<group>"; };
 		1C748C271C21952C0024EED2 /* NootedRed.kext */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NootedRed.kext; sourceTree = BUILT_PRODUCTS_DIR; };
 		1C748C2C1C21952C0024EED2 /* Plugin.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = Plugin.cpp; sourceTree = "<group>"; };
 		1C748C2E1C21952C0024EED2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
@@ -312,6 +316,9 @@
 				4088AFF22E6E097000717265 /* PenguinWizardry */,
 				407068652E966678004E0761 /* Personalities */,
 				408B3DD62CDFA41A00CAE5D2 /* Regs */,
+				EF0400020000000000000001 /* UserSurfaceSync.cpp */,
+				EF0400030000000000000001 /* UserSurfaceSync.hpp */,
+				EF0400040000000000000001 /* UserSurfaceSyncData.hpp */,
 				405460882CDBDF58007865E5 /* AGDP.hpp */,
 				4054608B2CDBDF89007865E5 /* AGDP.cpp */,
 				40F46B1C2E6DF54E00B0E9CE /* AMDGFX9DCN1Display.hpp */,
@@ -747,6 +754,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				EF0400010000000000000001 /* UserSurfaceSync.cpp in Sources */,
 				4068898B2A229BF600028D22 /* PatcherPlus.cpp in Sources */,
 				40A02CF82EAE40BD00ECB6DA /* KernelVersion.cpp in Sources */,
 				4003B5C330265153006F74E8 /* SurfaceInfo.hpp in Sources */,
