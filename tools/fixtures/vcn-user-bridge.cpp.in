@@ -1,0 +1,104 @@
+
+#include <cassert>
+#include <cstring>
+#include <cstdint>
+#include <cstdio>
+#include <map>
+#include <set>
+#include <string>
+#include <array>
+#include "UserVideoDecodeData.hpp"
+using user_addr_t=uint64_t;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
+using vm_map_t=void*;using task_t=void*;using proc_t=void*;using natural_t=unsigned;
+using mach_msg_type_number_t=unsigned;using vm_prot_t=int;using kern_return_t=int;
+struct vm_region_submap_short_info_data_64_t {int protection=0,is_submap=0;};using vm_region_recurse_info_t=int*;
+constexpr unsigned PAGE_SIZE=4096,VM_REGION_SUBMAP_SHORT_INFO_COUNT_64=12;
+constexpr int FALSE=0,KERN_SUCCESS=0,KERN_INVALID_ARGUMENT=4,KERN_FAILURE=5;
+constexpr int VM_PROT_NONE=0,VM_PROT_READ=1,VM_PROT_WRITE=2,VM_PROT_EXECUTE=4,VM_PROT_COPY=16;
+#define SYSLOG(...) ((void)0)
+template<typename T,size_t N>constexpr size_t arrsize(const T(&)[N]){return N;}
+static std::map<std::string,unsigned> properties;
+struct NRed {static NRed& singleton(){static NRed n;return n;}void setProp32(const char* k,unsigned v){properties[k]=v;}
+ unsigned getDeviceID(){return device; }static unsigned device;};unsigned NRed::device=0x1638;
+struct Version{unsigned major(){return 25;}unsigned minor(){return minorValue;}static unsigned minorValue;};unsigned Version::minorValue=6;
+static Version currentKernelVersion(){return {};}
+static bool flag=true; static bool checkKernelArgument(const char* s){assert(strcmp(s,"-NRedVCN")==0);return flag;}
+namespace VCN { static bool active=true; bool allocated(){return active;} }
+#define IONew(T,N) (new T[N])
+#define IODelete(P,T,N) delete[] P
+constexpr int KERN_RESOURCE_SHORTAGE=3;
+struct KernelPatcher{
+ static constexpr int KernelID=0;int solves=0,routes=0;bool missing=false,routeOK=true;
+ struct RouteRequest{template<typename T>RouteRequest(const char*,T,uint64_t&) {}};
+ uint64_t solveSymbol(int,const char*){solves++;return missing?0:1;}void clearError(){}
+ bool routeMultipleLong(int,RouteRequest*,int count){assert(count==1);routes++;return routeOK;}
+};namespace UserVideoDecode{void init(KernelPatcher&);}
+static task_t current_task(){return reinterpret_cast<void*>(1);}
+static bool isWindowServer=false;
+static int proc_pid(proc_t p){return int(reinterpret_cast<uintptr_t>(p));}
+static void proc_name(int,char* name,int size){snprintf(name,size,"%s",isWindowServer?"WindowServer":"Other");}
+static std::map<uint64_t,int> protection;
+static std::set<int> failProtect;
+static int protectCalls=0,writeCalls=0,failWrite=0,originalResult=0,regionMode=0;
+static bool invalidCache=false,noMap=false;
+static uint64_t base=UserVideoDecodeData::CacheBase+0x100000;
+constexpr auto MaxN=arrsize(UserVideoDecodeData::Patches);
+static size_t N=MaxN;
+static std::array<std::array<uint8_t,UserVideoDecodeData::MaxPatchSize>,MaxN> code;
+static kern_return_t vm_protect(vm_map_t,uint64_t address,unsigned,int,vm_prot_t flags){
+ protectCalls++;if(failProtect.contains(protectCalls))return 42;
+ assert(protection.contains(address));protection[address]=flags&7;return 0;
+}
+BODY
+INIT
+static const auto* active(){return UserVideoDecodeData::Patches;}
+static int original(proc_t,SharedRegionCheckArgs*,int* value){*value=123;return originalResult;}
+static vm_map_t map(task_t){return noMap?nullptr:reinterpret_cast<void*>(2);}
+static kern_return_t query(vm_map_t,uint64_t* address,uint64_t* size,unsigned* depth,int* data,unsigned* count){
+ assert(*count==VM_REGION_SUBMAP_SHORT_INFO_COUNT_64);
+ if(regionMode==1)return 42;
+ auto* info=reinterpret_cast<vm_region_submap_short_info_data_64_t*>(data);*size=PAGE_SIZE;
+ info->is_submap=*depth==0;info->protection=*depth==0?1:protection.at(*address);
+ if(regionMode==2)*address+=PAGE_SIZE;if(regionMode==3)*count=1;if(regionMode==4)*size=PAGE_SIZE-1;
+ return 0;
+}
+static int reader(uint64_t address,void* p,size_t size){
+ if(address==0x1000){memcpy(p,&base,8);return 0;}
+ if(address==base){memset(p,0,size);memcpy(p,UserVideoDecodeData::CacheMagic,16);memcpy(static_cast<uint8_t*>(p)+88,UserVideoDecodeData::CacheUUID,16);
+  if(invalidCache)static_cast<uint8_t*>(p)[88]^=1;return 0;}
+ for(size_t i=0;i<MaxN;i++)if(address==base+UserVideoDecodeData::Patches[i].offset){assert(size==UserVideoDecodeData::Patches[i].size);memcpy(p,code[i].data(),size);return 0;}
+ return 1;
+}
+static int writer(const void* p,uint64_t address,size_t size){
+ writeCalls++;
+ assert(protection.at(address&~uint64_t(4095))==3);
+ for(size_t i=0;i<N;i++)if(address==base+active()[i].offset){
+  if(writeCalls==failWrite){memcpy(code[i].data(),p,2);return 1;}memcpy(code[i].data(),p,size);return 0;}
+ assert(false);return 1;
+}
+static void reset(){
+ protection.clear();properties.clear();failProtect.clear();protectCalls=writeCalls=failWrite=originalResult=regionMode=0;
+ invalidCache=noMap=false;seenStages=appliedCount=errorCount=0;isWindowServer=false;
+ for(size_t i=0;i<MaxN;i++){auto& p=UserVideoDecodeData::Patches[i];memcpy(code[i].data(),p.original,p.size);if(i<N)protection[(base+p.offset)&~uint64_t(4095)]=5;}
+ originalCheck=reinterpret_cast<uint64_t>(original);getTaskMap=map;queryRegion=query;readUser=reader;writeUser=writer;
+}
+static void call(proc_t process=nullptr){SharedRegionCheckArgs args{0x1000};int value=0;assert(wrappedSharedRegionCheck(process,&args,&value)==originalResult && value==123);}
+static void bytes(bool patched){for(size_t i=0;i<N;i++){auto& p=active()[i];assert(memcmp(code[i].data(),patched?p.patched:p.original,p.size)==0);}}
+static void rx(){for(auto [a,p]:protection)assert(p==5);}
+int main(){
+ for(bool enabled:{false,true}){flag=enabled;KernelPatcher p;UserVideoDecode::init(p);assert(p.routes==int(enabled));}
+ flag=true;Version::minorValue=7;KernelPatcher wrong;UserVideoDecode::init(wrong);assert(wrong.solves==0);Version::minorValue=6;
+ NRed::device=0x1636;KernelPatcher d;UserVideoDecode::init(d);assert(d.solves==0);NRed::device=0x1638;
+ reset();call();bytes(true);rx();assert(writeCalls==N&&properties.at("NRedVCNUserApplied")==1);
+ auto writes=writeCalls;call();assert(writeCalls==writes);
+ for(int p=1;p<=int(UserVideoDecodeData::PageCount);p++){reset();failProtect.insert(p);call();assert(writeCalls==0);bytes(false);rx();}
+ for(int entry=1;entry<=int(N);entry++){reset();failWrite=entry;call();bytes(false);rx();assert(!properties.contains("NRedVCNUserApplied"));}
+ reset();failProtect={int(UserVideoDecodeData::PageCount)+1,int(UserVideoDecodeData::PageCount)+2};call();bytes(false);rx();
+ reset();invalidCache=true;call();assert(writeCalls==0&&protectCalls==0);
+ reset();code[0][0]^=1;call();assert(writeCalls==0&&protectCalls==0);
+ reset();memcpy(code[0].data(),active()[0].patched,active()[0].size);call();assert(writeCalls==0&&protectCalls==0);
+ reset();VCN::active=false;call();assert(writeCalls==0&&protectCalls==0);VCN::active=true;
+ reset();originalResult=42;call();assert(writeCalls==0&&protectCalls==0);
+ for(int mode=1;mode<=4;mode++){reset();regionMode=mode;call();assert(writeCalls==0&&protectCalls==0);bytes(false);rx();}
+ puts("PASS: video COW bridge; every partial write/protection failure rolls back; status preserved");
+}

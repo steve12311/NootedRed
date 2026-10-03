@@ -1,0 +1,21 @@
+
+#include <array>
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <cstdio>
+extern "C" unsigned stockAddr(void*,unsigned,unsigned);
+extern "C" unsigned candidateAddr(void*,unsigned,unsigned);
+int main(){
+ std::array<uint8_t,0x5b20> a,b;unsigned state=1;
+ for(unsigned family:{140U,141U,142U,143U}) for(unsigned rev=0;rev<256;rev++)for(unsigned n=0;n<64;n++){
+  a.fill(0xa5);uint32_t bits[3];for(auto& x:bits){state=state*1664525+1013904223;x=state;}
+  memcpy(a.data()+0x5b10,bits,12);b=a;
+  assert(stockAddr(a.data(),family,rev)==8);assert(candidateAddr(b.data(),family,rev)==8);
+  if(family!=142){assert(a==b);}else{
+   uint32_t expected[3]={(bits[0]&0xffffffe4U)|5U,(bits[1]&0xfffffffeU)|2U,(bits[2]&0xfffffffdU)|13U};
+   memcpy(a.data()+0x5b10,expected,12);assert(a==b);
+  }
+ }
+ puts("PASS: 65536 AddrLib cases; native AI/other behavior preserved, RV changes only verified settings");
+}

@@ -1,0 +1,362 @@
+// 在进程私有代码页应用精确版本的视频解码补丁，并保留原生调用与页面保护。
+#include <Headers/kern_util.hpp>
+#include <IOKit/IOLib.h>
+#include <NRed.hpp>
+#include <PenguinWizardry/KernelVersion.hpp>
+#include <UserVideoDecode.hpp>
+#include <UserVideoDecodeData.hpp>
+#include <VCN.hpp>
+#include <kern/task.h>
+#include <mach/i386/vm_param.h>
+#include <mach/vm_map.h>
+#include <mach/vm_region.h>
+#include <sys/proc.h>
+
+namespace
+{
+
+    struct SharedRegionCheckArgs
+    {
+        user_addr_t startAddress;
+    };
+    static_assert(sizeof(SharedRegionCheckArgs) == 8);
+    using SharedRegionCheck = int       (*)(proc_t, SharedRegionCheckArgs*, int*);
+    using GetTaskMap        = vm_map_t         (*)(task_t);
+    using RegionRecurse     = kern_return_t (*)(vm_map_t, mach_vm_address_t*, mach_vm_size_t*, natural_t*,
+                                            vm_region_recurse_info_t, mach_msg_type_number_t*);
+    using CopyIn            = int                  (*)(user_addr_t, void*, size_t);
+    using CopyOut           = int                 (*)(const void*, user_addr_t, size_t);
+
+    mach_vm_address_t originalCheck{0};
+    GetTaskMap        getTaskMap{nullptr};
+    RegionRecurse     queryRegion{nullptr};
+    CopyIn            readUser{nullptr};
+    CopyOut           writeUser{nullptr};
+    UInt32            seenStages{0}, appliedCount{0}, errorCount{0};
+    constexpr auto    PatchCount = arrsize(UserVideoDecodeData::Patches);
+    static_assert(PatchCount <= 32 && UserVideoDecodeData::PageCount <= 16);
+
+    enum class Stage : UInt32
+    {
+        Called,
+        OriginalError,
+        Argument,
+        CacheRead,
+        CacheMismatch,
+        CodeRead,
+        CodeMismatch,
+        Already,
+        Mixed,
+        NoMap,
+        Region,
+        Protection,
+        Write,
+        Restore,
+        Rollback,
+        Applied
+    };
+
+    void stage(const Stage value)
+    {
+        static const char* const keys[] = {"NRedVCNUserD00", "NRedVCNUserD01", "NRedVCNUserD02", "NRedVCNUserD03",
+                                           "NRedVCNUserD04", "NRedVCNUserD05", "NRedVCNUserD06", "NRedVCNUserD07",
+                                           "NRedVCNUserD08", "NRedVCNUserD09", "NRedVCNUserD10", "NRedVCNUserD11",
+                                           "NRedVCNUserD12", "NRedVCNUserD13", "NRedVCNUserD14", "NRedVCNUserD15"};
+        const auto               index  = static_cast<UInt32>(value);
+        if ((__atomic_fetch_or(&seenStages, 1U << index, __ATOMIC_RELAXED) & (1U << index)) == 0) {
+            NRed::singleton().setProp32(keys[index], 1);
+            if (value == Stage::Applied) { NRed::singleton().setProp32("NRedVCNGVASelectionFix", 1); }
+            SYSLOG("UserVideoDecode", "stage=%u", index);
+        }
+    }
+
+    void error(const kern_return_t value)
+    {
+        auto count = __atomic_load_n(&errorCount, __ATOMIC_RELAXED);
+        while (count < 8) {
+            if (__atomic_compare_exchange_n(&errorCount, &count, count + 1, false, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+            {
+                NRed::singleton().setProp32("NRedVCNUserLastError", static_cast<UInt32>(value));
+                SYSLOG("UserVideoDecode", "rejected: error=0x%X", value);
+                break;
+            }
+        }
+    }
+
+    bool leafProtection(vm_map_t map, const mach_vm_address_t page, vm_prot_t& protection)
+    {
+        natural_t depth{0};
+        for (UInt32 attempt = 0; attempt < 8; ++attempt) {
+            auto                            address = page;
+            mach_vm_size_t                  size{0};
+            // 只查询映射与权限，避免完整查询逐页统计整个共享缓存区域。
+            vm_region_submap_short_info_data_64_t info{};
+            mach_msg_type_number_t count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
+            const auto                      result =
+                queryRegion(map, &address, &size, &depth, reinterpret_cast<vm_region_recurse_info_t>(&info), &count);
+            if (result != KERN_SUCCESS) {
+                error(result);
+                return false;
+            }
+            if (count < VM_REGION_SUBMAP_SHORT_INFO_COUNT_64 || address > page || page - address >= size
+                || size - (page - address) < PAGE_SIZE)
+            {
+                return false;
+            }
+            if (!info.is_submap) {
+                protection = info.protection;
+                return true;
+            }
+            if (depth == ~0U) { break; }
+            ++depth;
+        }
+        return false;
+    }
+
+    struct Page
+    {
+        mach_vm_address_t address{0};
+        vm_prot_t         protection{VM_PROT_NONE};
+        bool              writable{false};
+    };
+
+    bool restorePages(vm_map_t map, Page* pages, const UInt32 count)
+    {
+        bool restored = true;
+        for (UInt32 i = 0; i < count; ++i) {
+            if (!pages[i].writable) { continue; }
+            auto result = vm_protect(map, pages[i].address, PAGE_SIZE, FALSE, pages[i].protection);
+            if (result != KERN_SUCCESS) {
+                error(result);
+                result = vm_protect(map, pages[i].address, PAGE_SIZE, FALSE, pages[i].protection);
+            }
+            if (result == KERN_SUCCESS) { pages[i].writable = false; }
+            else {
+                restored = false;
+            }
+        }
+        return restored;
+    }
+
+    struct SavedRow
+    {
+        UInt8 bytes[UserVideoDecodeData::MaxPatchSize];
+    };
+    struct SavedBuffer
+    {
+        SavedRow* rows{nullptr};
+        SavedBuffer() { rows = IONew(SavedRow, PatchCount); }
+        ~SavedBuffer()
+        {
+            if (rows) { IODelete(rows, SavedRow, PatchCount); }
+        }
+    };
+
+    bool rollback(vm_map_t map, Page* pages, const UInt32 pageCount, const UInt64 base, const SavedRow* saved,
+                  const UInt32 touched)
+    {
+        using namespace UserVideoDecodeData;
+        const auto* const patches = Patches;
+        bool              ok      = true;
+        for (UInt32 i = 0; i < touched; ++i) {
+            const auto address     = base + patches[i].offset;
+            const auto pageAddress = address & ~static_cast<UInt64>(PAGE_SIZE - 1);
+            Page*      page        = nullptr;
+            for (UInt32 p = 0; p < pageCount; ++p) {
+                if (pages[p].address == pageAddress) {
+                    page = &pages[p];
+                    break;
+                }
+            }
+            if (page == nullptr) {
+                ok = false;
+                continue;
+            }
+            if (!page->writable) {
+                const auto result =
+                    vm_protect(map, pageAddress, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+                if (result != KERN_SUCCESS) {
+                    error(result);
+                    ok = false;
+                    continue;
+                }
+                page->writable = true;
+            }
+            if (writeUser(saved[i].bytes, address, patches[i].size) != 0) { ok = false; }
+        }
+        if (!restorePages(map, pages, pageCount)) { ok = false; }
+        if (!ok) {
+            stage(Stage::Rollback);
+            error(KERN_FAILURE);
+        }
+        return ok;
+    }
+
+    int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* returnValue)
+    {
+        stage(Stage::Called);
+        const auto result = reinterpret_cast<SharedRegionCheck>(originalCheck)(process, args, returnValue);
+        if (result != 0) {
+            stage(Stage::OriginalError);
+            return result;
+        }
+        if (!VCN::allocated()) {
+            stage(Stage::NoMap);
+            return result;
+        }
+        if (args == nullptr || args->startAddress == 0) {
+            stage(Stage::Argument);
+            return result;
+        }
+        using namespace UserVideoDecodeData;
+        const auto* const patches    = Patches;
+        const auto        patchCount = PatchCount;
+        UInt64            base{0};
+        UInt8             header[104];
+        if (readUser(args->startAddress, &base, sizeof(base)) != 0 || base < CacheBase
+            || base - CacheBase > 0x100000000ULL || readUser(base, header, sizeof(header)) != 0)
+        {
+            stage(Stage::CacheRead);
+            return result;
+        }
+        if (memcmp(header, CacheMagic, sizeof(CacheMagic)) != 0
+            || memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0)
+        {
+            stage(Stage::CacheMismatch);
+            return result;
+        }
+
+        SavedBuffer buffer;
+        if (!buffer.rows) {
+            error(KERN_RESOURCE_SHORTAGE);
+            return result;
+        }
+        auto*  saved = buffer.rows;
+        Page   pages[PageCount];
+        UInt32 pageCount{0}, originals{0}, patched{0};
+        for (UInt32 i = 0; i < patchCount; ++i) {
+            const auto address = base + patches[i].offset;
+            const auto page    = address & ~static_cast<UInt64>(PAGE_SIZE - 1);
+            if (patches[i].size > MaxPatchSize || address + patches[i].size > page + PAGE_SIZE
+                || readUser(address, saved[i].bytes, patches[i].size) != 0)
+            {
+                stage(Stage::CodeRead);
+                return result;
+            }
+            if (memcmp(saved[i].bytes, patches[i].original, patches[i].size) == 0) { ++originals; }
+            else if (memcmp(saved[i].bytes, patches[i].patched, patches[i].size) == 0) {
+                ++patched;
+            }
+            else {
+                stage(Stage::CodeMismatch);
+                error(KERN_INVALID_ARGUMENT);
+                return result;
+            }
+            bool found = false;
+            for (UInt32 p = 0; p < pageCount; ++p) {
+                if (pages[p].address == page) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                if (pageCount == PageCount) {
+                    stage(Stage::CodeMismatch);
+                    return result;
+                }
+                pages[pageCount++].address = page;
+            }
+        }
+        if (patched == patchCount) {
+            stage(Stage::Already);
+            return result;
+        }
+        if (originals != patchCount) {
+            stage(Stage::Mixed);
+            return result;
+        }
+        vm_map_t map = getTaskMap(current_task());
+        if (map == nullptr) {
+            stage(Stage::NoMap);
+            return result;
+        }
+        for (UInt32 p = 0; p < pageCount; ++p) {
+            if (!leafProtection(map, pages[p].address, pages[p].protection)
+                || pages[p].protection != (VM_PROT_READ | VM_PROT_EXECUTE))
+            {
+                stage(Stage::Region);
+                return result;
+            }
+        }
+        // 所有匹配和保护检查完成后才进入写入；各页均先 COW、去掉 EXECUTE。
+        for (UInt32 p = 0; p < pageCount; ++p) {
+            const auto protection =
+                vm_protect(map, pages[p].address, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+            if (protection != KERN_SUCCESS) {
+                stage(Stage::Protection);
+                error(protection);
+                if (!restorePages(map, pages, pageCount)) { stage(Stage::Rollback); }
+                return result;
+            }
+            pages[p].writable = true;
+        }
+        for (UInt32 i = 0; i < patchCount; ++i) {
+            if (writeUser(patches[i].patched, base + patches[i].offset, patches[i].size) != 0) {
+                stage(Stage::Write);
+                error(KERN_FAILURE);
+                rollback(map, pages, pageCount, base, saved, i + 1);
+                return result;
+            }
+        }
+        if (!restorePages(map, pages, pageCount)) {
+            stage(Stage::Restore);
+            rollback(map, pages, pageCount, base, saved, patchCount);
+            return result;
+        }
+        stage(Stage::Applied);
+        if (process != nullptr) {
+            const auto pid = proc_pid(process);
+            char       name[32]{};
+            if (pid > 0) { proc_name(pid, name, sizeof(name)); }
+            name[sizeof(name) - 1] = '\0';
+            if (strncmp(name, "VTDecoderXPC", 12) == 0) {
+                NRed::singleton().setProp32("NRedVCNDecoderPID", static_cast<UInt32>(pid));
+                SYSLOG("UserVideoDecode", "Decoder patched and RX restored: pid=%d", pid);
+            }
+        }
+        auto count = __atomic_fetch_add(&appliedCount, 1U, __ATOMIC_RELAXED);
+        if (count < 16) { NRed::singleton().setProp32("NRedVCNUserApplied", count + 1); }
+        return result;
+    }
+
+}    // namespace
+
+void UserVideoDecode::init(KernelPatcher& patcher)
+{
+    if (!checkKernelArgument("-NRedVCN") || NRed::singleton().getDeviceID() != 0x1638
+        || currentKernelVersion().major() != 25 || currentKernelVersion().minor() != 6)
+    {
+        return;
+    }
+    getTaskMap = reinterpret_cast<GetTaskMap>(patcher.solveSymbol(KernelPatcher::KernelID, "_get_task_map"));
+    patcher.clearError();
+    queryRegion =
+        reinterpret_cast<RegionRecurse>(patcher.solveSymbol(KernelPatcher::KernelID, "_mach_vm_region_recurse"));
+    patcher.clearError();
+    readUser = reinterpret_cast<CopyIn>(patcher.solveSymbol(KernelPatcher::KernelID, "_copyin"));
+    patcher.clearError();
+    writeUser = reinterpret_cast<CopyOut>(patcher.solveSymbol(KernelPatcher::KernelID, "_copyout"));
+    patcher.clearError();
+    if (!getTaskMap || !queryRegion || !readUser || !writeUser) {
+        NRed::singleton().setProp32("NRedVCNUserRejected", 1);
+        return;
+    }
+    KernelPatcher::RouteRequest request{"_shared_region_check_np", wrappedSharedRegionCheck, originalCheck};
+    if (!patcher.routeMultipleLong(KernelPatcher::KernelID, &request, 1)) {
+        patcher.clearError();
+        NRed::singleton().setProp32("NRedVCNUserRejected", 2);
+        return;
+    }
+    NRed::singleton().setProp32("NRedVCNUserEnabled", 1);
+    NRed::singleton().setProp32("NRedVCNRegionQueryVersion", 1);
+}

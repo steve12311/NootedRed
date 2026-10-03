@@ -1,0 +1,105 @@
+#include <cassert>
+#include <cstdint>
+#include <cstdio>
+#include <map>
+#include <string>
+using UInt32 = uint32_t;
+using mach_vm_address_t = uintptr_t;
+using OSReturn = int32_t;
+constexpr OSReturn kOSReturnSuccess = 0;
+constexpr OSReturn kOSKextReturnDeferred = static_cast<int32_t>(0xdc008025U);
+struct IOService { virtual ~IOService() = default; };
+struct IOPCIDevice : IOService { unsigned vendor = 0x1002, device = 0x1638; };
+#define OSDynamicCast(T, p) dynamic_cast<T*>(p)
+#define SYSLOG(...) ((void)0)
+namespace WIOKit {
+constexpr unsigned kIOPCIConfigVendorID = 0, kIOPCIConfigDeviceID = 2;
+unsigned readPCIConfigValue(IOPCIDevice* p, unsigned offset) { return offset ? p->device : p->vendor; }
+}
+struct NRed {
+    std::map<std::string, UInt32> properties;
+    static NRed& singleton() { static NRed instance; return instance; }
+    void setProp32(const char* key, UInt32 value) { properties[key] = value; }
+};
+bool requested = false, hostSupported = true;
+bool has5000 = false, has6000 = false, hooks = false, engineAllocated = false;
+bool loadAttempted = false, loadCompleted = false;
+mach_vm_address_t acceleratorStartOriginal = 0;
+bool supported() { return requested && hostSupported; }
+namespace VCN { bool ready(); }
+OSReturn loadResult = 0;
+bool callbackPrepared = true, originalResult = true;
+unsigned loadCalls = 0, startCalls = 0;
+bool expectedReady = false;
+void* expectedSelf = nullptr;
+IOService* expectedProvider = nullptr;
+OSReturn OSKextLoadKextWithIdentifier(const char* identifier)
+{
+    assert(std::string(identifier) == "com.apple.kext.AMDRadeonX6000");
+    assert(startCalls == 0 && !VCN::ready());
+    ++loadCalls;
+    has6000 = hooks = callbackPrepared;
+    return loadResult;
+}
+bool originalStart(void* self, IOService* provider)
+{
+    assert(self == expectedSelf && provider == expectedProvider);
+    assert(VCN::ready() == expectedReady);
+    ++startCalls;
+    return originalResult;
+}
+FUNCTIONS
+void reset()
+{
+    requested = hostSupported = has5000 = callbackPrepared = originalResult = true;
+    has6000 = hooks = engineAllocated = loadAttempted = loadCompleted = false;
+    loadResult = 0;
+    loadCalls = startCalls = 0;
+    expectedReady = false;
+    NRed::singleton().properties.clear();
+    acceleratorStartOriginal = reinterpret_cast<uintptr_t>(originalStart);
+}
+int main()
+{
+    IOPCIDevice device;
+    IOService other;
+    expectedSelf = &other;
+    expectedProvider = &device;
+    for (OSReturn result : {kOSReturnSuccess, kOSKextReturnDeferred, static_cast<OSReturn>(0xdc00800eU)}) {
+        for (bool prepared : {false, true}) {
+            for (bool started : {false, true}) {
+                reset();loadResult = result;callbackPrepared = prepared;originalResult = started;
+                expectedReady = result == kOSReturnSuccess && prepared;
+                assert(acceleratorStart(expectedSelf, &device) == started);
+                assert(loadCalls == 1 && startCalls == 1);
+                assert(NRed::singleton().properties.at("NRedVCNNativeLoadStatus") == static_cast<UInt32>(result));
+                assert(NRed::singleton().properties.at("NRedVCNNativeLoadReady") == expectedReady);
+                // 异步驱动后来到达也不能在既有图形实例中途打开 VCN。
+                has6000 = hooks = true;
+                assert(VCN::ready() == (expectedReady && started));
+                expectedReady = VCN::ready();
+                assert(acceleratorStart(expectedSelf, &device) == started);
+                assert(loadCalls == 1 && startCalls == 2);
+            }
+        }
+    }
+    for (unsigned gate = 0; gate < 5; ++gate) {
+        reset();device.vendor = 0x1002;device.device = 0x1638;expectedProvider = &device;
+        if (gate == 0) { requested = false; }
+        if (gate == 1) { hostSupported = false; }
+        if (gate == 2) { device.vendor = 0x8086; }
+        if (gate == 3) { device.device = 0x1636; }
+        if (gate == 4) { expectedProvider = &other; }
+        assert(acceleratorStart(expectedSelf, expectedProvider));
+        assert(loadCalls == 0 && startCalls == 1 && !loadAttempted && !VCN::ready());
+    }
+    reset();device.vendor = 0x1002;device.device = 0x1638;expectedProvider = &device;
+    has5000 = false;
+    assert(acceleratorStart(expectedSelf, &device) && loadCalls == 1 && !VCN::ready());
+    // 其他显卡的 start 失败不能关闭本机已就绪的 VCN 状态。
+    reset();loadCompleted = has6000 = hooks = true;
+    expectedProvider = &other;expectedReady = true;originalResult = false;
+    assert(!acceleratorStart(expectedSelf, &other));
+    assert(loadCalls == 0 && loadCompleted && VCN::ready());
+    std::puts("PASS: native load precedes start; gates, deferred/error fallback, bounded requests and native result preserved");
+}

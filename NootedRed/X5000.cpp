@@ -18,6 +18,7 @@
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <PenguinWizardry/PatcherPlus.hpp>
+#include <VCN.hpp>
 #include <X5000.hpp>
 #include <libkern/OSTypes.h>
 #include <libkern/c++/OSObject.h>
@@ -311,7 +312,12 @@ bool X5000::allocateHWEngines(void* const self)
     [[clang::suppress]] singleton().pm4EngineField(self)   = singleton().pm4EngineMC->alloc();
     [[clang::suppress]] singleton().sdma0EngineField(self) = singleton().sdmaEngineMC->alloc();
 
-    // No VCN? :-(
+    if (VCN::ready()) {
+        auto* engine = VCN::allocateEngine();
+        // 本机 25.6 的引擎数组从 0x3B8 开始，VCN0 的原生类型索引为 8。
+        getMember<void*>(self, 0x3F8) = engine;
+        if (!engine) { singleton().hasVCN0Field(self) = false; }
+    }
 
     return true;
 }
@@ -338,7 +344,7 @@ void X5000::wrapSetupAndInitializeHWCapabilities(void* const self)
     singleton().supportedDisplayCountField(self) = 4;
     singleton().hasUVD0Field(self)               = false;
     singleton().hasVCEField(self)                = false;
-    singleton().hasVCN0Field(self)               = false;    // TODO
+    singleton().hasVCN0Field(self)               = VCN::ready();
     singleton().hasSDMAPagingQueueField(self)    = false;
     singleton().hasGetAllClockLimitsField(self)  = false;
     if (currentKernelVersion() >= MACOS_10_15) { singleton().dccDisplayableSupportField(self) = true; }
