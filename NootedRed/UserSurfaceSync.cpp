@@ -4,6 +4,7 @@
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserSurfaceSync.hpp>
 #include <UserSurfaceSyncData.hpp>
+#include <UserSurfaceSyncResolver.hpp>
 #include <kern/task.h>
 #include <mach/vm_map.h>
 #include <mach/vm_region.h>
@@ -31,12 +32,22 @@ CopyIn readUser{nullptr};
 CopyOut writeUser{nullptr};
 UInt32 seenStages{0}, appliedCount{0}, errorCount{0}, windowServerCount{0}, weatherCount{0};
 bool srdShared{false}, legacyBlend{false}, computeScratch{false};
+const UserSurfaceSyncData::DevicePatchSet* devicePatches{&UserSurfaceSyncData::DevicePatches[0]};
+
 constexpr auto PatchCount = arrsize(UserSurfaceSyncData::ComputeScratchPatches);
 constexpr auto LegacyPatchCount = arrsize(UserSurfaceSyncData::LegacyBlendPatches);
 constexpr auto BaselinePatchCount = arrsize(UserSurfaceSyncData::Patches);
 static_assert(BaselinePatchCount == arrsize(UserSurfaceSyncData::SrdSharedPatches));
 static_assert(PatchCount <= 16 && UserSurfaceSyncData::PageCount <= 8);
 static_assert(UserSurfaceSyncData::MaxPatchSize <= 512);
+constexpr UInt32 MaxPageCount = 8;
+
+const UserSurfaceSyncData::Patch* activePatches()
+{
+    return computeScratch ?
+               devicePatches->scratch :
+               (legacyBlend ? devicePatches->blend : (srdShared ? devicePatches->shared : devicePatches->immediate));
+}
 
 enum class Stage : UInt32 {
     Called, OriginalError, Argument, CacheRead, CacheMismatch, CodeRead, CodeMismatch, Already,
@@ -117,33 +128,50 @@ bool restorePages(vm_map_t map, Page* pages, const UInt32 count)
 }
 
 bool rollback(vm_map_t map, Page* pages, const UInt32 pageCount, const UInt64 base,
+              const UserSurfaceSyncData::Patch* patches,
               const UInt8 saved[PatchCount][UserSurfaceSyncData::MaxPatchSize], const UInt32 touched)
 {
     using namespace UserSurfaceSyncData;
-    const auto* const patches = computeScratch ? ComputeScratchPatches :
-        (legacyBlend ? LegacyBlendPatches : (srdShared ? SrdSharedPatches : Patches));
     bool ok = true;
     for (UInt32 i = 0; i < touched; ++i) {
         const auto address = base + patches[i].offset;
-        const auto pageAddress = address & ~static_cast<UInt64>(PAGE_SIZE - 1);
-        Page* page = nullptr;
-        for (UInt32 p = 0; p < pageCount; ++p) {
-            if (pages[p].address == pageAddress) {
-                page = &pages[p];
-                break;
+        const auto first   = address & ~static_cast<UInt64>(PAGE_SIZE - 1);
+        const auto last    = (address + patches[i].size - 1) & ~static_cast<UInt64>(PAGE_SIZE - 1);
+        bool       ready   = true;
+        for (auto pageAddress = first; pageAddress <= last; pageAddress += PAGE_SIZE) {
+            Page* page = nullptr;
+            for (UInt32 p = 0; p < pageCount; ++p) {
+                if (pages[p].address == pageAddress) {
+                    page = &pages[p];
+                    break;
+                }
+            }
+            if (page == nullptr) {
+                ready = false;
+                continue;
+            }
+            if (!page->writable) {
+                const auto result =
+                    vm_protect(map, pageAddress, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+                if (result != KERN_SUCCESS) {
+                    error(result);
+                    ready = false;
+                    continue;
+                }
+                page->writable = true;
             }
         }
-        if (page == nullptr) { ok = false; continue; }
-        if (!page->writable) {
-            const auto result = vm_protect(map, pageAddress, PAGE_SIZE, FALSE,
-                                           VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-            if (result != KERN_SUCCESS) { error(result); ok = false; continue; }
-            page->writable = true;
+        if (!ready) {
+            ok = false;
+            continue;
         }
         if (writeUser(saved[i], address, patches[i].size) != 0) { ok = false; }
     }
     if (!restorePages(map, pages, pageCount)) { ok = false; }
-    if (!ok) { stage(Stage::Rollback); error(KERN_FAILURE); }
+    if (!ok) {
+        stage(Stage::Rollback);
+        error(KERN_FAILURE);
+    }
     return ok;
 }
 
@@ -154,26 +182,62 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
     if (result != 0) { stage(Stage::OriginalError); return result; }
     if (args == nullptr || args->startAddress == 0) { stage(Stage::Argument); return result; }
     using namespace UserSurfaceSyncData;
-    const auto* const patches = computeScratch ? ComputeScratchPatches :
-        (legacyBlend ? LegacyBlendPatches : (srdShared ? SrdSharedPatches : Patches));
-    const auto patchCount = computeScratch ? PatchCount : (legacyBlend ? LegacyPatchCount : BaselinePatchCount);
-    UInt64 base{0};
-    UInt8 header[104];
-    if (readUser(args->startAddress, &base, sizeof(base)) != 0 || base < CacheBase
-        || base - CacheBase > 0x100000000ULL || readUser(base, header, sizeof(header)) != 0) {
-        stage(Stage::CacheRead); return result;
+    const auto* patches = activePatches();
+    const auto  patchCount = computeScratch ? PatchCount : (legacyBlend ? LegacyPatchCount : BaselinePatchCount);
+    UInt64      base{0};
+    UInt8       header[104];
+    if (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0
+        || base >= UserSurfaceSyncResolver::UserLimit - sizeof(header) || (base & (PAGE_SIZE - 1)) != 0
+        || readUser(base, header, sizeof(header)) != 0)
+    {
+        stage(Stage::CacheRead);
+        return result;
     }
-    if (memcmp(header, CacheMagic, sizeof(CacheMagic)) != 0 || memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0) {
-        stage(Stage::CacheMismatch); return result;
+    if (memcmp(header, CacheMagic, sizeof(CacheMagic)) != 0) {
+        stage(Stage::CacheMismatch);
+        return result;
+    }
+    const bool                    dynamic = memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0;
+    UserSurfaceSyncResolver::Plan plan;
+    if (dynamic) {
+        const char* const uuidKeys[] = {"NRedImmediateSyncCacheUUID0", "NRedImmediateSyncCacheUUID1",
+                                        "NRedImmediateSyncCacheUUID2", "NRedImmediateSyncCacheUUID3"};
+        for (UInt32 i = 0; i < 4; ++i) {
+            UInt32 value;
+            memcpy(&value, header + 88 + i * 4, sizeof(value));
+            NRed::singleton().setProp32(uuidKeys[i], value);
+        }
+        if (computeScratch
+            || !UserSurfaceSyncResolver::resolve(readUser, base, *devicePatches, srdShared, legacyBlend, plan))
+        {
+            stage(Stage::CacheMismatch);
+            NRed::singleton().setProp32("NRedImmediateSyncDynamicRejected", 1);
+            return result;
+        }
+        patches = plan.patches;
+        if (!legacyBlend) {
+            UInt8 gate[sizeof(BlendGateOriginal)];
+            if (readUser(base + plan.patches[2].offset, gate, sizeof(gate)) != 0
+                || memcmp(gate, BlendGateOriginal, sizeof(gate)) != 0)
+            {
+                stage(Stage::CodeMismatch);
+                return result;
+            }
+        }
+        NRed::singleton().setProp32("NRedImmediateSyncDynamicMatched", 1);
+        NRed::singleton().setProp32("NRedImmediateSyncDynamicReads", plan.reads);
     }
 
     // 禁止在残留另一策略的进程中把旧模式误报为已生效；切换参数仍需重启。
-    if (!computeScratch) {
+    if (!dynamic && !computeScratch) {
         UInt8 ctx[MaxPatchSize];
         for (UInt32 i = patchCount; i < PatchCount; ++i) {
             const auto& extra = ComputeScratchPatches[i];
-            if (readUser(base + extra.offset, ctx, extra.size) != 0
-                || memcmp(ctx, extra.original, extra.size) != 0) { stage(Stage::CodeMismatch); return result; }
+            if (readUser(base + extra.offset, ctx, extra.size) != 0 || memcmp(ctx, extra.original, extra.size) != 0)
+            {
+                stage(Stage::CodeMismatch);
+                return result;
+            }
         }
     }
     // 旧候选的两处全局 VT 跳转已撤回；不把混合策略误报为新模式已生效。
@@ -181,32 +245,55 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
         for (const auto& withdrawn : WithdrawnTransferGuards) {
             UInt8 bytes[6];
             if (readUser(base + withdrawn.offset, bytes, withdrawn.size) != 0
-                || memcmp(bytes, withdrawn.original, withdrawn.size) != 0) {
-                stage(Stage::CodeMismatch); return result;
+                || memcmp(bytes, withdrawn.original, withdrawn.size) != 0)
+            {
+                stage(Stage::CodeMismatch);
+                return result;
             }
         }
     }
-    UInt8 saved[PatchCount][MaxPatchSize];
-    Page pages[PageCount];
+    UInt8  saved[PatchCount][MaxPatchSize];
+    Page   pages[MaxPageCount];
     UInt32 pageCount{0}, originals{0}, patched{0};
     for (UInt32 i = 0; i < patchCount; ++i) {
-        const auto address = base + patches[i].offset;
-        const auto page = address & ~static_cast<UInt64>(PAGE_SIZE - 1);
-        if (patches[i].size > MaxPatchSize || address + patches[i].size > page + PAGE_SIZE
-            || readUser(address, saved[i], patches[i].size) != 0) { stage(Stage::CodeRead); return result; }
-        if (memcmp(saved[i], patches[i].original, patches[i].size) == 0) { ++originals; }
-        else if (memcmp(saved[i], patches[i].patched, patches[i].size) == 0) { ++patched; }
-        else { stage(Stage::CodeMismatch); error(KERN_INVALID_ARGUMENT); return result; }
-        bool found = false;
-        for (UInt32 p = 0; p < pageCount; ++p) {
-            if (pages[p].address == page) {
-                found = true;
-                break;
-            }
+        if (patches[i].size == 0 || patches[i].size > MaxPatchSize
+            || patches[i].offset >= UserSurfaceSyncResolver::UserLimit - base
+            || patches[i].size >= UserSurfaceSyncResolver::UserLimit - base - patches[i].offset)
+        {
+            stage(Stage::CodeRead);
+            return result;
         }
-        if (!found) {
-            if (pageCount == PageCount) { stage(Stage::CodeMismatch); return result; }
-            pages[pageCount++].address = page;
+        const auto address = base + patches[i].offset;
+        const auto page    = address & ~static_cast<UInt64>(PAGE_SIZE - 1);
+        if (readUser(address, saved[i], patches[i].size) != 0) {
+            stage(Stage::CodeRead);
+            return result;
+        }
+        if (memcmp(saved[i], patches[i].original, patches[i].size) == 0) { ++originals; }
+        else if (memcmp(saved[i], patches[i].patched, patches[i].size) == 0) {
+            ++patched;
+        }
+        else {
+            stage(Stage::CodeMismatch);
+            error(KERN_INVALID_ARGUMENT);
+            return result;
+        }
+        const auto lastPage = (address + patches[i].size - 1) & ~static_cast<UInt64>(PAGE_SIZE - 1);
+        for (auto pageAddress = page; pageAddress <= lastPage; pageAddress += PAGE_SIZE) {
+            bool found = false;
+            for (UInt32 p = 0; p < pageCount; ++p) {
+                if (pages[p].address == pageAddress) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                if (pageCount == MaxPageCount) {
+                    stage(Stage::CodeMismatch);
+                    return result;
+                }
+                pages[pageCount++].address = pageAddress;
+            }
         }
     }
     if (patched == patchCount) { stage(Stage::Already); return result; }
@@ -231,16 +318,17 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
     for (UInt32 i = 0; i < patchCount; ++i) {
         if (writeUser(patches[i].patched, base + patches[i].offset, patches[i].size) != 0) {
             stage(Stage::Write); error(KERN_FAILURE);
-            rollback(map, pages, pageCount, base, saved, i + 1);
+            rollback(map, pages, pageCount, base, patches, saved, i + 1);
             return result;
         }
     }
     if (!restorePages(map, pages, pageCount)) {
         stage(Stage::Restore);
-        rollback(map, pages, pageCount, base, saved, patchCount);
+        rollback(map, pages, pageCount, base, patches, saved, patchCount);
         return result;
     }
     stage(Stage::Applied);
+    if (dynamic) { NRed::singleton().setProp32("NRedImmediateSyncDynamicApplied", 1); }
     // 仅记录已完整写入并恢复 RX 的 WindowServer，避免用全局计数代替故障进程证据。
     if (process != nullptr) {
         const auto pid = proc_pid(process);
@@ -300,6 +388,7 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
 void UserSurfaceSync::init(KernelPatcher& patcher)
 {
     NRed::singleton().setProp32("NRedImmediateSyncVersion", 1);
+    NRed::singleton().setProp32("NRedImmediateSyncRevision", 3);
     NRed::singleton().setProp32("NRedSrdSharedVersion", 1);
     NRed::singleton().setProp32("NRedLegacyBlendVersion", 1);
     NRed::singleton().setProp32("NRedComputeScratchVersion", 1);
@@ -313,8 +402,21 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
     legacyBlend = checkKernelArgument("-NRedLegacyBlend") || computeScratch;
     srdShared = checkKernelArgument("-NRedSrdShared") || legacyBlend;
     if (!checkKernelArgument("-NRedImmediateSync") && !srdShared) { return; }
-    if (NRed::singleton().getDeviceID() != 0x1638 || currentKernelVersion().major() != 25
-        || currentKernelVersion().minor() != 6) { return; }
+    NRed::singleton().setProp32("NRedImmediateSyncRequested", 1);
+    const auto deviceID = NRed::singleton().getDeviceID();
+    devicePatches       = UserSurfaceSyncData::findDevice(deviceID);
+    if (devicePatches == nullptr) {
+        NRed::singleton().setProp32("NRedImmediateSyncRejected", 3);
+        SYSLOG("UserSurfaceSync", "Unsupported render-fix device: 0x%X", deviceID);
+        return;
+    }
+    // Tahoe 小版本只决定是否进入核验；未知 UUID 必须通过完整驱动内容与引用目标核验。
+    if (!currentKernelVersion().majorMatches(MACOS_26)) {
+        NRed::singleton().setProp32("NRedImmediateSyncRejected", 4);
+        SYSLOG("UserSurfaceSync", "Render fix requires Darwin 25; found %u.%u", currentKernelVersion().major(),
+               currentKernelVersion().minor());
+        return;
+    }
     getTaskMap = reinterpret_cast<GetTaskMap>(patcher.solveSymbol(KernelPatcher::KernelID, "_get_task_map"));
     patcher.clearError();
     queryRegion = reinterpret_cast<RegionRecurse>(
@@ -346,5 +448,5 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
         SYSLOG("UserSurfaceSync", "ComputeScratch-v1 enabled: single-SE scratch sizing; native kernel preserved; "
                "exact cache/code required");
     }
-    SYSLOG("UserSurfaceSync", "ImmediateSync-v1 enabled: exact cache/code required, device 0x1638 only");
+    SYSLOG("UserSurfaceSync", "ImmediateSync-v1 revision 3 enabled: verified driver content required, device 0x%X", deviceID);
 }

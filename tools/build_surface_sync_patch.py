@@ -2,10 +2,11 @@
 from pathlib import Path
 import hashlib
 import json
+import re
 import struct
 import subprocess
-from metal_cache import CacheReader, macho, array
-from build_compute_scratch_patch import generate as generate_scratch
+from metal_cache import CacheReader, macho, array, IMAGE
+from build_compute_scratch_patch import generate as generate_scratch, supported_devices
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/user-surface-sync"
@@ -15,6 +16,47 @@ FUNCTIONS = {
     "override": ("__Z33amdMtl_HWL_OverrideDeviceSettingsP18AMD_DeviceSettingsP18AMDCommonHwInfoRec",
                  "8944785f90985578b38c777def41df74dd6028f0eac779cdf396a17dc104cc8b"),
 }
+
+
+def for_device(records, device_id):
+    # 完整 32 位比较只作用于本机核显，保留同进程中的独显原生初始化。
+    guard = bytes.fromhex("817e0c38160000")
+    payload = bytes.fromhex(records[0]["patched"])
+    if payload.count(guard) != 1:
+        raise ValueError("初始化设备比较指令未核实")
+    result = [dict(record) for record in records]
+    result[0]["patched"] = payload.replace(guard, guard[:3] + struct.pack("<I", device_id)).hex()
+    return result
+
+
+def relocation_fields(code, address, targets, label):
+    # 只登记已核实的外部相对引用；函数内分支必须保持完整指令匹配。
+    source = WORK / f"resolver-{label}.s"
+    source.write_text('.text\n.globl _native\n_native:\n.byte ' + ','.join(map(str, code)) + '\n')
+    obj = source.with_suffix('.o')
+    subprocess.run(['clang', '-c', str(source), '-o', str(obj)], check=True, timeout=60)
+    disassembly = subprocess.run(['xcrun', 'llvm-objdump', '-d', str(obj)], capture_output=True,
+                                text=True, check=True, timeout=60).stdout
+    fields = []
+    decoded = bytearray()
+    for line in disassembly.splitlines():
+        match = re.match(r'\s*([0-9a-f]+):\s*((?:[0-9a-f]{2}\s+)+)\s*([a-z][a-z0-9]*)\s*(.*)', line)
+        if not match:
+            continue
+        offset, instruction, mnemonic, operand = int(match[1], 16), bytes.fromhex(match[2]), match[3], match[4]
+        if offset != len(decoded):
+            raise ValueError('重定位反汇编不连续')
+        decoded.extend(instruction)
+        if '%rip' in operand or (mnemonic in ('callq', 'jmp') and instruction[0] in (0xE8, 0xE9)):
+            target = address + offset + len(instruction) + struct.unpack('<i', instruction[-4:])[0]
+            if address <= target < address + len(code):
+                continue
+            if target not in targets:
+                raise ValueError(f'未核实的重定位目标：{target:#x}')
+            fields.append((offset + len(instruction) - 4, targets.index(target)))
+    if bytes(decoded) != code or sorted(kind for _, kind in fields) != [0, 1, 2]:
+        raise ValueError('初始化外部引用不完整')
+    return fields
 
 
 def main():
@@ -42,7 +84,7 @@ def main():
         for label in FUNCTIONS:
             item = originals[label]
             patched = payload if label == "init" else b"\xe9" + struct.pack(
-                "<i", originals["init"]["address"] + 180 - item["address"] - 5) + b"\x90" * 5
+                "<i", originals["init"]["address"] + 166 - item["address"] - 5) + b"\x90" * 5
             if len(patched) != len(bytes.fromhex(item["code"])):
                 raise ValueError("补丁越界")
             records.append({"label": label, "address": item["address"],
@@ -59,6 +101,9 @@ def main():
             raise ValueError("共享 SRD 的补丁长度错误")
         candidate_records = [dict(r) for r in records]
         candidate_records[0]["patched"] = candidate_payload.hex()
+        device_records = [{"device_id": device, "records": for_device(records, device),
+                           "srd_shared_records": for_device(candidate_records, device)}
+                          for device in supported_devices()]
         ctor_address, ctor_code = cache.function(
             "-[GFX9_MtlRenderPipelineState initWithDevice:pipelineStateDescriptor:vertexVariant:fragmentVariant:]")
         if hashlib.sha256(ctor_code).hexdigest() != "9d78fd28bb509a95ce68fdb879d507388bf1625f54439da53622aa1097ee339b":
@@ -77,8 +122,12 @@ def main():
             if original != bytes.fromhex(expected):
                 raise ValueError("VideoToolbox 原始选择分支不匹配")
             withdrawn_guards.append({"address": address, "original": original.hex()})
-        scratch_record = generate_scratch(cache)
-        scratch_records = [dict(r) for r in legacy_records] + [scratch_record]
+        device_scratch_records = [
+            {"device_id": device, "records": [*legacy_records, generate_scratch(cache, device)]}
+            for device in supported_devices()
+        ]
+        scratch_record = device_scratch_records[0]["records"][-1]
+        scratch_records = device_scratch_records[0]["records"]
         pages = {r["address"] & ~4095 for r in scratch_records}
         for r in scratch_records:
             if r["address"] // 4096 != (r["address"] + len(bytes.fromhex(r["original"])) - 1) // 4096:
@@ -110,22 +159,77 @@ def main():
             f"    {{0x{r['address']-cache.base:X}ULL, WithdrawnOriginal{i}, sizeof(WithdrawnOriginal{i})}}"
             for i, r in enumerate(withdrawn_guards)) + "\n};\n"
         header += array("ScratchOriginal", bytes.fromhex(scratch_record["original"]))
-        header += array("ScratchPatched", bytes.fromhex(scratch_record["patched"]))
-        header += "inline constexpr Patch ComputeScratchPatches[] = {\n"
-        header += ",\n".join(f"    LegacyBlendPatches[{i}]" for i in range(len(legacy_records))) + ",\n"
-        header += (f"    {{0x{scratch_record['address']-cache.base:X}ULL, ScratchOriginal, ScratchPatched, "
-                   "sizeof(ScratchOriginal)}\n};\n")
+        # 各设备共享原始代码、覆盖跳转与混合分支；仅初始化比较立即数不同。
+        for entry in device_records[1:]:
+            suffix = f"{entry['device_id']:04X}"
+            for mode, key in [("Immediate", "records"), ("Shared", "srd_shared_records")]:
+                header += array(f"{mode}Init{suffix}", bytes.fromhex(entry[key][0]["patched"]))
+                header += f"inline constexpr Patch {mode}Patches{suffix}[] = {{\n"
+                header += (f"    {{Patches[0].offset, Original0, {mode}Init{suffix}, sizeof(Original0)}},\n"
+                           f"    Patches[1]\n}};\n")
+            header += f"inline constexpr Patch BlendPatches{suffix}[] = {{\n"
+            header += (f"    SharedPatches{suffix}[0], SharedPatches{suffix}[1], LegacyBlendPatches[2]\n}};\n")
+        for entry in device_scratch_records:
+            device = entry["device_id"]
+            suffix = f"{device:04X}"
+            patched_name = "ScratchPatched" if device == 0x1638 else f"ScratchPatched{suffix}"
+            patch_name = "ComputeScratchPatches" if device == 0x1638 else f"ComputeScratchPatches{suffix}"
+            blend_name = "LegacyBlendPatches" if device == 0x1638 else f"BlendPatches{suffix}"
+            record = entry["records"][-1]
+            header += array(patched_name, bytes.fromhex(record["patched"]))
+            header += f"inline constexpr Patch {patch_name}[] = {{\n"
+            header += ",\n".join(f"    {blend_name}[{i}]" for i in range(len(legacy_records))) + ",\n"
+            header += (f"    {{0x{record['address']-cache.base:X}ULL, ScratchOriginal, {patched_name}, "
+                       "sizeof(ScratchOriginal)}\n};\n")
+        header += ("struct DevicePatchSet { UInt32 deviceID; const Patch* immediate; const Patch* shared; "
+                   "const Patch* blend; const Patch* scratch; };\n")
+        header += "inline constexpr DevicePatchSet DevicePatches[] = {\n"
+        header += "    {0x1638, Patches, SrdSharedPatches, LegacyBlendPatches, ComputeScratchPatches},\n"
+        header += ",\n".join(f"    {{0x{e['device_id']:04X}, ImmediatePatches{e['device_id']:04X}, "
+                             f"SharedPatches{e['device_id']:04X}, BlendPatches{e['device_id']:04X}, "
+                             f"ComputeScratchPatches{e['device_id']:04X}}}"
+                             for e in device_records[1:]) + "\n};\n"
+        header += ("inline constexpr const DevicePatchSet* findDevice(UInt32 deviceID) {\n"
+                   "    for (const auto& entry : DevicePatches) { if (entry.deviceID == deviceID) { return &entry; } }\n"
+                   "    return nullptr;\n}\n")
+        # 动态缓存解析只接受相同实现的完整函数；UUID 不参与兼容判定。
+        targets = [0x7FFB10FBFDE8, 0x7FFB10C5422B, 0x7FFB10C545C6]
+        init_address = originals['init']['address']
+        variants = [('OriginalInitLinks', bytes.fromhex(records[0]['original'])),
+                    ('ImmediateInitLinks', payload), ('SharedInitLinks', candidate_payload)]
+        header += 'struct RelativeField { UInt32 offset; UInt32 target; };\n'
+        for name, code in variants:
+            fields = relocation_fields(code, init_address, targets, name)
+            header += f'inline constexpr RelativeField {name}[] = {{\n'
+            header += ',\n'.join(f'    {{{offset}, {kind}}}' for offset, kind in fields) + '\n};\n'
+        for name, address, size in [('NativeOverride', targets[1], 923), ('NativeDump', targets[2], 6)]:
+            native = cache.read(address, size)
+            if name == 'NativeOverride' and hashlib.sha256(native).hexdigest() != '9f4d151c607e74ed7710e81d437013fef73afe83bbbbd94179d2d429ca611ea6':
+                raise ValueError('原生配置函数未核实')
+            if name == 'NativeDump' and native.hex() != '554889e55dc3':
+                raise ValueError('原生调试函数未核实')
+            header += array(name, native)
+        header += array('BlendConstructor', ctor_code)
+        header += f'inline constexpr UInt32 BlendGateInConstructor = {gate_address - ctor_address};\n'
+        header += f'inline constexpr UInt32 OverrideEntryInInit = 166;\n'
+        header += f'inline constexpr char DriverPath[] = "{IMAGE}";\n'
+        for name, address in [('InitRVA', init_address), ('OverrideRVA', originals['override']['address']),
+                              ('NativeOverrideRVA', targets[1]), ('ConstructorRVA', ctor_address),
+                              ('ScratchRVA', scratch_record['address'])]:
+            header += f'inline constexpr UInt64 {name} = 0x{address-cache.image_base:X}ULL;\n'
         header += f"inline constexpr UInt32 MaxPatchSize = 452;\ninline constexpr UInt32 PageCount = {len(pages)};\n}}\n"
         (WORK / "UserSurfaceSyncData.hpp").write_text(header)
         (ROOT / "NootedRed/UserSurfaceSyncData.hpp").write_text(header)
         (WORK / "patch-data.json").write_text(json.dumps({"originals": originals, "records": records,
                                                          "srd_shared_records": candidate_records,
+                                                         "device_records": device_records,
                                                          "legacy_blend_records": legacy_records,
                                                          "withdrawn_guards": withdrawn_guards,
                                                          "compute_scratch_records": scratch_records,
+                                                         "device_compute_scratch_records": device_scratch_records,
                                                          "cache_base": cache.base}, indent=2) + "\n")
-        print(f"Generated {len(records)} baseline / {len(legacy_records)} blend / "
-              f"{len(scratch_records)} scratch patches; at most {len(pages)} pages")
+        print(f"Generated render patches for {len(device_records)} NRed PCI IDs / "
+              f"{len(device_scratch_records)} device-specific scratch patches; at most {len(pages)} pages")
     finally:
         cache.close()
 

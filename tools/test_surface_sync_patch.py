@@ -7,10 +7,9 @@ ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/user-surface-sync"
 
 
-def verify(records_key, shared_srd):
-    data = json.loads((WORK / "patch-data.json").read_text())
+def verify(entry, records_key, shared_srd):
     arrays = []
-    for r in data[records_key]:
+    for r in entry[records_key]:
         for prefix, field in [("old", "original"), ("new", "patched")]:
             arrays.append(f"static const uint8_t {prefix}_{r['label']}[]={{" +
                           ",".join(map(str, bytes.fromhex(r[field]))) + "};")
@@ -42,7 +41,7 @@ struct Executable{
     memcpy(p+t+2,&f,8);p[t+10]=0xff;p[t+11]=0xe0;v=int32_t(t-i-5);memcpy(p+i+1,&v,4);linked++;
    }
   }
-  assert(linked==(size==10?1U:(code==new_init?3U:2U)));
+  assert(linked==(size==10?1U:2U));
   if(size==215){unsigned constants=0;
    for(size_t i=0;i+9<=size;i++)if(memcmp(code+i,"\xc4\xe2\x79\x18\x05",5)==0){
     int32_t v=int32_t(1100-i-9);memcpy(p+i+5,&v,4);float value=3.0f;memcpy(p+1100,&value,4);constants++;
@@ -65,7 +64,7 @@ int main(int argc,const char*[]){
  if(argc>1){uint8_t settings[128]{},info[180]{};put32(info,12,0x1638);
   reinterpret_cast<Init>(a.p)(settings,info);assert((settings[3]&1)==0);return 0;}
  uint32_t random=1;unsigned cases=0;
- for(uint32_t id:{0x1638U,0x1636U,0x15ddU,0x6860U})for(unsigned i=0;i<2048;i++){
+ for(uint32_t id:{0x1638U,0x15e7U,0x1636U,0x164cU,0x15d8U,0x15ddU,0x6860U,0xffff15e7U,0xffff1638U})for(unsigned i=0;i<2048;i++){
   alignas(16) std::array<uint8_t,128> left,right;std::array<uint8_t,180> info;
   for(auto& x:left){random=random*1664525+1013904223;x=uint8_t(random>>24);}right=left;
   for(auto& x:info){random=random*1664525+1013904223;x=uint8_t(random>>24);}
@@ -74,15 +73,25 @@ int main(int argc,const char*[]){
   overrideValue=i&1?(0x123456789abcde80ULL^(uint64_t(random)<<32)):0;
   calls=dumps=0;reinterpret_cast<Init>(a.p)(left.data(),info.data());assert(calls==1&&dumps==1);
   calls=dumps=0;reinterpret_cast<Init>(b.p)(right.data(),info.data());assert(calls==1&&dumps==1);
-  if(id==0x1638){left[3]&=0xfe;SHARED_MASK}assert(left==right);
+  if(id==TARGET_DEVICE){left[3]&=0xfe;SHARED_MASK}assert(left==right);
   // 单独调用原生覆盖入口：包括配置显式开启 DCC 和 RSI 被调用者破坏的情况。
   calls=dumps=0;reinterpret_cast<Init>(c.p)(left.data(),info.data());assert(calls==1&&dumps==0);
   calls=dumps=0;reinterpret_cast<Init>(bridge+215)(right.data(),info.data());assert(calls==1&&dumps==0);
-  if(id==0x1638){left[3]&=0xfe;SHARED_MASK}assert(left==right);cases++;
+  if(id==TARGET_DEVICE){left[3]&=0xfe;SHARED_MASK}assert(left==right);cases++;
+ }
+ // 穷举完整 PCI ID 空间，保证同进程中的其他 GPU 保留原生配置。
+ for(uint32_t id=0;id<=0xffff;id++){
+  uint8_t settings[128]{},info[180]{};put32(info,12,id);settings[3]=1;settings[8]=0x40;
+  overrideMask=overrideValue=0;reinterpret_cast<Init>(bridge+215)(settings,info);
+  assert((settings[3]&1)==(id==TARGET_DEVICE?0:1));
+  SHARED_ASSERT
  }
  assert(munmap(bridge,4096)==0);printf("PASS: %u native init/override cases; only selected target sync/SRD placement bits change\n",cases);
 }
 '''.replace("ARRAYS", "\n".join(arrays)).replace("SHARED_MASK", "left[8]&=0xbf;" if shared_srd else "")
+    harness = harness.replace("TARGET_DEVICE", hex(entry['device_id'])).replace(
+        "SHARED_ASSERT", "assert((settings[8]&0x40)==(id==TARGET_DEVICE?0:0x40));".replace(
+            "TARGET_DEVICE", hex(entry['device_id'])) if shared_srd else "assert(settings[8]==0x40);")
     path = WORK / "test-native.cpp"
     path.write_text(harness)
     exe = WORK / "test-native"
@@ -97,5 +106,8 @@ int main(int argc,const char*[]){
 
 
 if __name__ == "__main__":
-    verify("records", False)
-    verify("srd_shared_records", True)
+    data = json.loads((WORK / "patch-data.json").read_text())
+    for entry in data['device_records']:
+        print(f"VERIFY PCI {entry['device_id']:#06x}", flush=True)
+        verify(entry, "records", False)
+        verify(entry, "srd_shared_records", True)

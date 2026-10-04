@@ -1,4 +1,4 @@
-// 保留所有原生设置位和配置覆盖，只对 0x1638 在覆盖完成后清除 allowDeferredSurfSync。
+// 保留原生设置与配置覆盖；生成器按 NRed 的 PCI 分类替换完整设备比较值。
 .text
 .globl _surface_sync_init
 _surface_sync_init:
@@ -40,20 +40,16 @@ _surface_sync_init:
     orb $0xc0, 0x8(%rdi)
     movl $0x19, 0x3c(%rdi)
     movb $0, 0x50(%rdi)
-    .byte 0xe8
-    .long 0x7ffb10c5422b - 0x7ffb10d71a28 - (. - _surface_sync_init + 4)
+    // 复用覆盖入口的设备检查，保持原生函数长度。
+    callq Loverride
     popq %rsi
-    cmpl $0x1638, 0xc(%rsi)
-    jne Linit_done
-    andb $0xfe, 3(%rbx)
-Linit_done:
     movq %rbx, %rdi
     popq %rbx
     popq %rbp
     .byte 0xe9
     .long 0x7ffb10c545c6 - 0x7ffb10d71a28 - (. - _surface_sync_init + 4)
     // 另一个原生覆盖入口也保留完整配置读取，然后应用相同设备限制。
-    .org 180, 0x90
+    .org 166, 0x90
 Loverride:
     pushq %rbp
     movq %rsp, %rbp

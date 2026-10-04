@@ -1,4 +1,4 @@
-"""生成 Cezanne scratch 拓扑修复；其他设备保持原生 SE 乘法，不写系统缓存。"""
+"""生成 NRed Vega APU scratch 拓扑修复；其他设备保持原生 SE 乘法。"""
 import hashlib
 import re
 import struct
@@ -12,7 +12,20 @@ SYMBOL = '__ZL33amdMtl_GFX9_AllocateScratchBufferP28GFX9_MtlComputePipelineState
 DIGEST = '901b678273297d0148c2cf9c4812cab5281e80338414eba0f0f3570b4bca8c8d'
 
 
-def generate(cache):
+def supported_devices():
+    # 复用 NRed 自己接受的 APU PCI ID，拒绝把修复推广到多 SE Vega 独显。
+    source = (ROOT / 'NootedRed/NRed.cpp').read_text()
+    start = source.index('switch (this->deviceID)')
+    end = source.index('default: PANIC', start)
+    devices = [int(value, 16) for value in re.findall(r'case (0x[0-9A-Fa-f]+):', source[start:end])]
+    if not devices or len(devices) != len(set(devices)) or 0x1638 not in devices:
+        raise ValueError('NRed PCI 分类未核实')
+    return [0x1638] + sorted(set(devices) - {0x1638})
+
+
+def generate(cache, device_id=0x1638):
+    if device_id not in supported_devices():
+        raise ValueError(f'不支持的 NRed APU PCI ID：{device_id:#06x}')
     WORK.mkdir(parents=True, exist_ok=True)
     address, original = cache.function(SYMBOL)
     if len(original) != 452 or hashlib.sha256(original).hexdigest() != DIGEST:
@@ -72,8 +85,8 @@ def generate(cache):
         else:
             emit(data)
         if offset == 0x55:
-            # numShaderArrays * numCUPerArray；仅 Cezanne 跳过虚拟的 4 SE。
-            emit(bytes.fromhex('43817c2e0c38160000'))
+            # CU 和 Shader Array 仍取硬件原值；仅所选 NRed APU 跳过虚拟 SE 因子。
+            emit(bytes.fromhex('43817c2e0c') + struct.pack('<I', device_id))
             assembly.append('je L63')
     patched_source = WORK / 'patched.s'
     patched_source.write_text('\n'.join(assembly) + '\n')
@@ -94,6 +107,7 @@ if __name__ == '__main__':
     cache = CacheReader()
     try:
         patch = generate(cache)
-        print('Generated scratch patch:', hex(patch['address']), len(bytes.fromhex(patch['patched'])))
+        print(f"Generated scratch patch for {device_id:#06x}:", hex(patch['address']),
+              len(bytes.fromhex(patch['patched'])))
     finally:
         cache.close()
