@@ -12,6 +12,9 @@ def main():
     stub.mkdir(parents=True, exist_ok=True)
     (stub / "IOTypes.h").write_text("#pragma once\n#include <cstdint>\n"
                                  "using UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n")
+    util = WORK / "stubs/Headers"
+    util.mkdir(parents=True, exist_ok=True)
+    (util / "kern_util.hpp").write_text('#pragma once\n#include <IOKit/IOTypes.h>\n')
     source = (ROOT / "NootedRed/UserVideoDecode.cpp").read_text()
     namespace = re.search(r"namespace\s*\{", source)
     closing = re.search(r"\}\s*// namespace", source)

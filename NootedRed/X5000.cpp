@@ -314,8 +314,8 @@ bool X5000::allocateHWEngines(void* const self)
 
     if (VCN::ready()) {
         auto* engine = VCN::allocateEngine();
-        // 本机 25.6 的引擎数组从 0x3B8 开始，VCN0 的原生类型索引为 8。
-        getMember<void*>(self, 0x3F8) = engine;
+        // 复用本版本的引擎数组基址和原生类型枚举，不另设固定的 VCN 字段偏移。
+        (singleton().pm4EngineField + kAMDHWEngineTypeVCN0 * sizeof(void*))(self) = engine;
         if (!engine) { singleton().hasVCN0Field(self) = false; }
     }
 

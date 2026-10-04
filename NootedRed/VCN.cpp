@@ -43,10 +43,7 @@ namespace
 
     bool supported()
     {
-        return requested
-               && VCNCapabilities::rejection(NRed::singleton().getDeviceID(), currentKernelVersion().major(),
-                                             currentKernelVersion().minor())
-                      == 0;
+        return requested && VCNCapabilities::rejection(NRed::singleton().getDeviceID(), currentKernelVersion()) == 0;
     }
 
     bool acceleratorStart(void* self, IOService* provider)
@@ -101,6 +98,36 @@ namespace
             if (result && result->getMetaClass()->getClassSize() >= target->getClassSize()) { return result; }
         }
         return nullptr;
+    }
+
+    bool verifyKernelABI(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size, bool old)
+    {
+        if (size < 16 || slide > ~mach_vm_address_t{0} - size) { return false; }
+        const auto* guards = old ? VCNKernelData::Guards5000 : VCNKernelData::Guards6000;
+        static_assert(arrsize(VCNKernelData::Guards5000) == arrsize(VCNKernelData::Guards6000));
+        mach_vm_address_t table{0};
+        if (!resolve(patcher, id, old ? VCNKernelData::Table5000 : VCNKernelData::Table6000, table, slide, size)) {
+            return false;
+        }
+        for (size_t i = 0; i < arrsize(VCNKernelData::Guards5000); ++i) {
+            const auto& guard = guards[i];
+            // __ZTV 的两个头部槽不属于对象地址点；先核对边界再读取指针和 getter。
+            const auto offset = 2 * sizeof(void*) + guard.slot;
+            if (offset > size - sizeof(void*) || table < slide || table - slide > size - sizeof(void*) - offset) {
+                return false;
+            }
+            mach_vm_address_t target{0};
+            memcpy(&target, reinterpret_cast<void*>(table + offset), sizeof(target));
+            if (target < slide || target - slide >= size || guard.size > size - (target - slide)) { return false; }
+            if (guard.target) {
+                mach_vm_address_t expected{0};
+                if (!resolve(patcher, id, guard.target, expected, slide, size) || target != expected) { return false; }
+            }
+            else if (!guard.code || !guard.size || memcmp(reinterpret_cast<void*>(target), guard.code, guard.size)) {
+                return false;
+            }
+        }
+        return true;
     }
 
     void* newShared()
@@ -245,6 +272,18 @@ void VCN::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t slide
     if (!supported()) { return; }
     const auto old = id == kextRadeonX5000.loadIndex;
     if (!old && id != x6000.loadIndex) { return; }
+    if (!verifyKernelABI(patcher, id, slide, size, old)) {
+        if (old) { has5000 = false; }
+        else {
+            has6000 = hooks = false;
+        }
+        __atomic_store_n(&loadCompleted, false, __ATOMIC_RELEASE);
+        NRed::singleton().setProp32("NRedVCNKernelABIRejected", 1);
+        NRed::singleton().setProp32(old ? "NRedVCNX5000Prepared" : "NRedVCNX6000Prepared", 0);
+        SYSLOG("VCN", "%s ABI mismatch; bridge disabled", old ? "X5000" : "X6000");
+        return;
+    }
+    NRed::singleton().setProp32(old ? "NRedVCNX5000ABIValidated" : "NRedVCNX6000ABIValidated", 1);
     bool ok = true;
     for (size_t i = 0; i < arrsize(classes); ++i) {
         char name[112];

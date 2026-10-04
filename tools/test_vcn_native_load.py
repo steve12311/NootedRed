@@ -28,7 +28,10 @@ def main():
     harness = WORK / "test-native-load.cpp"
     stubs = WORK / "stubs/IOKit"
     stubs.mkdir(parents=True, exist_ok=True)
-    (stubs / "IOTypes.h").write_text("#pragma once\n#include <cstdint>\nusing UInt32=uint32_t;\n")
+    (stubs / "IOTypes.h").write_text("#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n")
+    util = WORK / "stubs/Headers"
+    util.mkdir(parents=True, exist_ok=True)
+    (util / "kern_util.hpp").write_text('#pragma once\n#include <IOKit/IOTypes.h>\n')
     capabilities = '#include <VCNCapabilities.hpp>'
     harness.write_text(fixture.replace("FUNCTIONS", functions).replace("CAPABILITIES", capabilities))
     executable = WORK / "test-native-load"

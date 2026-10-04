@@ -1,6 +1,7 @@
 // Vega 核显的视频能力；VCN1 不能复用当前 VCN2 引擎接入。
 #pragma once
 #include <IOKit/IOTypes.h>
+#include <PenguinWizardry/KernelVersion.hpp>
 
 namespace VCNCapabilities
 {
@@ -32,13 +33,13 @@ namespace VCNCapabilities
         return nullptr;
     }
 
-    // 3=未知设备，4=未核实内核布局，5=未实现的视频代际；0 才允许进入驱动核验。
-    inline constexpr UInt32 rejection(UInt32 deviceID, UInt32 major, UInt32 minor)
+    // 3=未知设备，4=非 Tahoe，5=未实现的视频代际；0 才允许进入驱动 ABI 核验。
+    inline constexpr UInt32 rejection(UInt32 deviceID, const PenguinWizardry::KernelVersion& version)
     {
         const auto* capability = findDevice(deviceID);
         if (!capability) { return 3; }
         if (capability->generation != Generation::VCN22 || capability->vaFamily == 0) { return 5; }
-        if (major != 25 || minor != 6) { return 4; }
+        if (!version.majorMatches(MACOS_26)) { return 4; }
         return 0;
     }
 

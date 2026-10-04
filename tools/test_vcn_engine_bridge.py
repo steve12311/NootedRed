@@ -11,7 +11,7 @@ def main():
     WORK.mkdir(parents=True, exist_ok=True)
     stubs = WORK / 'stubs/IOKit'
     stubs.mkdir(parents=True, exist_ok=True)
-    (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt32=uint32_t;\n')
+    (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
     vcn = (ROOT / 'NootedRed/VCN.cpp').read_text()
     functions = '\n'.join(function(vcn, prefix) for prefix in [
         'bool supported()', 'bool VCN::ready()', 'bool  VCN::allocated()', 'void* VCN::allocateEngine()',
@@ -19,6 +19,8 @@ def main():
     allocation = function((ROOT / 'NootedRed/X5000.cpp').read_text(), 'bool X5000::allocateHWEngines(')
     fixture = r'''
 #include <array>
+#include <optional>
+#include <GPUDriversAMD/Accel/HWEngine.hpp>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -35,8 +37,8 @@ struct NRed {
     unsigned getDeviceID(){return device;}
     void setProp32(const char* k,unsigned v){properties[k]=v;}
 };
-struct Version {unsigned major(){return 25;}unsigned minor(){return 6;}};
-Version currentKernelVersion(){return {};}
+unsigned kernelMinor=6;
+const PenguinWizardry::KernelVersion& currentKernelVersion(){static std::optional<PenguinWizardry::KernelVersion> current;return current.emplace(25,kernelMinor);}
 bool requested=true,loadCompleted=true,has5000=true,has6000=true,hooks=true,engineAllocated=false;
 struct OSMetaClass {
     unsigned size=64;void* object=nullptr;
@@ -51,7 +53,7 @@ mach_vm_address_t safeCastOriginal=0,sml5000=0,sml6000=0,signalOriginal=0;
 void (*notifyAccess)(void*)=nullptr;
 namespace VCN {bool ready();bool allocated();void* allocateEngine();}
 template<typename T>T& getMember(void* object,unsigned offset){return *reinterpret_cast<T*>(static_cast<uint8_t*>(object)+offset);}
-template<typename T>struct Field {unsigned offset;T& operator()(void* object){return getMember<T>(object,offset);}};
+template<typename T>struct Field {unsigned offset;Field operator+(unsigned delta)const{return {offset+delta};}T& operator()(void* object){return getMember<T>(object,offset);}};
 struct X5000 {
     OSMetaClass pm4,sdma;OSMetaClass *pm4EngineMC=&pm4,*sdmaEngineMC=&sdma;
     Field<void*> pm4EngineField{0x3B8},sdma0EngineField{0x3C0};Field<bool> hasVCN0Field{0xB7};
@@ -73,7 +75,8 @@ int main(){
     signalOriginal=reinterpret_cast<uintptr_t>(nativeSignal);notifyAccess=notify;
     unsigned engineObject=1,pm4Object=2,sdmaObject=3;
     auto& x=X5000::singleton();x.pm4.object=&pm4Object;x.sdma.object=&sdmaObject;
-    for(unsigned id:{0x15E7U,0x1636U,0x1638U,0x164CU}){
+    for(unsigned minor:{0U,1U,6U,7U,99U})for(unsigned id:{0x15E7U,0x1636U,0x1638U,0x164CU}){
+        kernelMinor=minor;
         NRed::singleton().device=id;requested=loadCompleted=has5000=has6000=hooks=true;
         engineAllocated=false;engine.object=&engineObject;
         alignas(8) std::array<uint8_t,0x408> object{};
@@ -91,6 +94,13 @@ int main(){
         assert(safeCast(&newObject,&oldClass)==&newObject);
         assert(safeCast(&oldObject,&newClass)==nullptr);
         assert(safeCast(nullptr,&oldClass)==nullptr);
+        // 使用另一数组基址，证明 VCN 写入来自 ObjectField 与原生枚举而不是 0x3F8。
+        x.pm4EngineField.offset=0x400;
+        alignas(8) std::array<uint8_t,0x508> relocated{};
+        assert(x.allocateHWEngines(relocated.data()));
+        assert(getMember<void*>(relocated.data(),0x440)==&engineObject);
+        assert(getMember<void*>(relocated.data(),0x3F8)==nullptr);
+        x.pm4EngineField.offset=0x3B8;
         engine.object=nullptr;x.hasVCN0Field(object.data())=true;
         assert(x.allocateHWEngines(object.data()));assert(!VCN::allocated()&&!loadCompleted);
         assert(!x.hasVCN0Field(object.data())&&getMember<void*>(object.data(),0x3F8)==nullptr);
@@ -110,6 +120,9 @@ int main(){
     puts("PASS: four VCN2 engine slots, allocation failure, SML selection, cast size checks and GFX access routing");
 }
 '''.replace('FUNCTIONS', functions).replace('ALLOCATION', allocation)
+    util = WORK / "stubs/Headers"
+    util.mkdir(parents=True, exist_ok=True)
+    (util / "kern_util.hpp").write_text('#pragma once\n#include <IOKit/IOTypes.h>\n')
     source = WORK / 'test.cpp'
     source.write_text(fixture)
     executable = WORK / 'test'

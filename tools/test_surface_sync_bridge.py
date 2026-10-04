@@ -18,6 +18,9 @@ def main():
     stub = WORK / "stubs/IOKit"
     stub.mkdir(parents=True, exist_ok=True)
     (stub / "IOTypes.h").write_text("#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n")
+    util = WORK / "stubs/Headers"
+    util.mkdir(parents=True, exist_ok=True)
+    (util / "kern_util.hpp").write_text('#pragma once\n#include <IOKit/IOTypes.h>\n')
     harness = r'''
 #include <cassert>
 #include <cstring>
@@ -28,6 +31,8 @@ def main():
 #include <set>
 #include <string>
 #include <array>
+#include <optional>
+#include <PenguinWizardry/KernelVersion.hpp>
 #include <UserSurfaceSyncData.hpp>
 #include <UserSurfaceSyncResolver.hpp>
 using user_addr_t=uint64_t;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
@@ -43,9 +48,8 @@ static std::map<std::string,unsigned> properties;
 static unsigned property(const char* key){auto it=properties.find(key);if(it==properties.end()){fprintf(stderr,"missing property: %s\n",key);abort();}return it->second;}
 struct NRed {static NRed& singleton(){static NRed n;return n;}void setProp32(const char* k,unsigned v){properties[k]=v;}
  unsigned getDeviceID(){return device; }static unsigned device;};unsigned NRed::device=0x1638;
-struct Version{unsigned major(){return majorValue;}unsigned minor(){return minorValue;}bool majorMatches(unsigned value){return majorValue==value;}static unsigned majorValue,minorValue;};unsigned Version::majorValue=25;unsigned Version::minorValue=6;
-constexpr unsigned MACOS_26=25;
-static Version currentKernelVersion(){return {};}
+struct Version{static unsigned majorValue,minorValue;};unsigned Version::majorValue=25;unsigned Version::minorValue=6;
+const PenguinWizardry::KernelVersion& currentKernelVersion(){static std::optional<PenguinWizardry::KernelVersion> current;return current.emplace(Version::majorValue,Version::minorValue);}
 static bool flag=true,candidateFlag=false,legacyFlag=false,transferFlag=false,scratchFlag=false;static bool checkKernelArgument(const char* s){if(strcmp(s,"-NRedComputeScratch")==0)return scratchFlag;if(strcmp(s,"-NRedTransfer1x1")==0)return transferFlag;if(strcmp(s,"-NRedLegacyBlend")==0)return legacyFlag;if(strcmp(s,"-NRedSrdShared")==0)return candidateFlag;assert(strcmp(s,"-NRedImmediateSync")==0);return flag;}
 struct KernelPatcher{
  static constexpr int KernelID=0;int solves=0,routes=0;bool missing=false,routeOK=true;

@@ -6,11 +6,60 @@ import re
 import struct
 import subprocess
 
-from audit_video_driver import disk_image
+from audit_video_driver import disk_image, vtable
+from metal_cache import array
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vcn"
 DRIVER = Path("/System/Library/Extensions/AMDRadeonX6000.kext/Contents/MacOS/AMDRadeonX6000")
+GETTERS = {
+    '5000': ['554889e58a870e03000024015dc3', '554889e5488b87400602005dc3', '554889e58b87500502005dc3'],
+    '6000': ['554889e58a870e03000024015dc3', '554889e5488b87480602005dc3', '554889e58b87480502005dc3'],
+}
+
+
+def abi_guards(version):
+    path = Path(f"/System/Library/Extensions/AMDRadeonX{version}.kext/Contents/MacOS/AMDRadeonX{version}")
+    _, read = disk_image(path)
+    names = {}
+    for line in subprocess.run(['nm', '-n', str(path)], check=True, capture_output=True, text=True, timeout=60).stdout.splitlines():
+        fields = line.split()
+        if len(fields) == 3:
+            names[fields[2]] = int(fields[0], 16)
+    disassembly = subprocess.run(['xcrun', 'llvm-objdump', '-d', str(path)], check=True,
+                                capture_output=True, text=True, timeout=60).stdout
+    instructions = {}
+    for line in disassembly.splitlines():
+        match = re.match(r'\s*([0-9a-f]+): ((?:[0-9a-f]{2}[ \t]+)+)(.*)', line)
+        if match:
+            instructions[int(match[1], 16)] = (bytes.fromhex(match[2]), match[3].strip())
+    old = version == '5000'
+    hardware = vtable(read, names, 'AMDVega10Hardware' if old else 'AMDNavi10Hardware')
+    offsets = [0x298, 0x2A8, 0x3B8, 0x3C8, 0x3E8, 0x3F0] if old else [0x2A0, 0x2B0, 0x3B0, 0x3C0, 0x3E0, 0x3E8]
+    targets = [f'__ZN26AMDRadeonX{version}_AMDHardware13isDeviceValidEv', None, None, None,
+               f'__ZN28AMDRadeonX{version}_AMDRTHardware13disableGfxOffEv',
+               f'__ZN28AMDRadeonX{version}_AMDRTHardware12enableGfxOffEv']
+    result = []
+    for offset, symbol in zip(offsets, targets):
+        address = hardware['slots'][offset // 8]['target']
+        code = b''
+        if symbol:
+            if names[symbol] != address:
+                raise ValueError('硬件虚表槽身份未核实')
+        else:
+            while len(code) < 32:
+                raw, instruction = instructions[address + len(code)]
+                if instruction.split()[0] not in ['pushq', 'movq', 'movb', 'movl', 'andb', 'popq', 'retq'] or '%rip' in instruction:
+                    raise ValueError('getter 出现未核实的调用、分支或相对引用')
+                code += raw
+                if instruction.startswith('retq'):
+                    break
+            if not code.endswith(b'\xc3') or len(code) > 32 or read(address, len(code)) != code:
+                raise ValueError('getter 内容不完整')
+            if code.hex() != GETTERS[version][len([entry for entry in result if entry['code']])]:
+                raise ValueError('getter 字段布局变化，需要重新核实')
+        result.append({'slot': offset, 'target': symbol, 'code': code.hex()})
+    return hardware['symbol'], result
 
 
 def main():
@@ -63,10 +112,27 @@ def main():
     for record in records:
         original = ", ".join(f"0x{v:02X}" for v in bytes.fromhex(record["original"]))
         header += f'    {{"{record["symbol"]}", 0x{record["offset"]:X}, {{{original}}}, 0x{record["newSlot"]:X}}},\n'
-    header += "};\n}\n"
+    header += "};\n"
+    header += 'struct SlotGuard { UInt32 slot; const char* target; const UInt8* code; UInt32 size; };\n'
+    guards = {}
+    for version in ['5000', '6000']:
+        table, entries = abi_guards(version)
+        guards[version] = {'table': table, 'entries': entries}
+        header += f'inline constexpr char Table{version}[] = "{table}";\n'
+        for i, entry in enumerate(entries):
+            if entry['code']:
+                header += array(f'Getter{version}_{i}', bytes.fromhex(entry['code']))
+        header += f'inline constexpr SlotGuard Guards{version}[] = {{\n'
+        for i, entry in enumerate(entries):
+            target = f'"{entry["target"]}"' if entry['target'] else 'nullptr'
+            code = f'Getter{version}_{i}' if entry['code'] else 'nullptr'
+            size = len(bytes.fromhex(entry['code']))
+            header += f'    {{0x{entry["slot"]:X}, {target}, {code}, {size}}},\n'
+        header += '};\n'
+    header += '}\n'
     (ROOT / "NootedRed/VCNKernelData.hpp").write_text(header)
     (WORK / "kernel-patches.json").write_text(json.dumps({"driverSHA256": hashlib.sha256(data).hexdigest(),
-                                                        "records": records}, indent=2) + "\n")
+                                                        "records": records, "abiGuards": guards}, indent=2) + "\n")
     print("Generated kernel calls:", len(records))
 
 

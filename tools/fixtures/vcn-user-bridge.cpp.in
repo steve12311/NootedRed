@@ -1,5 +1,6 @@
 
 #include <cassert>
+#include <optional>
 #include <cstring>
 #include <cstdint>
 #include <cstdio>
@@ -22,7 +23,7 @@ static std::map<std::string,unsigned> properties;
 struct NRed {static NRed& singleton(){static NRed n;return n;}void setProp32(const char* k,unsigned v){properties[k]=v;}
  unsigned getDeviceID(){return device; }static unsigned device;};unsigned NRed::device=0x1638;
 struct Version{unsigned major(){return majorValue;}unsigned minor(){return minorValue;}static unsigned majorValue,minorValue;};unsigned Version::majorValue=25;unsigned Version::minorValue=6;
-static Version currentKernelVersion(){return {};}
+const PenguinWizardry::KernelVersion& currentKernelVersion(){static std::optional<PenguinWizardry::KernelVersion> current;return current.emplace(Version::majorValue,Version::minorValue);}
 static bool flag=true; static bool checkKernelArgument(const char* s){assert(strcmp(s,"-NRedVCN")==0);return flag;}
 namespace VCN { static bool active=true; bool allocated(){return active;} }
 #define IONew(T,N) (new T[N])
@@ -92,7 +93,7 @@ int main(){
  for(unsigned id=0;id<=0xffff;id++){
   const bool accepted=id==0x15E7||id==0x1636||id==0x1638||id==0x164C;
   assert((UserVideoDecodeData::findDevice(id)!=nullptr)==accepted);
-  assert((VCNCapabilities::rejection(id,25,6)==0)==accepted);
+  assert((VCNCapabilities::rejection(id,MACOS_26)==0)==accepted);
  }
  for(unsigned id:{0x15D8U,0x15DDU,0x6863U,0U,0xFFFF1638U,0xFFFF15E7U}){
   NRed::device=id;properties.clear();KernelPatcher wrong;UserVideoDecode::init(wrong);
@@ -102,7 +103,7 @@ int main(){
  NRed::device=0x1638;
  for(unsigned major:{24U,25U,26U})for(unsigned minor:{0U,6U,7U}){
   Version::majorValue=major;Version::minorValue=minor;KernelPatcher checked;UserVideoDecode::init(checked);
-  assert(checked.routes==int(major==25&&minor==6));
+  assert(checked.routes==int(major==25));
  }
  Version::majorValue=25;Version::minorValue=6;
  for(unsigned host:{0x15E7U,0x1636U,0x1638U,0x164CU}){

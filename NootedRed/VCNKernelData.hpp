@@ -25,4 +25,41 @@ inline constexpr Patch Patches[] = {
     {"__ZN26AMDRadeonX6000_AMDHWEngine11waitForIdleEj", 0x84, {0xFF, 0x90, 0xE8, 0x03, 0x00, 0x00}, 0x3F0},
     {"__ZN30AMDRadeonX6000_AMDVCN2HWEngine6isIdleEv", 0x33, {0xFF, 0x90, 0xA0, 0x02, 0x00, 0x00}, 0x298},
 };
+struct SlotGuard { UInt32 slot; const char* target; const UInt8* code; UInt32 size; };
+inline constexpr char Table5000[] = "__ZTV32AMDRadeonX5000_AMDVega10Hardware";
+inline constexpr UInt8 Getter5000_1[] = {
+    0x55, 0x48, 0x89, 0xE5, 0x8A, 0x87, 0x0E, 0x03, 0x00, 0x00, 0x24, 0x01, 0x5D, 0xC3
+};
+inline constexpr UInt8 Getter5000_2[] = {
+    0x55, 0x48, 0x89, 0xE5, 0x48, 0x8B, 0x87, 0x40, 0x06, 0x02, 0x00, 0x5D, 0xC3
+};
+inline constexpr UInt8 Getter5000_3[] = {
+    0x55, 0x48, 0x89, 0xE5, 0x8B, 0x87, 0x50, 0x05, 0x02, 0x00, 0x5D, 0xC3
+};
+inline constexpr SlotGuard Guards5000[] = {
+    {0x298, "__ZN26AMDRadeonX5000_AMDHardware13isDeviceValidEv", nullptr, 0},
+    {0x2A8, nullptr, Getter5000_1, 14},
+    {0x3B8, nullptr, Getter5000_2, 13},
+    {0x3C8, nullptr, Getter5000_3, 12},
+    {0x3E8, "__ZN28AMDRadeonX5000_AMDRTHardware13disableGfxOffEv", nullptr, 0},
+    {0x3F0, "__ZN28AMDRadeonX5000_AMDRTHardware12enableGfxOffEv", nullptr, 0},
+};
+inline constexpr char Table6000[] = "__ZTV32AMDRadeonX6000_AMDNavi10Hardware";
+inline constexpr UInt8 Getter6000_1[] = {
+    0x55, 0x48, 0x89, 0xE5, 0x8A, 0x87, 0x0E, 0x03, 0x00, 0x00, 0x24, 0x01, 0x5D, 0xC3
+};
+inline constexpr UInt8 Getter6000_2[] = {
+    0x55, 0x48, 0x89, 0xE5, 0x48, 0x8B, 0x87, 0x48, 0x06, 0x02, 0x00, 0x5D, 0xC3
+};
+inline constexpr UInt8 Getter6000_3[] = {
+    0x55, 0x48, 0x89, 0xE5, 0x8B, 0x87, 0x48, 0x05, 0x02, 0x00, 0x5D, 0xC3
+};
+inline constexpr SlotGuard Guards6000[] = {
+    {0x2A0, "__ZN26AMDRadeonX6000_AMDHardware13isDeviceValidEv", nullptr, 0},
+    {0x2B0, nullptr, Getter6000_1, 14},
+    {0x3B0, nullptr, Getter6000_2, 13},
+    {0x3C0, nullptr, Getter6000_3, 12},
+    {0x3E0, "__ZN28AMDRadeonX6000_AMDRTHardware13disableGfxOffEv", nullptr, 0},
+    {0x3E8, "__ZN28AMDRadeonX6000_AMDRTHardware12enableGfxOffEv", nullptr, 0},
+};
 }
