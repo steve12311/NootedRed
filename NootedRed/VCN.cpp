@@ -7,6 +7,7 @@
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <VCN.hpp>
+#include <VCNCapabilities.hpp>
 #include <VCNKernelData.hpp>
 #include <libkern/OSKextLib.h>
 #include <libkern/c++/OSMetaClass.h>
@@ -42,8 +43,10 @@ namespace
 
     bool supported()
     {
-        return requested && NRed::singleton().getDeviceID() == 0x1638 && currentKernelVersion().major() == 25
-               && currentKernelVersion().minor() == 6;
+        return requested
+               && VCNCapabilities::rejection(NRed::singleton().getDeviceID(), currentKernelVersion().major(),
+                                             currentKernelVersion().minor())
+                      == 0;
     }
 
     bool acceleratorStart(void* self, IOService* provider)
@@ -51,7 +54,7 @@ namespace
         auto  original = reinterpret_cast<bool (*)(void*, IOService*)>(acceleratorStartOriginal);
         auto* pci      = OSDynamicCast(IOPCIDevice, provider);
         if (!supported() || !pci || WIOKit::readPCIConfigValue(pci, WIOKit::kIOPCIConfigVendorID) != 0x1002
-            || WIOKit::readPCIConfigValue(pci, WIOKit::kIOPCIConfigDeviceID) != 0x1638)
+            || WIOKit::readPCIConfigValue(pci, WIOKit::kIOPCIConfigDeviceID) != NRed::singleton().getDeviceID())
         {
             return original(self, provider);
         }

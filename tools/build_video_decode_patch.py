@@ -1,4 +1,4 @@
-"""生成指定缓存的 Cezanne 视频补丁；PCI 判定保留，GFX9 工厂限制为本机候选模式。"""
+"""生成指定缓存的 VCN2 核显视频补丁；仅修改本机设备的 VA 分类。"""
 import hashlib
 import json
 from pathlib import Path
@@ -8,6 +8,7 @@ import subprocess
 
 from audit_video_driver import symbols
 from metal_cache import CACHE, CacheReader, array, macho
+from vcn_capabilities import devices
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vcn"
@@ -46,7 +47,7 @@ def compile_payload(source, label):
     return data[section[3]:section[3] + section[2]]
 
 
-def identify_payload(native):
+def identify_payload(native, device_id, va_family):
     code = compile_payload(".text\n.globl _dump\n_dump:\n.byte " + ",".join(hex(v) for v in native), "identify-dump")
     assert code == native
     output = subprocess.run(["xcrun", "llvm-objdump", "-d", str(WORK / "identify-dump.o")],
@@ -78,13 +79,17 @@ def identify_payload(native):
         else:
             result += ".byte " + ",".join(hex(v) for v in raw) + "\n"
         if offset == 0x5A:
-            result += "cmpw $0x1638, %ax\njne Loriginal\npushq $5\npopq %rbx\njmp L51\nLoriginal:\n"
+            result += (f"cmpw ${device_id:#x}, %ax\njne Loriginal\npushq ${va_family}\npopq %rbx\n"
+                       "jmp L51\nLoriginal:\n")
     result += ".org 448, 0x90\n"
-    return compile_payload(result, "identify")
+    return compile_payload(result, f"identify-{device_id:04X}")
 
 
 def main():
     WORK.mkdir(parents=True, exist_ok=True)
+    capabilities = devices()
+    if (0x1638, 5) not in capabilities:
+        raise ValueError("缺少既有 Cezanne 配置")
     cache = CacheReader()
     records = []
     try:
@@ -117,7 +122,8 @@ def main():
 
         name = "__ZN17VAAcceleratorInfo8identifyEjj"
         address, original = function(name)
-        add(name, address, original, identify_payload(original))
+        identify_variants = {device: identify_payload(original, device, family) for device, family in capabilities}
+        add(name, address, original, identify_variants[0x1638])
         for name, offset in [("__ZN9VAFactory20createGraphicsEngineEP9VAContext", 10),
                              ("__ZN9VAFactory14createImageBltEP9VAContextj", 11)]:
             address, code = function(name)
@@ -177,11 +183,39 @@ def main():
         for i, record in enumerate(records):
             header += f'    {{0x{record["address"] - cache.base:X}ULL, Original{i}, Patched{i}, sizeof(Original{i})}},\n'
         pages = len({r["address"] // 4096 for r in records})
-        header += f"}};\ninline constexpr UInt32 MaxPatchSize = 448;\ninline constexpr UInt32 PageCount = {pages};\n}}\n"
+        header += "};\n"
+        identify_index = next(i for i, record in enumerate(records) if record['label'] == '__ZN17VAAcceleratorInfo8identifyEjj')
+        device_records = []
+        for device, _ in capabilities:
+            variants = [dict(record) for record in records]
+            variants[identify_index]['patched'] = identify_variants[device].hex()
+            device_records.append({'device_id': device, 'records': variants})
+            if device == 0x1638:
+                continue
+            suffix = f'{device:04X}'
+            header += array(f'Identify{suffix}', identify_variants[device])
+            header += f'inline constexpr Patch Patches{suffix}[] = {{\n'
+            for i in range(len(records)):
+                if i == identify_index:
+                    header += (f'    {{Patches[{i}].offset, Original{i}, Identify{suffix}, sizeof(Original{i})}},\n')
+                else:
+                    header += f'    Patches[{i}],\n'
+            header += '};\n'
+        header += 'struct DevicePatchSet { UInt32 deviceID; const Patch* patches; };\n'
+        header += 'inline constexpr DevicePatchSet DevicePatches[] = {\n'
+        for device, _ in capabilities:
+            name = 'Patches' if device == 0x1638 else f'Patches{device:04X}'
+            header += f'    {{0x{device:04X}, {name}}},\n'
+        header += '};\n'
+        header += ('inline constexpr const Patch* findDevice(UInt32 deviceID) {\n'
+                   '    for (const auto& entry : DevicePatches) { if (entry.deviceID == deviceID) { return entry.patches; } }\n'
+                   '    return nullptr;\n}\n')
+        header += f"inline constexpr UInt32 MaxPatchSize = 448;\ninline constexpr UInt32 PageCount = {pages};\n}}\n"
         (ROOT / "NootedRed/UserVideoDecodeData.hpp").write_text(header)
         (WORK / "user-patches.json").write_text(json.dumps({"records": records, "pages": pages,
+                                                           "device_records": device_records,
                                                            "cacheUUID": cache.uuid.hex()}, indent=2) + "\n")
-        print("Generated video patches:", len(records), "pages:", pages)
+        print("Generated video patches:", len(records), "pages:", pages, "VCN2 devices:", len(capabilities))
     finally:
         cache.close()
 

@@ -9,6 +9,9 @@ WORK = ROOT / "build/vcn"
 
 def function(source, prefix):
     start = source.index(prefix)
+    line = source[start:source.index("\n", start)]
+    if "{" in line and line.rstrip().endswith("}"):
+        return line
     indentation = start - source.rfind("\n", 0, start) - 1
     end = re.search(r"\n" + " " * indentation + r"\}(?=\n|$)", source[start:])
     assert end is not None, prefix
@@ -19,13 +22,18 @@ def main():
     source = (ROOT / "NootedRed/VCN.cpp").read_text()
     assert re.search(r'\{"__ZN37AMDRadeonX5000_AMDGraphicsAccelerator5startEP9IOService",\s*acceleratorStart,', source)
     assert "OSKextLoadKextWithIdentifier" not in function(source, "void VCN::init()")
-    functions = "\n".join(function(source, p) for p in ["bool acceleratorStart(", "bool VCN::ready()"])
+    functions = "\n".join(function(source, p) for p in ["bool supported()", "bool acceleratorStart(", "bool VCN::ready()"])
     fixture = (ROOT / "tools/fixtures/vcn-native-load.cpp.in").read_text()
     WORK.mkdir(parents=True, exist_ok=True)
     harness = WORK / "test-native-load.cpp"
-    harness.write_text(fixture.replace("FUNCTIONS", functions))
+    stubs = WORK / "stubs/IOKit"
+    stubs.mkdir(parents=True, exist_ok=True)
+    (stubs / "IOTypes.h").write_text("#pragma once\n#include <cstdint>\nusing UInt32=uint32_t;\n")
+    capabilities = '#include <VCNCapabilities.hpp>'
+    harness.write_text(fixture.replace("FUNCTIONS", functions).replace("CAPABILITIES", capabilities))
     executable = WORK / "test-native-load"
-    subprocess.run(["xcrun", "clang++", "-std=c++23", "-Wall", "-Wextra", "-Werror", str(harness),
+    subprocess.run(["xcrun", "clang++", "-std=c++23", "-Wall", "-Wextra", "-Werror",
+                    "-I"+str(WORK / "stubs"), "-I"+str(ROOT / "NootedRed"), str(harness),
                     "-o", str(executable)], check=True, timeout=60)
     subprocess.run([str(executable)], check=True, timeout=60)
 

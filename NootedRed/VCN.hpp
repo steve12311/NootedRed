@@ -1,4 +1,4 @@
-// Cezanne VCN2 接入；保持默认关闭，具体状态由真实初始化路径发布。
+// Vega 核显的 VCN2 接入；保持默认关闭，具体状态由真实初始化路径发布。
 #pragma once
 #include <Headers/kern_patcher.hpp>
 

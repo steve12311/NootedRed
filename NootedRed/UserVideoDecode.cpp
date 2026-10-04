@@ -6,6 +6,7 @@
 #include <UserVideoDecode.hpp>
 #include <UserVideoDecodeData.hpp>
 #include <VCN.hpp>
+#include <VCNCapabilities.hpp>
 #include <kern/task.h>
 #include <mach/i386/vm_param.h>
 #include <mach/vm_map.h>
@@ -33,6 +34,7 @@ namespace
     CopyIn            readUser{nullptr};
     CopyOut           writeUser{nullptr};
     UInt32            seenStages{0}, appliedCount{0}, errorCount{0};
+    const UserVideoDecodeData::Patch* devicePatches{nullptr};
     constexpr auto    PatchCount = arrsize(UserVideoDecodeData::Patches);
     static_assert(PatchCount <= 32 && UserVideoDecodeData::PageCount <= 16);
 
@@ -156,7 +158,7 @@ namespace
                   const UInt32 touched)
     {
         using namespace UserVideoDecodeData;
-        const auto* const patches = Patches;
+        const auto* const patches = devicePatches;
         bool              ok      = true;
         for (UInt32 i = 0; i < touched; ++i) {
             const auto address     = base + patches[i].offset;
@@ -200,7 +202,7 @@ namespace
             stage(Stage::OriginalError);
             return result;
         }
-        if (!VCN::allocated()) {
+        if (!VCN::allocated() || !devicePatches) {
             stage(Stage::NoMap);
             return result;
         }
@@ -209,7 +211,7 @@ namespace
             return result;
         }
         using namespace UserVideoDecodeData;
-        const auto* const patches    = Patches;
+        const auto* const patches    = devicePatches;
         const auto        patchCount = PatchCount;
         UInt64            base{0};
         UInt8             header[104];
@@ -333,9 +335,24 @@ namespace
 
 void UserVideoDecode::init(KernelPatcher& patcher)
 {
-    if (!checkKernelArgument("-NRedVCN") || NRed::singleton().getDeviceID() != 0x1638
-        || currentKernelVersion().major() != 25 || currentKernelVersion().minor() != 6)
-    {
+    if (!checkKernelArgument("-NRedVCN")) { return; }
+    const auto  deviceID   = NRed::singleton().getDeviceID();
+    const auto* capability = VCNCapabilities::findDevice(deviceID);
+    const auto  rejected =
+        VCNCapabilities::rejection(deviceID, currentKernelVersion().major(), currentKernelVersion().minor());
+    NRed::singleton().setProp32("NRedVCNRequested", 1);
+    NRed::singleton().setProp32("NRedVCNCapabilityVersion", 1);
+    NRed::singleton().setProp32("NRedVCNDeviceID", deviceID);
+    if (capability) { NRed::singleton().setProp32("NRedVCNGeneration", static_cast<UInt32>(capability->generation)); }
+    if (rejected) {
+        NRed::singleton().setProp32("NRedVCNRejected", rejected);
+        NRed::singleton().setProp32("NRedVCNUserRejected", rejected);
+        SYSLOG("UserVideoDecode", "VCN capability rejected: device=0x%X reason=%u", deviceID, rejected);
+        return;
+    }
+    devicePatches = UserVideoDecodeData::findDevice(deviceID);
+    if (!devicePatches) {
+        NRed::singleton().setProp32("NRedVCNUserRejected", 3);
         return;
     }
     getTaskMap = reinterpret_cast<GetTaskMap>(patcher.solveSymbol(KernelPatcher::KernelID, "_get_task_map"));
