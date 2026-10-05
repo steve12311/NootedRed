@@ -199,16 +199,16 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
     }
     const bool                    dynamic = memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0;
     UserSurfaceSyncResolver::Plan plan;
+    const char* const             uuidKeys[] = {"NRedImmediateSyncCacheUUID0", "NRedImmediateSyncCacheUUID1",
+                                                "NRedImmediateSyncCacheUUID2", "NRedImmediateSyncCacheUUID3"};
+    for (UInt32 i = 0; i < 4; ++i) {
+        UInt32 value;
+        memcpy(&value, header + 88 + i * 4, sizeof(value));
+        NRed::singleton().setProp32(uuidKeys[i], value);
+    }
     if (dynamic) {
-        const char* const uuidKeys[] = {"NRedImmediateSyncCacheUUID0", "NRedImmediateSyncCacheUUID1",
-                                        "NRedImmediateSyncCacheUUID2", "NRedImmediateSyncCacheUUID3"};
-        for (UInt32 i = 0; i < 4; ++i) {
-            UInt32 value;
-            memcpy(&value, header + 88 + i * 4, sizeof(value));
-            NRed::singleton().setProp32(uuidKeys[i], value);
-        }
-        if (computeScratch
-            || !UserSurfaceSyncResolver::resolve(readUser, base, *devicePatches, srdShared, legacyBlend, plan))
+        if (!UserSurfaceSyncResolver::resolve(readUser, base, *devicePatches, srdShared, legacyBlend, plan,
+                                              computeScratch))
         {
             stage(Stage::CacheMismatch);
             NRed::singleton().setProp32("NRedImmediateSyncDynamicRejected", 1);
@@ -241,7 +241,7 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
         }
     }
     // 旧候选的两处全局 VT 跳转已撤回；不把混合策略误报为新模式已生效。
-    if (computeScratch) {
+    if (computeScratch && !dynamic) {
         for (const auto& withdrawn : WithdrawnTransferGuards) {
             UInt8 bytes[6];
             if (readUser(base + withdrawn.offset, bytes, withdrawn.size) != 0
@@ -388,7 +388,7 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
 void UserSurfaceSync::init(KernelPatcher& patcher)
 {
     NRed::singleton().setProp32("NRedImmediateSyncVersion", 1);
-    NRed::singleton().setProp32("NRedImmediateSyncRevision", 3);
+    NRed::singleton().setProp32("NRedImmediateSyncRevision", 4);
     NRed::singleton().setProp32("NRedSrdSharedVersion", 1);
     NRed::singleton().setProp32("NRedLegacyBlendVersion", 1);
     NRed::singleton().setProp32("NRedComputeScratchVersion", 1);
@@ -448,5 +448,6 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
         SYSLOG("UserSurfaceSync", "ComputeScratch-v1 enabled: single-SE scratch sizing; native kernel preserved; "
                "exact cache/code required");
     }
-    SYSLOG("UserSurfaceSync", "ImmediateSync-v1 revision 3 enabled: verified driver content required, device 0x%X", deviceID);
+    SYSLOG("UserSurfaceSync", "ImmediateSync-v1 revision 4 enabled: verified driver content required, device 0x%X",
+           deviceID);
 }

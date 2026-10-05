@@ -2,11 +2,11 @@
 from pathlib import Path
 import hashlib
 import json
-import re
 import struct
 import subprocess
 from metal_cache import CacheReader, macho, array, IMAGE
 from build_compute_scratch_patch import generate as generate_scratch, supported_devices
+from cache_resolver_data import ResolverData, containing_function
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/user-surface-sync"
@@ -29,32 +29,16 @@ def for_device(records, device_id):
     return result
 
 
-def relocation_fields(code, address, targets, label):
-    # 只登记已核实的外部相对引用；函数内分支必须保持完整指令匹配。
-    source = WORK / f"resolver-{label}.s"
-    source.write_text('.text\n.globl _native\n_native:\n.byte ' + ','.join(map(str, code)) + '\n')
-    obj = source.with_suffix('.o')
-    subprocess.run(['clang', '-c', str(source), '-o', str(obj)], check=True, timeout=60)
-    disassembly = subprocess.run(['xcrun', 'llvm-objdump', '-d', str(obj)], capture_output=True,
-                                text=True, check=True, timeout=60).stdout
+def relocation_fields(cache, code, address, targets, label):
+    # 渲染专属目标编号保留；指令／数据分界与 rel32 解码复用公共生成器。
+    resolver = ResolverData(cache, WORK)
     fields = []
-    decoded = bytearray()
-    for line in disassembly.splitlines():
-        match = re.match(r'\s*([0-9a-f]+):\s*((?:[0-9a-f]{2}\s+)+)\s*([a-z][a-z0-9]*)\s*(.*)', line)
-        if not match:
-            continue
-        offset, instruction, mnemonic, operand = int(match[1], 16), bytes.fromhex(match[2]), match[3], match[4]
-        if offset != len(decoded):
-            raise ValueError('重定位反汇编不连续')
-        decoded.extend(instruction)
-        if '%rip' in operand or (mnemonic in ('callq', 'jmp') and instruction[0] in (0xE8, 0xE9)):
-            target = address + offset + len(instruction) + struct.unpack('<i', instruction[-4:])[0]
-            if address <= target < address + len(code):
-                continue
-            if target not in targets:
-                raise ValueError(f'未核实的重定位目标：{target:#x}')
-            fields.append((offset + len(instruction) - 4, targets.index(target)))
-    if bytes(decoded) != code or sorted(kind for _, kind in fields) != [0, 1, 2]:
+    for offset, image, rva, indirect in resolver.references(code, address, label):
+        target = resolver.images[image][1]+rva
+        if indirect or target not in targets:
+            raise ValueError(f'未核实的渲染重定位目标：{target:#x}')
+        fields.append((offset, targets.index(target)))
+    if sorted(kind for _, kind in fields) != [0, 1, 2]:
         raise ValueError('初始化外部引用不完整')
     return fields
 
@@ -132,7 +116,7 @@ def main():
         for r in scratch_records:
             if r["address"] // 4096 != (r["address"] + len(bytes.fromhex(r["original"])) - 1) // 4096:
                 raise ValueError("单段跨页")
-        header = "// 由 tools/build_surface_sync_patch.py 生成，不手工编辑。\n#pragma once\n#include <IOKit/IOTypes.h>\n"
+        header = "// 由 tools/build_surface_sync_patch.py 生成，不手工编辑。\n#pragma once\n#include <IOKit/IOTypes.h>\n#include <UserCacheResolver.hpp>\n"
         header += "namespace UserSurfaceSyncData {\n" + array("CacheMagic", cache.magic) + array("CacheUUID", cache.uuid)
         header += f"inline constexpr UInt64 CacheBase = 0x{cache.base:X}ULL;\n"
         header += "struct Patch { UInt64 offset; const UInt8* original; const UInt8* patched; UInt32 size; };\n"
@@ -199,7 +183,7 @@ def main():
                     ('ImmediateInitLinks', payload), ('SharedInitLinks', candidate_payload)]
         header += 'struct RelativeField { UInt32 offset; UInt32 target; };\n'
         for name, code in variants:
-            fields = relocation_fields(code, init_address, targets, name)
+            fields = relocation_fields(cache, code, init_address, targets, name)
             header += f'inline constexpr RelativeField {name}[] = {{\n'
             header += ',\n'.join(f'    {{{offset}, {kind}}}' for offset, kind in fields) + '\n};\n'
         for name, address, size in [('NativeOverride', targets[1], 923), ('NativeDump', targets[2], 6)]:
@@ -217,6 +201,16 @@ def main():
                               ('NativeOverrideRVA', targets[1]), ('ConstructorRVA', ctor_address),
                               ('ScratchRVA', scratch_record['address'])]:
             header += f'inline constexpr UInt64 {name} = 0x{address-cache.image_base:X}ULL;\n'
+        scratch_resolver = ResolverData(cache, WORK / 'scratch')
+        scratch_resolver.add(scratch_record['address'], bytes.fromhex(scratch_record['original']),
+                             bytes.fromhex(scratch_record['patched']))
+        # 撤回策略的 VT 跳转仍需按完整原生函数核验，不能沿用参考缓存的固定偏移。
+        _, vt_base = scratch_resolver.owner(withdrawn_guards[0]['address'])
+        vt_address, vt_code = containing_function(cache, vt_base, withdrawn_guards[0]['address'])
+        if not vt_address <= withdrawn_guards[1]['address'] < vt_address + len(vt_code):
+            raise ValueError('撤回跳转的原生函数范围变化')
+        scratch_resolver.add(vt_address, vt_code, vt_code)
+        header += 'namespace ScratchResolverData {\n' + scratch_resolver.header([(0, 0)]) + '}\n'
         header += f"inline constexpr UInt32 MaxPatchSize = 452;\ninline constexpr UInt32 PageCount = {len(pages)};\n}}\n"
         (WORK / "UserSurfaceSyncData.hpp").write_text(header)
         (ROOT / "NootedRed/UserSurfaceSyncData.hpp").write_text(header)

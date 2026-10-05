@@ -83,7 +83,7 @@ static kern_return_t query(vm_map_t,uint64_t*a,uint64_t*s,unsigned*,int*p,unsign
 static void reset(unsigned device=0x15e7){
  properties.clear();pageProtections.clear();failedProtect.clear();protects=writes=failWrite=regionFail=reads=originalCalls=0;
  failedRead=0;noMap=false;seenStages=appliedCount=errorCount=windowServerCount=weatherCount=0;
- NRed::device=device;KernelPatcher patcher;UserSurfaceSync::init(patcher);assert(properties.at("NRedImmediateSyncRevision")==3);
+ NRed::device=device;KernelPatcher patcher;UserSurfaceSync::init(patcher);assert(properties.at("NRedImmediateSyncRevision")==4);
  assert(devicePatches);legacyBlend=srdShared=true;computeScratch=false;
  memset(memory.data(),0,memory.size());copy(0,CacheMagic,16);put32(16,0x300);put32(20,1);
  // 改变 UUID、缓存 slide、映像位置及三个补丁入口，代码仍为相同驱动实现。

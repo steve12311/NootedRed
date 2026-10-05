@@ -9,6 +9,7 @@
 #include <string>
 #include <array>
 #include "UserVideoDecodeData.hpp"
+#include "UserVideoDecodeResolver.hpp"
 #include "VCNCapabilities.hpp"
 using user_addr_t=uint64_t;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
 using vm_map_t=void*;using task_t=void*;using proc_t=void*;using natural_t=unsigned;

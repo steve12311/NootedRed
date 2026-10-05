@@ -9,6 +9,7 @@ import subprocess
 from audit_video_driver import symbols
 from metal_cache import CACHE, CacheReader, array, macho
 from vcn_capabilities import devices
+from cache_resolver_data import ResolverData
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vcn"
@@ -92,6 +93,7 @@ def main():
         raise ValueError("缺少既有 Cezanne 配置")
     cache = CacheReader()
     records = []
+    full_functions = {}
     try:
         lines = (CACHE / "dyld_shared_cache_x86_64h.map").read_text().splitlines()
         image = "/System/Library/Extensions/AMDRadeonVADriver2.bundle/Contents/MacOS/AMDRadeonVADriver2"
@@ -104,6 +106,7 @@ def main():
             code = cache.read(address, end - address)
             if hashlib.sha256(code).hexdigest() != HASHES[name]:
                 raise ValueError(f"原生函数未核实：{name}")
+            full_functions[name] = (address, code)
             return address, code
 
         def add(name, address, original, patched):
@@ -167,7 +170,27 @@ def main():
             if count != 4:
                 raise ValueError("swizzle mask 数量不匹配")
         records.sort(key=lambda r: r["address"])
-        header = "// 由 tools/build_video_decode_patch.py 生成，不手工编辑。\n#pragma once\n#include <IOKit/IOTypes.h>\n"
+        resolver = ResolverData(cache, WORK)
+        functions = {"AppleGVA_AMDOnlyFallback": (GVA_CHOICE_ADDRESS, gva_choice), **full_functions}
+        for record in records:
+            label = record["label"]
+            if label not in functions:
+                address = names[label]
+                end = min(a for a in names.values() if a > address)
+                functions[label] = (address, cache.read(address, end-address))
+        indices = {}
+        for label, (address, code) in functions.items():
+            if not any(r["label"] == label for r in records):
+                continue
+            patched = bytearray(code)
+            for record in records:
+                if record["label"] == label:
+                    offset = record["address"]-address
+                    patch = bytes.fromhex(record["patched"])
+                    patched[offset:offset+len(patch)] = patch
+            indices[label] = resolver.add(address, code, bytes(patched))
+        locations = [(indices[r["label"]], r["address"]-functions[r["label"]][0]) for r in records]
+        header = "// 由 tools/build_video_decode_patch.py 生成，不手工编辑。\n#pragma once\n#include <IOKit/IOTypes.h>\n#include <UserCacheResolver.hpp>\n"
         header += "namespace UserVideoDecodeData {\n" + array("CacheMagic", cache.magic) + array("CacheUUID", cache.uuid)
         header += f"inline constexpr UInt64 CacheBase = 0x{cache.base:X}ULL;\n"
         header += "struct Patch { UInt64 offset; const UInt8* original; const UInt8* patched; UInt32 size; };\n"
@@ -210,6 +233,7 @@ def main():
         header += ('inline constexpr const Patch* findDevice(UInt32 deviceID) {\n'
                    '    for (const auto& entry : DevicePatches) { if (entry.deviceID == deviceID) { return entry.patches; } }\n'
                    '    return nullptr;\n}\n')
+        header += resolver.header(locations)
         header += f"inline constexpr UInt32 MaxPatchSize = 448;\ninline constexpr UInt32 PageCount = {pages};\n}}\n"
         (ROOT / "NootedRed/UserVideoDecodeData.hpp").write_text(header)
         (WORK / "user-patches.json").write_text(json.dumps({"records": records, "pages": pages,

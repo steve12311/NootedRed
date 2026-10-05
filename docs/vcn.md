@@ -22,8 +22,8 @@
 引擎写入复用 X5000 的 PM4 引擎数组基址与 `kAMDHWEngineTypeVCN0`，不另设 `0x3F8` 常量。
 这些检查验证当前桥接依赖的槽位与 getter，不能自动迁移任意新驱动布局。
 
-用户态仍要求生成数据指定的参考 `x86_64h` 缓存 UUID
-`31374756-89B4-34E8-A34F-56C5D57216A1`；本次未泛化视频缓存布局。
+用户态保留参考 `x86_64h` 缓存 UUID 的静态快路径；其他 UUID 进入动态解析，
+按映像路径、完整函数和实际相对引用生成补丁计划。具体约束见 [动态缓存匹配](user-cache-dynamic.md)。
 使用 `-NRedVCN` 显式启用；保留已验证渲染基线的启动参数。
 默认关闭，未增加独显或其他 macOS 版本的支持。
 
@@ -41,7 +41,7 @@ VA identify 载荷分别按本机 PCI 生成，只将该设备映射到已有的
 其他 PCI 分类、IOKit 错误出口和错误 type 请求保留原生行为。
 视频工厂、RV AddrCreate、swizzle 修正与 AppleGVA 选择沿用既有实现。
 
-用户态补丁仅写入匹配缓存 UUID、原始指令及 RX 保护的进程私有 COW 页。
+用户态补丁仅写入布局与代码核验通过、具有 RX 保护的进程私有 COW 页；支持重排后跨页的补丁。
 失败时回滚已写字节并恢复保护；保留原生返回值。生成头文件不手工修改。
 AppleGVA 在无 Intel、仅 AMD 可用的机型回退出口选择已有的 AMD 解码器，
 保留混合 GPU、已知机型、显式设备请求及无可用 GPU 的原生选择。
@@ -56,6 +56,11 @@ python3 tools/build_video_decode_patch.py
 python3 tools/test_vcn_candidate.py
 python3 tools/test_vcn_addr_profile.py
 python3 tools/test_vcn_user_bridge.py
+python3 tools/test_video_cache_dynamic.py
+python3 tools/test_video_cache_dynamic.py --sanitize
+python3 tools/test_compute_cache_dynamic.py
+python3 tools/test_compute_cache_dynamic.py --sanitize
+python3 tools/test_cache_resolver_reference.py
 python3 tools/test_vcn_native_load.py
 python3 tools/test_vcn_engine_bridge.py
 python3 tools/test_vcn_kernel_abi.py
@@ -102,6 +107,9 @@ Apple TV 在线观看的密钥请求及系统网络／音频 panic 需要独立�
 
 `NativeLoadReady`、`EngineAllocated`、`LastHardwareInit`、`UserApplied` 和 `DecoderPID`
 分别记录内核准备、引擎分配、真实硬件初始化、用户态事务和解码进程。
+`UserCacheUUID0..3` 记录实际缓存 UUID 的四个原始 32 位字；
+`UserDynamicMatched` / `UserDynamicApplied` 分别表示动态解析成功／事务完成并恢复 RX，
+`UserDynamicRejected` 表示内容或布局核验失败，`UserDynamicReads` 记录有上限的读取次数。
 `UserD04=1` 表示缓存不匹配，`UserD06=1` 表示代码不匹配；
 `UserEnabled` 只表示 hook 注册，不能作为硬解成功证据。
 

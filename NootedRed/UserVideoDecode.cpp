@@ -1,10 +1,11 @@
-// 在进程私有代码页应用精确版本的视频解码补丁，并保留原生调用与页面保护。
+// 在进程私有代码页应用已核验的视频解码补丁，并保留原生调用与页面保护。
 #include <Headers/kern_util.hpp>
 #include <IOKit/IOLib.h>
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserVideoDecode.hpp>
 #include <UserVideoDecodeData.hpp>
+#include <UserVideoDecodeResolver.hpp>
 #include <VCN.hpp>
 #include <VCNCapabilities.hpp>
 #include <kern/task.h>
@@ -36,6 +37,7 @@ namespace
     UInt32            seenStages{0}, appliedCount{0}, errorCount{0};
     const UserVideoDecodeData::Patch* devicePatches{nullptr};
     constexpr auto    PatchCount = arrsize(UserVideoDecodeData::Patches);
+    constexpr UInt32                  MaxPageCount = PatchCount * 2;
     static_assert(PatchCount <= 32 && UserVideoDecodeData::PageCount <= 16);
 
     enum class Stage : UInt32
@@ -154,35 +156,42 @@ namespace
         }
     };
 
-    bool rollback(vm_map_t map, Page* pages, const UInt32 pageCount, const UInt64 base, const SavedRow* saved,
-                  const UInt32 touched)
+    bool rollback(vm_map_t map, Page* pages, const UInt32 pageCount, const UInt64 base,
+                  const UserVideoDecodeData::Patch* patches, const SavedRow* saved, const UInt32 touched)
     {
         using namespace UserVideoDecodeData;
-        const auto* const patches = devicePatches;
         bool              ok      = true;
         for (UInt32 i = 0; i < touched; ++i) {
             const auto address     = base + patches[i].offset;
-            const auto pageAddress = address & ~static_cast<UInt64>(PAGE_SIZE - 1);
-            Page*      page        = nullptr;
-            for (UInt32 p = 0; p < pageCount; ++p) {
-                if (pages[p].address == pageAddress) {
-                    page = &pages[p];
-                    break;
+            const auto first       = address & ~static_cast<UInt64>(PAGE_SIZE - 1);
+            const auto last        = (address + patches[i].size - 1) & ~static_cast<UInt64>(PAGE_SIZE - 1);
+            bool       ready       = true;
+            for (auto pageAddress = first; pageAddress <= last; pageAddress += PAGE_SIZE) {
+                Page* page = nullptr;
+                for (UInt32 p = 0; p < pageCount; ++p) {
+                    if (pages[p].address == pageAddress) {
+                        page = &pages[p];
+                        break;
+                    }
                 }
-            }
-            if (page == nullptr) {
-                ok = false;
-                continue;
-            }
-            if (!page->writable) {
-                const auto result =
-                    vm_protect(map, pageAddress, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-                if (result != KERN_SUCCESS) {
-                    error(result);
-                    ok = false;
+                if (!page) {
+                    ready = false;
                     continue;
                 }
-                page->writable = true;
+                if (!page->writable) {
+                    const auto result =
+                        vm_protect(map, pageAddress, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
+                    if (result != KERN_SUCCESS) {
+                        error(result);
+                        ready = false;
+                        continue;
+                    }
+                    page->writable = true;
+                }
+            }
+            if (!ready) {
+                ok = false;
+                continue;
             }
             if (writeUser(saved[i].bytes, address, patches[i].size) != 0) { ok = false; }
         }
@@ -193,6 +202,19 @@ namespace
         }
         return ok;
     }
+
+    struct DynamicBuffer
+    {
+        UserVideoDecodeResolver::Plan* plan{nullptr};
+        explicit DynamicBuffer(bool enabled)
+        {
+            if (enabled) { plan = IONew(UserVideoDecodeResolver::Plan, 1); }
+        }
+        ~DynamicBuffer()
+        {
+            if (plan) { IODelete(plan, UserVideoDecodeResolver::Plan, 1); }
+        }
+    };
 
     int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* returnValue)
     {
@@ -211,21 +233,44 @@ namespace
             return result;
         }
         using namespace UserVideoDecodeData;
-        const auto* const patches    = devicePatches;
+        const auto*       patches    = devicePatches;
         const auto        patchCount = PatchCount;
         UInt64            base{0};
         UInt8             header[104];
-        if (readUser(args->startAddress, &base, sizeof(base)) != 0 || base < CacheBase
-            || base - CacheBase > 0x100000000ULL || readUser(base, header, sizeof(header)) != 0)
+        if (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0
+            || base >= UserSharedCache::UserLimit - sizeof(header) || (base & (PAGE_SIZE - 1)) != 0
+            || readUser(base, header, sizeof(header)) != 0)
         {
             stage(Stage::CacheRead);
             return result;
         }
-        if (memcmp(header, CacheMagic, sizeof(CacheMagic)) != 0
-            || memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0)
-        {
+        if (memcmp(header, CacheMagic, sizeof(CacheMagic)) != 0) {
             stage(Stage::CacheMismatch);
             return result;
+        }
+
+        const char* const uuidKeys[] = {"NRedVCNUserCacheUUID0", "NRedVCNUserCacheUUID1", "NRedVCNUserCacheUUID2",
+                                        "NRedVCNUserCacheUUID3"};
+        for (UInt32 i = 0; i < 4; ++i) {
+            UInt32 value;
+            memcpy(&value, header + 88 + i * 4, sizeof(value));
+            NRed::singleton().setProp32(uuidKeys[i], value);
+        }
+        const bool    dynamic = memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0;
+        DynamicBuffer dynamicBuffer(dynamic);
+        if (dynamic) {
+            if (!dynamicBuffer.plan) {
+                error(KERN_RESOURCE_SHORTAGE);
+                return result;
+            }
+            if (!UserVideoDecodeResolver::resolve(readUser, base, devicePatches, *dynamicBuffer.plan)) {
+                stage(Stage::CacheMismatch);
+                NRed::singleton().setProp32("NRedVCNUserDynamicRejected", 1);
+                return result;
+            }
+            patches = dynamicBuffer.plan->patches;
+            NRed::singleton().setProp32("NRedVCNUserDynamicMatched", 1);
+            NRed::singleton().setProp32("NRedVCNUserDynamicReads", dynamicBuffer.plan->reads);
         }
 
         SavedBuffer buffer;
@@ -234,12 +279,14 @@ namespace
             return result;
         }
         auto*  saved = buffer.rows;
-        Page   pages[PageCount];
+        Page   pages[MaxPageCount];
         UInt32 pageCount{0}, originals{0}, patched{0};
         for (UInt32 i = 0; i < patchCount; ++i) {
             const auto address = base + patches[i].offset;
             const auto page    = address & ~static_cast<UInt64>(PAGE_SIZE - 1);
-            if (patches[i].size > MaxPatchSize || address + patches[i].size > page + PAGE_SIZE
+            if (patches[i].size == 0 || patches[i].size > MaxPatchSize
+                || patches[i].offset >= UserSharedCache::UserLimit - base
+                || patches[i].size >= UserSharedCache::UserLimit - base - patches[i].offset
                 || readUser(address, saved[i].bytes, patches[i].size) != 0)
             {
                 stage(Stage::CodeRead);
@@ -254,19 +301,22 @@ namespace
                 error(KERN_INVALID_ARGUMENT);
                 return result;
             }
-            bool found = false;
-            for (UInt32 p = 0; p < pageCount; ++p) {
-                if (pages[p].address == page) {
-                    found = true;
-                    break;
+            const auto last = (address + patches[i].size - 1) & ~static_cast<UInt64>(PAGE_SIZE - 1);
+            for (auto pageAddress = page; pageAddress <= last; pageAddress += PAGE_SIZE) {
+                bool found = false;
+                for (UInt32 p = 0; p < pageCount; ++p) {
+                    if (pages[p].address == pageAddress) {
+                        found = true;
+                        break;
+                    }
                 }
-            }
-            if (!found) {
-                if (pageCount == PageCount) {
-                    stage(Stage::CodeMismatch);
-                    return result;
+                if (!found) {
+                    if (pageCount == MaxPageCount) {
+                        stage(Stage::CodeMismatch);
+                        return result;
+                    }
+                    pages[pageCount++].address = pageAddress;
                 }
-                pages[pageCount++].address = page;
             }
         }
         if (patched == patchCount) {
@@ -306,16 +356,17 @@ namespace
             if (writeUser(patches[i].patched, base + patches[i].offset, patches[i].size) != 0) {
                 stage(Stage::Write);
                 error(KERN_FAILURE);
-                rollback(map, pages, pageCount, base, saved, i + 1);
+                rollback(map, pages, pageCount, base, patches, saved, i + 1);
                 return result;
             }
         }
         if (!restorePages(map, pages, pageCount)) {
             stage(Stage::Restore);
-            rollback(map, pages, pageCount, base, saved, patchCount);
+            rollback(map, pages, pageCount, base, patches, saved, patchCount);
             return result;
         }
         stage(Stage::Applied);
+        if (dynamic) { NRed::singleton().setProp32("NRedVCNUserDynamicApplied", 1); }
         if (process != nullptr) {
             const auto pid = proc_pid(process);
             char       name[32]{};
