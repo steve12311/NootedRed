@@ -1,4 +1,4 @@
-"""生成指定缓存的 VCN2 核显视频补丁；仅修改本机设备的 VA 分类。"""
+"""生成指定缓存的 VCN2 核显视频补丁；包含设备识别与已验证的编码协议修正。"""
 import hashlib
 import json
 from pathlib import Path
@@ -35,6 +35,24 @@ HASHES = {
         "5eb36cfc6c78526c1a3d4613cf55cb8d0f4c3a5967ecac16755b11d5ecdbac71",
     "__ZN9VAFactory31createDynamicContrastEnhancerVPEi":
         "32d515a6ca3132d7fa258389d7bb109a3541508ee4814949e73fdd728f253dcd",
+    "__ZN14Vcn2EncCommand15getFeedbackSizeEv":
+        "571d3ec0d74000c103203b60450b43b67d758b74b470d0082d45879723021c7a",
+    "__ZN26AVDVcn2AvcEncDataProcessor19ProcessEncodeStatusEP19_VAEncodeStatusInfoPvP15VAVendorTexture":
+        "d51bd9c906e803b9fc9b1b247a79f30059ebec4cfcb92f4492dfc1ed6fa21230",
+    "__ZN27AVDVcn2HevcEncDataProcessor19ProcessEncodeStatusEP19_VAEncodeStatusInfoPvP15VAVendorTexture":
+        "1c3726a90b3e8f1d320700b05d3bf6cf9c7f49bd4afae0a2aac1cb44aaaaf038",
+    "__ZN11Vcn2Encoder15setEncodeParamsEPvP15VAVendorTexture":
+        "c8193ea2d2c7193012a5618b6918d41fffe30ad0c1389256fee983e66ac24347",
+}
+# 短 getter 需要至少 32 字节锚点；两个编码器的 pitch 函数完全相同，需要相邻完整函数区分。
+# 相邻函数仅参与完整匹配和重定位核验，不修改其字节。
+ENCODE_CONTEXTS = {
+    "__ZN14Vcn2EncCommand15getFeedbackSizeEv": (
+        "__ZN14Vcn2EncCommand20addSessionInitPacketEv", 36,
+        "053f7d73eba9f63f788d33260cea0e3a81e0850b62795d165948349bf15fc5d0"),
+    "__ZN11Vcn2Encoder15setEncodeParamsEPvP15VAVendorTexture": (
+        "__ZN11Vcn2Encoder18setAvcEncodeParamsEPv", 292,
+        "f1a48a1a06df4907da861452b1339311d836e1dde21167e6d15b0dfa9204ab3d"),
 }
 
 
@@ -106,7 +124,15 @@ def main():
             code = cache.read(address, end - address)
             if hashlib.sha256(code).hexdigest() != HASHES[name]:
                 raise ValueError(f"原生函数未核实：{name}")
-            full_functions[name] = (address, code)
+            context = code
+            if name in ENCODE_CONTEXTS:
+                following, size, digest = ENCODE_CONTEXTS[name]
+                if end != names[following] or min(a for a in names.values() if a > end) != address + size:
+                    raise ValueError(f"编码锚点边界未核实：{name}")
+                context = cache.read(address, size)
+                if hashlib.sha256(context).hexdigest() != digest:
+                    raise ValueError(f"编码锚点未核实：{name}")
+            full_functions[name] = (address, context)
             return address, code
 
         def add(name, address, original, patched):
@@ -154,6 +180,27 @@ def main():
         name = "__ZN4Addr2V27Gfx9Lib20HwlConvertChipFamilyEjj"
         address, code = function(name)
         add(name, address, code, compile_payload((ROOT / "tools/video_addr_convert.s").read_text(), "addr-convert"))
+        # 本机固件写入 48 字节反馈；原生 Vcn2 使用 164 字节，后续帧因此读到零或无关数据。
+        name = "__ZN14Vcn2EncCommand15getFeedbackSizeEv"
+        address, code = function(name)
+        assert code[4:9] == bytes.fromhex("b8a4000000")
+        add(name, address + 4, code[4:9], bytes.fromhex("b830000000"))
+        for name in [
+            "__ZN26AVDVcn2AvcEncDataProcessor19ProcessEncodeStatusEP19_VAEncodeStatusInfoPvP15VAVendorTexture",
+            "__ZN27AVDVcn2HevcEncDataProcessor19ProcessEncodeStatusEP19_VAEncodeStatusInfoPvP15VAVendorTexture",
+        ]:
+            address, code = function(name)
+            assert code[0x2A:0x31] == bytes.fromhex("4869c0a4000000")
+            add(name, address + 0x2A, code[0x2A:0x31], bytes.fromhex("4869c030000000"))
+        # 输入纹理的实际 pitch 可大于编码宽度；保留原生的字节到元素换算及半宽色度布局。
+        name = "__ZN11Vcn2Encoder15setEncodeParamsEPvP15VAVendorTexture"
+        address, code = function(name)
+        assert code[0x31:0x56] == bytes.fromhex(
+            "8b8a840000008b87240400000fafc105ff0000002500ffffff31d2f7f1894318d1e889431c")
+        pitch = compile_payload(".text\n.globl _payload\n_payload:\n"
+            "movl 0x80(%rdx), %eax\nmovl 0x84(%rdx), %ecx\nxorl %edx, %edx\ndivl %ecx\n"
+            "movl %eax, 0x18(%rbx)\nshrl %eax\nmovl %eax, 0x1c(%rbx)\n.org 37, 0x90\n", "encode-pitch")
+        add(name, address + 0x31, code[0x31:0x56], pitch)
         code_section = next(s for s in sections if s[0] == "__text")
         text = cache.read(code_section[1], code_section[2])
         for old, new in [(0x2220221, 0x2020201), (0x6660661, 0x6060601)]:
