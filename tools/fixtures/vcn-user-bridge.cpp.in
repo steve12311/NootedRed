@@ -128,6 +128,10 @@ int main(){
  for(int p=1;p<=int(UserVideoDecodeData::PageCount);p++){reset();failProtect.insert(p);call();assert(writeCalls==0);bytes(false);rx();}
  for(int entry=1;entry<=int(N);entry++){reset();failWrite=entry;call();bytes(false);rx();assert(!properties.contains("NRedVCNUserApplied"));}
  reset();failProtect={int(UserVideoDecodeData::PageCount)+1,int(UserVideoDecodeData::PageCount)+2};call();bytes(false);rx();
+ for(int page=0;page<int(UserVideoDecodeData::PageCount);page++){
+  reset();failProtect={int(UserVideoDecodeData::PageCount)+2+2*page};call();bytes(false);rx();
+  assert(properties.at("NRedVCNUserD13")==1&&!properties.contains("NRedVCNUserApplied"));
+ }
  reset();invalidCache=true;call();assert(writeCalls==0&&protectCalls==0);
  reset();code[0][0]^=1;call();assert(writeCalls==0&&protectCalls==0);
  reset();memcpy(code[0].data(),active()[0].patched,active()[0].size);call();assert(writeCalls==0&&protectCalls==0);
@@ -175,6 +179,11 @@ int main(){
   reset();processName="Music";clientEntitlement=kOSBooleanTrue;
   failProtect={int(selectedPages.size())+1,int(selectedPages.size())+2};call(reinterpret_cast<void*>(970));
   selectedBytes(false);rx();assert(properties.at("NRedDRMVideoState")==1);
+  for(int page=0;page<int(selectedPages.size());page++){
+   reset();clientEntitlement=kOSBooleanTrue;failProtect={int(selectedPages.size())+2+2*page};
+   call(reinterpret_cast<void*>(970));selectedBytes(false);rx();
+   assert(properties.at("NRedDRMVideoState")==1&&properties.at("NRedDRMVideoLastStage")==13);
+  }
   // 未选择的代码已经被修改时也要拒绝，避免把混合配置当成此次隔离候选。
   for(size_t i=0;i<N;i++){
    reset();processName="Music";clientEntitlement=kOSBooleanTrue;

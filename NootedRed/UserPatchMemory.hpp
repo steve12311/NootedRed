@@ -17,6 +17,7 @@ namespace UserPatchMemory
         mach_vm_address_t address{0};
         vm_prot_t         protection{VM_PROT_NONE};
         bool              writable{false};
+        bool              maximumPending{false};
     };
 
     inline bool leafProtection(vm_map_t map, mach_vm_address_t page, vm_prot_t& protection, RegionQuery query,
@@ -100,20 +101,29 @@ namespace UserPatchMemory
         bool restored = true;
         for (UInt32 i = 0; i < count; ++i) {
             auto& page = pages[i];
-            if (!page.writable) { continue; }
+            if (!page.writable && !page.maximumPending) { continue; }
             // 先恢复当前权限，再下调最大权限；set_maximum 会取当前权限与新最大权限的交集。
-            auto result = vm_protect(map, page.address, PAGE_SIZE, FALSE, page.protection);
-            if (result != KERN_SUCCESS) {
-                report(result);
-                result = vm_protect(map, page.address, PAGE_SIZE, FALSE, page.protection);
-            }
-            if (result != KERN_SUCCESS) {
-                restored = false;
-                continue;
+            if (page.writable) {
+                auto result = vm_protect(map, page.address, PAGE_SIZE, FALSE, page.protection);
+                if (result != KERN_SUCCESS) {
+                    report(result);
+                    result = vm_protect(map, page.address, PAGE_SIZE, FALSE, page.protection);
+                }
+                if (result != KERN_SUCCESS) {
+                    restored = false;
+                    continue;
+                }
+                page.writable       = false;
+                page.maximumPending = true;
             }
             const auto maximum = vm_protect(map, page.address, PAGE_SIZE, TRUE, page.protection);
-            if (maximum != KERN_SUCCESS) { report(maximum); }
-            page.writable = false;
+            if (maximum != KERN_SUCCESS) {
+                report(maximum);
+                restored = false;
+            }
+            else {
+                page.maximumPending = false;
+            }
         }
         return restored;
     }

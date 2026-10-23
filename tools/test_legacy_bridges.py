@@ -132,6 +132,10 @@ int main(){
    reset(profile);auto original=memory;failProtect={page};call();assert(memory==original);rx();
   }
   reset(profile);auto original=memory;failProtect={profile->pageCount+1,profile->pageCount+2};call();assert(memory==original);rx();
+  for(unsigned page=0;page<profile->pageCount;page++){
+   reset(profile);auto pristine=memory;failProtect={profile->pageCount+2+2*page};call();
+   assert(memory==pristine);rx();
+  }
   reset(profile);cacheHeader[88]^=1;call();assert(writes==0&&protects==0);
   reset(profile);memory.begin()->second[0]^=1;call();assert(writes==0&&protects==0);
   reset(profile);failRead=cacheBase+profile->pages[0].offset+256;call();assert(writes==0&&protects==0);
@@ -186,6 +190,11 @@ FAIRPLAY = r'''
   }
   reset(profile);fairPlay=true;auto pristine=memory;
   failProtect={unsigned(selectedPages.size())+1,unsigned(selectedPages.size())+2};call();assert(memory==pristine);rx();
+  for(unsigned page=0;page<selectedPages.size();page++){
+   reset(profile);fairPlay=true;auto original=memory;
+   failProtect={unsigned(selectedPages.size())+2+2*page};call();assert(memory==original);rx();
+   assert(properties.at("NRedDRMVideoState")==1);
+  }
   for(unsigned i=0;i<14;i++){
    reset(profile);fairPlay=true;const auto& p=profile->patches[i];
    memcpy(memory.at((cacheBase+p.offset)&~uint64_t(4095)).data()+((cacheBase+p.offset)&4095),p.patched,p.size);

@@ -180,6 +180,12 @@ scratchFlag=argc>1&&strcmp(argv[1],"--scratch")==0;candidateFlag=argc>1&&strcmp(
  for(int entry=1;entry<=int(N);entry++){reset();failWrite=entry;call();bytes(false);rx();assert(!properties.contains("NRedImmediateSyncApplied"));}
  reset();failProtect={int(computeScratch?3:(legacyFlag?2:1))+1,int(computeScratch?3:(legacyFlag?2:1))+2};call();bytes(false);rx();assert(properties.at("NRedImmediateSyncD13")==1 && !properties.contains("NRedImmediateSyncApplied"));
  reset();failProtect={int(computeScratch?3:(legacyFlag?2:1))+1};call();bytes(true);rx();assert(properties.at("NRedImmediateSyncApplied")==1 && properties.at("NRedImmediateSyncLastError")==42);
+ // 每一页的最大权限恢复失败都必须撤回补丁，不能发布成功状态。
+ const int pageCount=int(computeScratch?3:(legacyFlag?2:1));
+ for(int page=0;page<pageCount;page++){
+  reset();failProtect={pageCount+2+2*page};call();bytes(false);rx();
+  assert(properties.at("NRedImmediateSyncD13")==1 && !properties.contains("NRedImmediateSyncApplied"));
+ }
  // UUID 变化本身不再决定兼容；未知布局仍必须通过动态解析器的内容核验。
  reset();invalidCache=true;call();assert(protectCalls==0 && writeCalls==0);bytes(false);
  reset();code[1][0]^=1;call();assert(protectCalls==0 && writeCalls==0);
