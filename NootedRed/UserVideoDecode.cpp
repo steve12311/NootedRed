@@ -183,14 +183,9 @@ namespace
         return selectedCount != 0;
     }
 
-    int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* returnValue)
+    __attribute__((noinline))
+    int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result)
     {
-        stage(Stage::Called);
-        const auto result = reinterpret_cast<SharedRegionCheck>(originalCheck)(process, args, returnValue);
-        if (result != 0) {
-            stage(Stage::OriginalError);
-            return result;
-        }
         // 按 FairPlay 权限统一选择策略；客户端只允许 AMD 驱动侧解码项，
         // 保留 AppleGVA 和编码代码原样。
         bool   fairPlayDecode{false};
@@ -380,10 +375,37 @@ namespace
         return result;
     }
 
+    // Only the first eight calls are traced, even in RELEASE; no per-call IORegistry writes.
+    UInt32 hookTraceCount{0};
+    __attribute__((noinline))
+    int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* returnValue)
+    {
+        auto ticket = __atomic_load_n(&hookTraceCount, __ATOMIC_RELAXED);
+        bool trace{false};
+        while (ticket < 8) {
+            if (__atomic_compare_exchange_n(&hookTraceCount, &ticket, ticket + 1, false,
+                                            __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+                trace = true;
+                break;
+            }
+        }
+        const auto pid = trace && process != nullptr ? proc_pid(process) : -1;
+        stage(Stage::Called);
+        if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d original-enter", ticket, pid); }
+        const auto result = reinterpret_cast<SharedRegionCheck>(originalCheck)(process, args, returnValue);
+        if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d original-return=%d", ticket, pid, result); }
+        if (result != 0) { stage(Stage::OriginalError); return result; }
+        if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d patch-enter", ticket, pid); }
+        const auto patchedResult = patchSharedRegion(process, args, result);
+        if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d patch-return=%d", ticket, pid, patchedResult); }
+        return patchedResult;
+    }
+
 }    // namespace
 
 void UserVideoDecode::init(KernelPatcher& patcher)
 {
+    NRed::singleton().setProp32("NRedVCNSharedRegionStackRevision", 1);
     fairPlayDriverOnly = false;
     if (!checkKernelArgument("-NRedVideoFix")) { return; }
     const auto  deviceID   = NRed::singleton().getDeviceID();

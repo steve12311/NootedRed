@@ -47,7 +47,13 @@ using mach_msg_type_number_t=unsigned;using vm_prot_t=int;using kern_return_t=in
 struct vm_region_submap_short_info_data_64_t {int protection=0,max_protection=0,is_submap=0;};using vm_region_recurse_info_t=int*;
 constexpr unsigned PAGE_SIZE=4096,VM_REGION_SUBMAP_SHORT_INFO_COUNT_64=12;
 constexpr int TRUE=1,FALSE=0,KERN_SUCCESS=0,KERN_INVALID_ADDRESS=1,KERN_PROTECTION_FAILURE=2,KERN_INVALID_ARGUMENT=4,KERN_FAILURE=5;
-constexpr int VM_FLAGS_ANYWHERE=1;
+constexpr int VM_FLAGS_ANYWHERE=1,KERN_RESOURCE_SHORTAGE=3;
+static bool failWorkspaceAllocation=false;
+static unsigned liveWorkspaces=0;
+template<class T>T* testNew(size_t n){if(failWorkspaceAllocation)return nullptr;auto* p=new T[n];liveWorkspaces++;return p;}
+template<class T>void testDelete(T* p){assert(liveWorkspaces>0);liveWorkspaces--;delete[] p;}
+#define IONew(T,N) ({ testNew<T>(N); })
+#define IODelete(P,T,N) testDelete(P)
 using vm_address_t=uint64_t;
 constexpr int VM_PROT_NONE=0,VM_PROT_READ=1,VM_PROT_WRITE=2,VM_PROT_EXECUTE=4,VM_PROT_COPY=16;
 #define SYSLOG(...) ((void)0)
@@ -93,7 +99,7 @@ BODY
 INIT
 static const auto* active(){return activePatches();}
 static auto fixture(size_t i){return UserSurfaceSyncData::ComputeScratchPatches[i];}
-static int original(proc_t,SharedRegionCheckArgs*,int* value){*value=123;return originalResult;}
+static int original(proc_t,SharedRegionCheckArgs*,int* value){assert(liveWorkspaces==0);*value=123;return originalResult;}
 static vm_map_t map(task_t){return noMap?nullptr:reinterpret_cast<void*>(2);}
 static kern_return_t query(vm_map_t,uint64_t* address,uint64_t* size,unsigned* depth,int* data,unsigned* count){
  assert(*count==VM_REGION_SUBMAP_SHORT_INFO_COUNT_64);
@@ -124,13 +130,14 @@ static int writer(const void* p,uint64_t address,size_t size){
  assert(false);return 1;
 }
 static void reset(){
+ assert(liveWorkspaces==0);failWorkspaceAllocation=false;
  protection.clear();maxProtection.clear();properties.clear();failProtect.clear();protectCalls=writeCalls=failWrite=originalResult=regionMode=0;
  writeOrder.clear();
  invalidCache=noMap=withdrawnCode=false;seenStages=appliedCount=errorCount=windowServerCount=weatherCount=0;isWindowServer=isWeather=false;
  for(size_t i=0;i<MaxN;i++){auto p=fixture(i);memcpy(code[i].data(),p.original,p.size);if(i<N){const auto page=(base+p.offset)&~uint64_t(4095);protection[page]=5;maxProtection[page]=5;}}
  originalCheck=reinterpret_cast<uint64_t>(original);getTaskMap=map;queryRegion=query;readUser=reader;writeUser=writer;
 }
-static void call(proc_t process=nullptr){SharedRegionCheckArgs args{0x1000};int value=0;assert(wrappedSharedRegionCheck(process,&args,&value)==originalResult && value==123);}
+static void call(proc_t process=nullptr){SharedRegionCheckArgs args{0x1000};int value=0;assert(wrappedSharedRegionCheck(process,&args,&value)==originalResult && value==123);assert(liveWorkspaces==0);}
 static void bytes(bool patched){for(size_t i=0;i<N;i++){auto& p=active()[i];assert(memcmp(code[i].data(),patched?p.patched:p.original,p.size)==0);}}
 static void rx(){for(auto [a,p]:protection){assert(p==5);assert(maxProtection.at(a)==5);}}
 int main(int argc,char** argv){
@@ -166,6 +173,7 @@ int main(int argc,char** argv){
  submitGuard=false;
 scratchFlag=argc>1&&strcmp(argv[1],"--scratch")==0;candidateFlag=argc>1&&strcmp(argv[1],"--immediate")!=0;transferFlag=argc>1&&strcmp(argv[1],"--transfer")==0;legacyFlag=transferFlag||scratchFlag||(argc>1&&strcmp(argv[1],"--legacy")==0);srdShared=candidateFlag;legacyBlend=legacyFlag;computeScratch=transferFlag||scratchFlag;N=computeScratch?BaseN:(legacyFlag?3:2);
  NRed::device=argc>2?unsigned(strtoul(argv[2],nullptr,0)):0x1638;devicePatches=UserSurfaceSyncData::findDevice(NRed::device);assert(devicePatches);
+ reset();failWorkspaceAllocation=true;call();bytes(false);rx();assert(writeCalls==0 && protectCalls==0);assert(properties.at("NRedImmediateSyncLastError")==KERN_RESOURCE_SHORTAGE);
  reset();call();bytes(true);rx();assert(writeCalls==N && properties.at("NRedImmediateSyncApplied")==1);
  int prior=writeCalls;call();assert(writeCalls==prior && properties.at("NRedImmediateSyncD07")==1);
  for(int p=1;p<=int(computeScratch?3:(legacyFlag?2:1));p++){reset();failProtect.insert(p);call();assert(writeCalls==0);bytes(false);rx();}

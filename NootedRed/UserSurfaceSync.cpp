@@ -1,5 +1,6 @@
 // 在进程私有代码页应用精确版本的 Metal 修复，并保留原生调用与页面保护。
 #include <Headers/kern_util.hpp>
+#include <IOKit/IOLib.h>
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserLegacyData.hpp>
@@ -236,11 +237,33 @@ bool rollback(vm_map_t map, Page* pages, const UInt32 pageCount, const UInt64 ba
     return ok;
 }
 
-int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* returnValue)
+// Per-call storage: never shared between concurrent processes or held across the native syscall.
+struct PatchWorkspace
 {
-    stage(Stage::Called);
-    const auto result = reinterpret_cast<SharedRegionCheck>(originalCheck)(process, args, returnValue);
-    if (result != 0) { stage(Stage::OriginalError); return result; }
+    UserSurfaceSyncData::Patch combined[PatchCount];
+    UserSurfaceSyncResolver::Plan plan;
+    UInt8 saved[PatchCount][UserSurfaceSyncData::MaxPatchSize];
+    UInt8 context[UserSurfaceSyncData::MaxPatchSize];
+    Page pages[MaxPageCount];
+};
+
+struct WorkspaceBuffer
+{
+    PatchWorkspace* value{nullptr};
+    WorkspaceBuffer()
+    {
+        value = IONew(PatchWorkspace, 1);
+        if (value) { memset(value, 0, sizeof(*value)); }
+    }
+    ~WorkspaceBuffer() { if (value) { IODelete(value, PatchWorkspace, 1); } }
+    WorkspaceBuffer(const WorkspaceBuffer&) = delete;
+    WorkspaceBuffer& operator=(const WorkspaceBuffer&) = delete;
+};
+
+// Keep this frame out of wrappedSharedRegionCheck, including in optimized Release builds.
+__attribute__((noinline))
+int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result)
+{
     if (args == nullptr || args->startAddress == 0) { stage(Stage::Argument); return result; }
     using namespace UserSurfaceSyncData;
     const auto* patches = activePatches();
@@ -248,7 +271,12 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
         legacyProfile ?
                  legacyProfile->patchCount :
                  static_cast<UInt32>(computeScratch ? PatchCount : (legacyBlend ? LegacyPatchCount : BaselinePatchCount));
-    UserSurfaceSyncData::Patch combined[PatchCount];
+    WorkspaceBuffer workspace;
+    if (!workspace.value) {
+        error(KERN_RESOURCE_SHORTAGE);
+        return result;
+    }
+    auto& combined = workspace.value->combined;
     if (legacyProfile) {
         if (patchCount > PatchCount) { return result; }
         for (UInt32 i = 0; i < patchCount; ++i) {
@@ -271,7 +299,7 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
         return result;
     }
     const bool                    dynamic = !legacyProfile && memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0;
-    UserSurfaceSyncResolver::Plan plan;
+    auto& plan = workspace.value->plan;
     const char* const             uuidKeys[] = {"NRedImmediateSyncCacheUUID0", "NRedImmediateSyncCacheUUID1",
                                                 "NRedImmediateSyncCacheUUID2", "NRedImmediateSyncCacheUUID3"};
     for (UInt32 i = 0; i < 4; ++i) {
@@ -339,7 +367,7 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
 
     // 禁止在残留另一策略的进程中把旧模式误报为已生效；切换参数仍需重启。
     if (!legacyProfile && !dynamic && !computeScratch) {
-        UInt8 ctx[MaxPatchSize];
+        auto& ctx = workspace.value->context;
         for (UInt32 i = patchCount; i < PatchCount; ++i) {
             const auto& extra = ComputeScratchPatches[i];
             if (readUser(base + extra.offset, ctx, extra.size) != 0 || memcmp(ctx, extra.original, extra.size) != 0)
@@ -361,8 +389,8 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
             }
         }
     }
-    UInt8  saved[PatchCount][MaxPatchSize];
-    Page   pages[MaxPageCount];
+    auto& saved = workspace.value->saved;
+    auto& pages = workspace.value->pages;
     UInt32 pageCount{0}, originals{0}, patched{0};
     for (UInt32 i = 0; i < patchCount; ++i) {
         if (patches[i].size == 0 || patches[i].size > MaxPatchSize
@@ -478,10 +506,37 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
     return result;
 }
 
+// Only the first eight calls are traced, even in RELEASE; no per-call IORegistry writes.
+UInt32 hookTraceCount{0};
+__attribute__((noinline))
+int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* returnValue)
+{
+    auto ticket = __atomic_load_n(&hookTraceCount, __ATOMIC_RELAXED);
+    bool trace{false};
+    while (ticket < 8) {
+        if (__atomic_compare_exchange_n(&hookTraceCount, &ticket, ticket + 1, false,
+                                        __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            trace = true;
+            break;
+        }
+    }
+    const auto pid = trace && process != nullptr ? proc_pid(process) : -1;
+    stage(Stage::Called);
+    if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d original-enter", ticket, pid); }
+    const auto result = reinterpret_cast<SharedRegionCheck>(originalCheck)(process, args, returnValue);
+    if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d original-return=%d", ticket, pid, result); }
+    if (result != 0) { stage(Stage::OriginalError); return result; }
+    if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d patch-enter", ticket, pid); }
+    const auto patchedResult = patchSharedRegion(process, args, result);
+    if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d patch-return=%d", ticket, pid, patchedResult); }
+    return patchedResult;
+}
+
 } // namespace
 
 void UserSurfaceSync::init(KernelPatcher& patcher)
 {
+    NRed::singleton().setProp32("NRedSharedRegionStackRevision", 1);
     legacyProfile   = UserLegacyData::metal(currentKernelVersion().major());
     renderRequested = false;
     submitGuard     = checkKernelArgument("-NRedDisplayFix");
