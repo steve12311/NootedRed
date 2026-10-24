@@ -151,7 +151,7 @@ int main(int argc,char** argv){
   NRed::device=entry.deviceID;Version::majorValue=major;Version::minorValue=minor;properties.clear();
   KernelPatcher accepted;UserSurfaceSync::init(accepted);assert(accepted.routes==1);
   assert(submitGuard && legacyBlend && renderRequested);
-  assert(computeScratch==(major==25) && srdShared==(major==25));
+  assert(computeScratch==(major>=24) && srdShared==(major>=24));
   assert(properties.at("NRedDisplayFixEnabled")==1 && properties.at("NRedSubmitGuardEnabled")==1);
  }
  NRed::device=0x1638;Version::minorValue=6;

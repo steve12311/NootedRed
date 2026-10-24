@@ -30,11 +30,12 @@ def macho(read, base):
 
 
 class CacheReader:
-    def __init__(self):
+    def __init__(self, directory=CACHE, uuid="3137475689b434e8a34f56c5d57216a1"):
+        self.directory = Path(directory)
         self.files, self.mappings = [], []
         self.base = 0
         try:
-            for path in sorted(CACHE.glob("dyld_shared_cache_x86_64h*")):
+            for path in sorted(self.directory.glob("dyld_shared_cache_x86_64h*")):
                 if path.suffix in (".map", ".atlas"):
                     continue
                 handle = path.open("rb")
@@ -51,9 +52,9 @@ class CacheReader:
                 if path.name == "dyld_shared_cache_x86_64h":
                     self.magic, self.uuid = header[:16], header[88:104]
                     self.base = struct.unpack_from("<Q", data)[0]
-            if self.base != 0x7FF800000000 or self.uuid.hex() != "3137475689b434e8a34f56c5d57216a1":
+            if self.base != 0x7FF800000000 or self.uuid.hex() != uuid:
                 raise ValueError("缓存 UUID/base 未核实，拒绝生成")
-            lines = (CACHE / "dyld_shared_cache_x86_64h.map").read_text().splitlines()
+            lines = (self.directory / "dyld_shared_cache_x86_64h.map").read_text().splitlines()
             self.image_base = int(lines[lines.index(IMAGE) + 1].split()[1], 16)
             segments, self.sections, table = macho(self.read, self.image_base)
             link = next(s for s in segments if s[0] == "__LINKEDIT")

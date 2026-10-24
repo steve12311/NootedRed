@@ -1,5 +1,6 @@
 // 按驱动路径与完整函数内容解析兼容的共享缓存；仅生成计划，不写入进程。
 #pragma once
+#include <UserSequoiaSurfaceData.hpp>
 #include <UserSharedCache.hpp>
 #include <UserSurfaceSyncData.hpp>
 #include <string.h>
@@ -19,9 +20,11 @@ namespace UserSurfaceSyncResolver
     using UserSharedCache::word;
     struct Plan
     {
+        static constexpr UInt32 BufferSize = UserSequoiaSurfaceData::MaxPatchSize;
+        static_assert(BufferSize >= UserSurfaceSyncData::MaxPatchSize && BufferSize <= 512);
         UserSurfaceSyncData::Patch patches[4]{};
-        UInt8                      original[4][MaxPatchSize]{};
-        UInt8                      patched[4][MaxPatchSize]{};
+        UInt8                      original[4][BufferSize]{};
+        UInt8                      patched[4][BufferSize]{};
         UInt32                     reads{0};
     };
     inline bool imageForCache(Input& input, UInt64 base, Image& image)
@@ -71,7 +74,7 @@ namespace UserSurfaceSyncResolver
             using namespace ScratchResolverData;
             if (!UserCacheResolver::resolve(input, base, ResolverImages, ResolverFunctions, device.scratch + 3,
                                             ResolverLocations, plan.patches + 3, &plan.original[3][0],
-                                            &plan.patched[3][0], MaxPatchSize))
+                                            &plan.patched[3][0], Plan::BufferSize))
             {
                 return false;
             }
@@ -183,6 +186,85 @@ namespace UserSurfaceSyncResolver
             plan.patches[i] = {addresses[i] - base, plan.original[i], plan.patched[i], static_cast<UInt32>(length)};
         }
         plan.reads = input.reads;
+        return true;
+    }
+
+    inline bool resolveSequoia(Reader reader, UInt64 base, UInt32 deviceID, Plan& plan)
+    {
+        using namespace UserSequoiaSurfaceData;
+        Input       input{reader, {}};
+        const auto* patches = UserSequoiaSurfaceData::findDevice(deviceID);
+        if (!patches
+            || !UserCacheResolver::resolve(input, base, ResolverImages, ResolverFunctions, patches, ResolverLocations,
+                                           plan.patches, &plan.original[0][0], &plan.patched[0][0], Plan::BufferSize))
+        {
+            return false;
+        }
+        const auto& init = ResolverFunctions[0];
+        UInt64      constant{0}, dump{0};
+        UInt8       value[4], dumpBytes[sizeof(NativeDump)];
+        const auto  address = base + plan.patches[0].offset;
+        if (!relativeTarget(address, init.originalRefs[0].offset, plan.original[0], constant)
+            || !input.read(constant, value, sizeof(value)) || word(value) != 0x40400000
+            || !relativeTarget(address, init.originalRefs[2].offset, plan.original[0], dump)
+            || !input.read(dump, dumpBytes, sizeof(dumpBytes))
+            || memcmp(dumpBytes, NativeDump, sizeof(NativeDump)) != 0)
+        {
+            return false;
+        }
+        plan.reads = input.reads;
+        return true;
+    }
+
+    inline bool resolveSequoiaSubmit(Reader reader, UInt64 base, UInt64& offset)
+    {
+        using namespace UserSequoiaSurfaceData::Submit;
+        Input input{reader, {}};
+        Image image;
+        if (!imageForCache(input, base, image)) { return false; }
+        const auto& fn = ResolverFunctions[0];
+        UInt64      found{0};
+        const auto  candidate = [&](UInt64 address)
+        {
+            UInt8 entry[15];
+            if (!input.read(address, entry, sizeof(entry))) { return false; }
+            const bool installed = memcmp(entry, "\xff\x25\0\0\0\0", 6) == 0 && entry[14] == 0x90;
+            if (!UserCacheResolver::matchBytes(input, address, fn.size,
+                                               [&](UInt32 i, UInt8 value)
+                                               {
+                                                   return (installed && i < sizeof(entry))
+                                                          || UserCacheResolver::skipped(i, fn.originalRefs,
+                                                                                        fn.originalCount)
+                                                          || value == fn.original[i];
+                                               }))
+            {
+                return false;
+            }
+            for (UInt32 r = 0; r < fn.originalCount; ++r) {
+                const auto& ref = fn.originalRefs[r];
+                UInt8       field[4];
+                UInt64      target{0};
+                if (ref.indirect || ref.image != 0 || !input.read(address + ref.offset, field, 4)
+                    || !relativeTarget(address + ref.offset, 0, field, target) || !image.contains(target, 4)
+                    || target != image.address + ref.rva)
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
+        if (!UserCacheResolver::scanFunction(
+                input, image.text, fn.size, 15,
+                [&](const UInt8* bytes)
+                {
+                    return memcmp(bytes, fn.original, 15) == 0
+                           || (memcmp(bytes, "\xff\x25\0\0\0\0", 6) == 0 && bytes[14] == 0x90);
+                },
+                candidate, found))
+        {
+            return false;
+        }
+        offset = found - base;
         return true;
     }
 

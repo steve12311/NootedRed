@@ -37,6 +37,7 @@ UInt32 seenStages{0}, appliedCount{0}, errorCount{0}, windowServerCount{0}, weat
 UInt32 submitGuardCount{0};
 bool              srdShared{false}, legacyBlend{false}, computeScratch{false}, submitGuard{false};
 bool              renderRequested{false};
+bool              sequoia{false};
 const UserLegacyCompat::Profile*           legacyProfile{nullptr};
 const UserSurfaceSyncData::DevicePatchSet* devicePatches{&UserSurfaceSyncData::DevicePatches[0]};
 
@@ -46,6 +47,7 @@ constexpr auto BaselinePatchCount = arrsize(UserSurfaceSyncData::Patches);
 static_assert(BaselinePatchCount == arrsize(UserSurfaceSyncData::SrdSharedPatches));
 static_assert(PatchCount <= 16 && UserSurfaceSyncData::PageCount <= 8);
 static_assert(UserSurfaceSyncData::MaxPatchSize <= 512);
+static_assert(UserSequoiaSurfaceData::MaxPatchSize <= UserSurfaceSyncResolver::Plan::BufferSize);
 constexpr UInt32 MaxPageCount = 8;
 
 const UserSurfaceSyncData::Patch* activePatches()
@@ -105,11 +107,11 @@ bool restorePages(vm_map_t map, Page* pages, const UInt32 count)
 // 在进程内分配一页可执行守卫，并把 AMD 命令队列的提交方法入口改为绝对跳转。
 // 守卫把“已用尾..容量尾”的空闲区整段填成 PM4 filler（池复用后尾部常混有旧命令），
 // 随后执行原入口前 15 字节并跳回。
-kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh)
+kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, UInt64 offset = 0)
 {
     using namespace UserSubmitGuardData;
     fresh = false;
-    const auto offset = legacyProfile ? UserLegacyData::submitOffset(legacyProfile->major) : MethodOffset;
+    if (offset == 0) { offset = legacyProfile ? UserLegacyData::submitOffset(legacyProfile->major) : MethodOffset; }
     if (offset == 0 || base >= UserSharedCache::UserLimit || offset >= UserSharedCache::UserLimit - base
         || MethodPatchSize > UserSharedCache::UserLimit - base - offset)
     {
@@ -214,7 +216,7 @@ kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh)
 
 bool rollback(vm_map_t map, Page* pages, const UInt32 pageCount, const UInt64 base,
               const UserSurfaceSyncData::Patch* patches,
-              const UInt8 saved[PatchCount][UserSurfaceSyncData::MaxPatchSize], const UInt32 touched)
+              const UInt8 saved[PatchCount][UserSurfaceSyncResolver::Plan::BufferSize], const UInt32 touched)
 {
     using namespace UserSurfaceSyncData;
     bool ok = true;
@@ -242,8 +244,8 @@ struct PatchWorkspace
 {
     UserSurfaceSyncData::Patch combined[PatchCount];
     UserSurfaceSyncResolver::Plan plan;
-    UInt8 saved[PatchCount][UserSurfaceSyncData::MaxPatchSize];
-    UInt8 context[UserSurfaceSyncData::MaxPatchSize];
+    UInt8                         saved[PatchCount][UserSurfaceSyncResolver::Plan::BufferSize];
+    UInt8                         context[UserSurfaceSyncResolver::Plan::BufferSize];
     Page pages[MaxPageCount];
 };
 
@@ -298,7 +300,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         stage(Stage::CacheMismatch);
         return result;
     }
-    const bool                    dynamic = !legacyProfile && memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0;
+    const bool dynamic = sequoia || (!legacyProfile && memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0);
     auto& plan = workspace.value->plan;
     const char* const             uuidKeys[] = {"NRedImmediateSyncCacheUUID0", "NRedImmediateSyncCacheUUID1",
                                                 "NRedImmediateSyncCacheUUID2", "NRedImmediateSyncCacheUUID3"};
@@ -307,12 +309,16 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         memcpy(&value, header + 88 + i * 4, sizeof(value));
         NRed::singleton().setProp32(uuidKeys[i], value);
     }
-    // 提交守卫不依赖渲染修复模式，但只在缓存与核验偏移一致的进程里安装。
-    const bool knownCache = legacyProfile ? memcmp(header + 88, legacyProfile->uuid, 16) == 0 : !dynamic;
+    // Sequoia 核验完整提交方法；旧路径继续使用已核实缓存的入口偏移。
+    UInt64     submitOffset{0};
+    const bool knownCache =
+        sequoia ? (submitGuard && UserSurfaceSyncResolver::resolveSequoiaSubmit(readUser, base, submitOffset)) :
+                  (legacyProfile ? memcmp(header + 88, legacyProfile->uuid, 16) == 0 : !dynamic);
+    if (sequoia && submitGuard && !knownCache) { NRed::singleton().setProp32("NRedSubmitGuardDynamicRejected", 1); }
     if (knownCache && submitGuard) {
         if (auto map = getTaskMap(current_task())) {
             bool fresh{false};
-            const auto installed = installSubmitGuard(map, base, fresh);
+            const auto installed = installSubmitGuard(map, base, fresh, submitOffset);
             if (installed == KERN_SUCCESS && fresh) {
                 const auto pid = process != nullptr ? proc_pid(process) : -1;
                 char name[32]{};
@@ -344,9 +350,11 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         return result;
     }
     if (dynamic) {
-        if (!UserSurfaceSyncResolver::resolve(readUser, base, *devicePatches, srdShared, legacyBlend, plan,
-                                              computeScratch))
-        {
+        const bool resolved =
+            sequoia ? UserSurfaceSyncResolver::resolveSequoia(readUser, base, NRed::singleton().getDeviceID(), plan) :
+                      UserSurfaceSyncResolver::resolve(readUser, base, *devicePatches, srdShared, legacyBlend, plan,
+                                                       computeScratch);
+        if (!resolved) {
             stage(Stage::CacheMismatch);
             NRed::singleton().setProp32("NRedImmediateSyncDynamicRejected", 1);
             return result;
@@ -393,7 +401,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     auto& pages = workspace.value->pages;
     UInt32 pageCount{0}, originals{0}, patched{0};
     for (UInt32 i = 0; i < patchCount; ++i) {
-        if (patches[i].size == 0 || patches[i].size > MaxPatchSize
+        if (patches[i].size == 0 || patches[i].size > UserSurfaceSyncResolver::Plan::BufferSize
             || patches[i].offset >= UserSurfaceSyncResolver::UserLimit - base
             || patches[i].size >= UserSurfaceSyncResolver::UserLimit - base - patches[i].offset)
         {
@@ -537,11 +545,12 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
 void UserSurfaceSync::init(KernelPatcher& patcher)
 {
     NRed::singleton().setProp32("NRedSharedRegionStackRevision", 1);
-    legacyProfile   = UserLegacyData::metal(currentKernelVersion().major());
+    sequoia         = currentKernelVersion().major() == 24;
+    legacyProfile   = sequoia ? nullptr : UserLegacyData::metal(currentKernelVersion().major());
     renderRequested = false;
     submitGuard     = checkKernelArgument("-NRedDisplayFix");
     legacyBlend = renderRequested = submitGuard;
-    computeScratch = srdShared = submitGuard && currentKernelVersion().majorMatches(MACOS_26);
+    computeScratch = srdShared = submitGuard && (sequoia || currentKernelVersion().majorMatches(MACOS_26));
     NRed::singleton().setProp32("NRedDisplayFixVersion", 2);
     NRed::singleton().setProp32("NRedSubmitGuardVersion", 1);
     NRed::singleton().setProp32("NRedSubmitGuardRevision", 6);
@@ -562,7 +571,7 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
         SYSLOG("UserSurfaceSync", "Unsupported render-fix device: 0x%X", deviceID);
         return;
     }
-    if (!currentKernelVersion().majorMatches(MACOS_26) && !legacyProfile) {
+    if (!currentKernelVersion().majorMatches(MACOS_26) && !sequoia && !legacyProfile) {
         NRed::singleton().setProp32("NRedImmediateSyncRejected", 4);
         SYSLOG("UserSurfaceSync", "Metal fix requires Darwin 23/24/25; found %u.%u", currentKernelVersion().major(),
                currentKernelVersion().minor());

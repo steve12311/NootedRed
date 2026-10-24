@@ -38,11 +38,20 @@ namespace
     CopyOut                           writeUser{nullptr};
     UInt32                            seenStages{0}, appliedCount{0}, errorCount{0};
     bool                              fairPlayDriverOnly{false};
+    bool                              sequoia{false};
     const UserVideoDecodeData::Patch* devicePatches{nullptr};
     const UserLegacyCompat::Profile*  legacyProfile{nullptr};
     constexpr auto                    PatchCount   = arrsize(UserVideoDecodeData::Patches);
     constexpr UInt32                  MaxPageCount = PatchCount * 2;
     static_assert(PatchCount <= 32 && UserVideoDecodeData::PageCount <= 16);
+    static_assert(arrsize(UserSequoiaVideoData::Patches) == PatchCount);
+    static_assert(UserSequoiaVideoData::MaxPatchSize <= UserVideoDecodeData::MaxPatchSize);
+
+    UInt32 fairPlayMask()
+    {
+        if (legacyProfile) { return legacyProfile->fairPlayMask; }
+        return sequoia ? UserSequoiaVideoData::FairPlayDecodeMask : UserVideoDecodeData::FairPlayDecodeMask;
+    }
 
     enum class Stage : UInt32
     {
@@ -251,14 +260,14 @@ namespace
             NRed::singleton().setProp32("NRedVCNUserLegacyRejected", 1);
             return result;
         }
-        const bool    dynamic = !legacyProfile && memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0;
+        const bool    dynamic = sequoia || (!legacyProfile && memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0);
         DynamicBuffer dynamicBuffer(dynamic);
         if (dynamic) {
             if (!dynamicBuffer.plan) {
                 error(KERN_RESOURCE_SHORTAGE);
                 return result;
             }
-            if (!UserVideoDecodeResolver::resolve(readUser, base, devicePatches, *dynamicBuffer.plan)) {
+            if (!UserVideoDecodeResolver::resolve(readUser, base, devicePatches, *dynamicBuffer.plan, sequoia)) {
                 stage(Stage::CacheMismatch, fairPlayPID);
                 NRed::singleton().setProp32("NRedVCNUserDynamicRejected", 1);
                 return result;
@@ -269,8 +278,7 @@ namespace
         }
 
         if (fairPlayDecode) {
-            const auto mask = legacyProfile ? legacyProfile->fairPlayMask : FairPlayDecodeMask;
-            if (!selectFairPlayDecode(base, patches, patchCount, legacyPatches, mask)) {
+            if (!selectFairPlayDecode(base, patches, patchCount, legacyPatches, fairPlayMask())) {
                 stage(Stage::CodeMismatch, fairPlayPID);
                 return result;
             }
@@ -421,8 +429,9 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         SYSLOG("UserVideoDecode", "VCN capability rejected: device=0x%X reason=%u", deviceID, rejected);
         return;
     }
-    devicePatches = UserVideoDecodeData::findDevice(deviceID);
-    legacyProfile = UserLegacyData::video(currentKernelVersion().major(), deviceID);
+    sequoia       = currentKernelVersion().major() == 24;
+    devicePatches = sequoia ? UserSequoiaVideoData::findDevice(deviceID) : UserVideoDecodeData::findDevice(deviceID);
+    legacyProfile = sequoia ? nullptr : UserLegacyData::video(currentKernelVersion().major(), deviceID);
     if (!devicePatches) {
         NRed::singleton().setProp32("NRedVCNUserRejected", 3);
         return;
@@ -452,7 +461,6 @@ void UserVideoDecode::init(KernelPatcher& patcher)
     if (fairPlayDriverOnly) {
         NRed::singleton().setProp32("NRedDRMVideoEnabled", 1);
         NRed::singleton().setProp32("NRedDRMVideoRevision", 4);
-        NRed::singleton().setProp32("NRedDRMVideoMask", legacyProfile ? legacyProfile->fairPlayMask :
-                                                                        UserVideoDecodeData::FairPlayDecodeMask);
+        NRed::singleton().setProp32("NRedDRMVideoMask", fairPlayMask());
     }
 }

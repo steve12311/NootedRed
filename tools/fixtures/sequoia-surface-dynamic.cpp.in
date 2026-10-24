@@ -1,0 +1,156 @@
+static void setup(unsigned id)
+{
+    using namespace UserSequoiaSurfaceData;
+    cache(ResolverImages, ResolverFunctions);
+    const auto constant = destination(ResolverFunctions[0].originalRefs[0], ResolverFunctions, 5);
+    blocks[constant].resize(16);
+    word32(constant, 0x40400000);
+    const auto dump = destination(ResolverFunctions[0].originalRefs[2], ResolverFunctions, 5);
+    put(dump, UserSurfaceSyncData::NativeDump, sizeof(UserSurfaceSyncData::NativeDump));
+    NRed::device = id;
+    sequoia = renderRequested = computeScratch = legacyBlend = srdShared = true;
+    legacyProfile                                                        = nullptr;
+    submitGuard                                                          = false;
+    devicePatches                                                        = UserSurfaceSyncData::findDevice(id);
+    assert(devicePatches);
+    seenStages = appliedCount = errorCount = windowServerCount = weatherCount = 0;
+    originalCheck                                                             = reinterpret_cast<uint64_t>(original);
+    readUser                                                                  = reader;
+    writeUser                                                                 = writer;
+    getTaskMap                                                                = map;
+    queryRegion                                                               = query;
+}
+static void call()
+{
+    SharedRegionCheckArgs args{0x1000};
+    int                   value = 0;
+    assert(wrappedSharedRegionCheck(reinterpret_cast<void*>(217), &args, &value) == 0 && value == 123);
+}
+int main()
+{
+    unsigned cases = 0;
+    for (auto device : UserSequoiaSurfaceData::DevicePatches) {
+        setup(device.deviceID);
+        UserSurfaceSyncResolver::Plan plan;
+        assert(UserSurfaceSyncResolver::resolveSequoia(reader, base, device.deviceID, plan));
+        pages(plan.patches, 4);
+        const unsigned pageCount = protections.size();
+        auto           initial   = blocks;
+        call();
+        rx();
+        assert(writes == 4 && properties.at("NRedImmediateSyncDynamicApplied") == 1);
+        assert(properties.at("NRedComputeScratchWeatherApplied") == 1);
+        for (unsigned i = 0; i < 4; ++i) {
+            uint8_t     bytes[512];
+            const auto& patch = plan.patches[i];
+            assert(reader(base + patch.offset, bytes, patch.size) == 0);
+            assert(memcmp(bytes, patch.patched, patch.size) == 0);
+        }
+        auto before = writes;
+        call();
+        assert(writes == before && properties.at("NRedImmediateSyncD07") == 1);
+        ++cases;
+        for (unsigned failure = 1; failure <= 4; ++failure) {
+            setup(device.deviceID);
+            pages(plan.patches, 4);
+            initial   = blocks;
+            failWrite = failure;
+            call();
+            rx();
+            assert(blocks == initial);
+            ++cases;
+        }
+        for (unsigned failure = 1; failure <= pageCount; ++failure) {
+            setup(device.deviceID);
+            pages(plan.patches, 4);
+            initial       = blocks;
+            failedProtect = failure;
+            call();
+            rx();
+            assert(blocks == initial && writes == 0);
+            ++cases;
+        }
+        setup(device.deviceID);
+        pages(plan.patches, 4);
+        initial            = blocks;
+        failedProtectCalls = {pageCount + 1, pageCount + 2};
+        call();
+        rx();
+        assert(blocks == initial);
+        ++cases;
+        for (unsigned f = 0; f < 5; ++f) {
+            setup(device.deviceID);
+            word32(functionAddresses[f] + 100, 0);
+            initial = blocks;
+            call();
+            assert(blocks == initial && writes == 0 && protects == 0);
+            ++cases;
+        }
+        setup(device.deviceID);
+        word64(base + 0x7000000, 0);
+        initial = blocks;
+        call();
+        assert(blocks == initial && writes == 0 && protects == 0);
+        ++cases;
+        setup(device.deviceID);
+        pages(plan.patches, 4);
+        put(base + plan.patches[0].offset, plan.patches[0].patched, plan.patches[0].size);
+        initial = blocks;
+        call();
+        assert(blocks == initial && writes == 0 && protects == 0);
+        ++cases;
+        // 完整函数重复必须拒绝，不能任选第一个候选。
+        setup(device.deviceID);
+        const auto&          fn = UserSequoiaSurfaceData::ResolverFunctions[3];
+        std::vector<uint8_t> duplicate(fn.size);
+        assert(reader(functionAddresses[3], duplicate.data(), duplicate.size()) == 0);
+        put(imageAddresses[fn.image] + 0x60000, duplicate.data(), duplicate.size());
+        initial = blocks;
+        call();
+        assert(blocks == initial && writes == 0 && protects == 0);
+        ++cases;
+    }
+    // SubmitGuard 也使用完整函数动态定位；已安装入口必须同时核验守卫载荷。
+    const auto guardSetup = []
+    {
+        setup(0x1638);
+        using namespace UserSequoiaSurfaceData::Submit;
+        cache(ResolverImages, ResolverFunctions);
+        renderRequested = false;
+        submitGuard     = true;
+        UserSurfaceSyncData::Patch entry{functionAddresses[0] - base, nullptr, nullptr, 15};
+        pages(&entry, 1);
+    };
+    guardSetup();
+    uint64_t offset = 0;
+    assert(UserSurfaceSyncResolver::resolveSequoiaSubmit(reader, base, offset));
+    assert(offset + base == functionAddresses[0]);
+    call();
+    rx();
+    assert(writes == 2 && properties.at("NRedSubmitGuardApplied") == 1);
+    auto before = writes;
+    call();
+    assert(writes == before);
+    blocks.at(0x600000)[100] ^= 1;
+    call();
+    assert(writes == before && properties.contains("NRedSubmitGuardRejected"));
+    ++cases;
+    for (unsigned failure = 1; failure <= 2; ++failure) {
+        guardSetup();
+        auto initial = blocks;
+        failWrite    = failure;
+        call();
+        assert(blocks == initial);
+        rx();
+        ++cases;
+    }
+    guardSetup();
+    word32(functionAddresses[0] + 40, 0);
+    auto initial = blocks;
+    call();
+    assert(blocks == initial && writes == 0 && protects == 0);
+    ++cases;
+    printf("PASS %u Sequoia display cases: six devices; relocated functions/GOT; full-function rejection; rollback; "
+           "dynamic submit identity\n",
+           cases);
+}

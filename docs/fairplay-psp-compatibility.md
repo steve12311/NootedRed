@@ -7,8 +7,9 @@
 不使用 Music、TV 或辅助服务的进程名判断是否启用；仅有相同进程名而没有该权限也不会进入此路径。
 不再使用 `-NRedDRMVideo` 单独开关；缺少 `-NRedVideoFix` 时不注册桥接。
 
-- 14/15 选择 13 项 AMD 驱动侧解码补丁，掩码为 `0x1FFF`；26 选择 18 项，掩码为 `0x7F87FE`。
-  AppleGVA 与编码代码保持原始字节。14/15 尚未接入 pitch、swizzle 消费者修正。
+- 14 选择 13 项 AMD 驱动侧解码补丁，掩码为 `0x1FFF`；15/26 各选择 18 项，
+  掩码分别为 `0x7FE1FE` / `0x7F87FE`。AppleGVA 与编码代码保持原始字节。
+  15/26 包含 swizzle 消费者修正；pitch 属于编码路径，仅普通客户端应用。
 - 原生 `VACPFactory::createCP` 的 PSP family 范围由 1–4 扩展到 1–5，承接 APU 识别所用的 family 5。
   family 0 继续走 SAMU，其他值继续沿用原生分支；保留对象初始化失败清理及 KE 原始错误码。
 - 14/15 的工厂原始函数来自既有参考页面，分别为 182/183 字节；
@@ -30,7 +31,8 @@ PSPFactory-v2 的用户实测：普通 Apple Music 音乐正常，受保护 MV �
 ## 诊断与播放回归
 
 `NRedDRMVideoRevision=4` 表示三系统统一权限策略。
-14/15 为 `PatchCount=13`、`Mask=8191`；26 为 `PatchCount=18`、`Mask=8357886`。
+14 为 `PatchCount=13`、`Mask=8191`；15 为 `PatchCount=18`、`Mask=8380926`；
+26 为 `PatchCount=18`、`Mask=8357886`。
 `State=1` 表示进入有效缓存检查，`2` 表示写入并恢复权限，`3` 表示确认已经安装。
 空参数或缓存头读取失败不会覆盖之前的有效安装状态。
 `PID` 与 `LastPID/LastStage` 记录最近客户端；多个客户端会依次更新同一组属性，不是每进程状态列表。

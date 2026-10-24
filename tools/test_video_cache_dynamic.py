@@ -6,7 +6,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-WORK = ROOT / 'build/dynamic-cache/video'
+WORK = ROOT / ('build/dynamic-cache/sequoia-video' if '--sequoia' in sys.argv else 'build/dynamic-cache/video')
 
 
 def main():
@@ -142,7 +142,13 @@ int main(){
  UserVideoDecodeData::ResolverLocations,plan.patches,&plan.original[0][0],&plan.patched[0][0],UserVideoDecodeData::MaxPatchSize));
  printf("PASS %u video dynamic bridge cases: four devices; shifted images/functions/GOT; cross-page rollback; content/metadata/target rejection\n",cases);
 }
-'''.replace('BODY', body)
+'''
+    if '--sequoia' in sys.argv:
+        harness = harness.replace('UserVideoDecodeData::', 'UserSequoiaVideoData::')
+        harness = harness.replace('using namespace UserVideoDecodeData;', 'using namespace UserSequoiaVideoData;')
+        harness = harness.replace('devicePatches,plan)', 'devicePatches,plan,true)')
+        harness = harness.replace('0x7F87FE', '0x7FE1FE')
+        harness = harness.replace('drmClient=false;clientEntitlement', 'sequoia=true;legacyProfile=nullptr;drmClient=false;clientEntitlement')
     # 从实际源文件中提取的桥接引用进程诊断函数。
     harness = harness.replace('BODY', body)
     harness = harness.replace('static kern_return_t vm_protect', 'static int proc_pid(proc_t);static void proc_name(int,char*,int);\nstatic kern_return_t vm_protect', 1)

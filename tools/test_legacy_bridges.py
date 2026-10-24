@@ -119,7 +119,7 @@ MAIN
 
 RENDER = r'''
 int main(){
- for(unsigned major:{23U,24U})for(unsigned device:DEVICES){
+ for(unsigned major:{23U})for(unsigned device:DEVICES){
   hostMajor=major;NRed::singleton().device=device;
   const auto* profile=PROFILE;assert(profile);
   KernelPatcher kernel;MODULE::init(kernel);assert(kernel.routes==1);
@@ -141,13 +141,13 @@ int main(){
   reset(profile);failRead=cacheBase+profile->pages[0].offset+256;call();assert(writes==0&&protects==0);
   FAIRPLAY
  }
- puts("PASS actual MODULE legacy bridge: two OS, four devices, full pages, every write/page failure, rollback and idempotency");
+ puts("PASS actual MODULE Sonoma bridge: full pages, every write/page failure, rollback and idempotency");
  GUARD
 }
 '''
 
 GUARD = r'''
- for(unsigned major:{23U,24U,25U}){
+ for(unsigned major:{23U,25U}){
   hostMajor=major;wantRender=true;KernelPatcher kernel;UserSurfaceSync::init(kernel);
   assert(kernel.routes==1&&properties.at("NRedSubmitGuardEnabled")==1&&renderRequested);
   renderRequested=false;
@@ -165,7 +165,9 @@ GUARD = r'''
   setup();failProtect={4,5};call();assert(entryOriginal()&&allocations==deallocations);rx();
   setup();failWrite={2,3,4};call();assert(allocations==1&&deallocations==0&&properties.at("NRedSubmitGuardRollbackFailed")==1);rx();
  }
- puts("PASS actual SubmitGuard: display switch on Darwin 23/24/25; full trampoline identity, failure rollback, RX/max, allocation lifetime");
+ hostMajor=24;KernelPatcher sequoiaKernel;UserSurfaceSync::init(sequoiaKernel);
+ assert(sequoia&&computeScratch&&srdShared&&!legacyProfile&&sequoiaKernel.routes==1);
+ puts("PASS actual SubmitGuard: Sonoma/Tahoe transaction; Sequoia dynamic mode entry; full trampoline identity, failure rollback, RX/max, allocation lifetime");
 '''
 
 FAIRPLAY = r'''

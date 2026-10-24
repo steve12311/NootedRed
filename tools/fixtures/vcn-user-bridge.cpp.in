@@ -115,7 +115,7 @@ int main(){
   assert(checked.routes==int(major>=23 && major<=25));
   if(major>=23&&major<=25){
    assert(fairPlayDriverOnly&&properties.at("NRedDRMVideoEnabled")==1&&properties.at("NRedDRMVideoRevision")==4);
-   assert(properties.at("NRedDRMVideoMask")==unsigned(major==25?0x7F87FE:0x1FFF));
+   assert(properties.at("NRedDRMVideoMask")==unsigned(major==25?0x7F87FE:(major==24?0x7FE1FE:0x1FFF)));
   }
  }
  Version::majorValue=25;Version::minorValue=6;
@@ -211,7 +211,7 @@ int main(){
   for(const char* name:{"Music","TV","Other"}){
    reset();processName=name;clientEntitlement=kOSBooleanTrue;call(reinterpret_cast<void*>(970));
    assert(writeCalls==0&&protectCalls==0&&properties.at("NRedDRMVideoState")==1);
-   assert(properties.at("NRedVCNUserLegacyRejected")==1&&!properties.contains("NRedVCNFairPlaySkipped"));bytes(false);rx();
+   assert(properties.at(major==23?"NRedVCNUserLegacyRejected":"NRedVCNUserDynamicRejected")==1&&!properties.contains("NRedVCNFairPlaySkipped"));bytes(false);rx();
   }
  }
  Version::majorValue=25;flag=false;{KernelPatcher disabled;UserVideoDecode::init(disabled);assert(disabled.solves==0&&disabled.routes==0);}

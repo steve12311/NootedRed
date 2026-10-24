@@ -2,12 +2,13 @@
 from pathlib import Path
 import json
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/user-surface-sync"
 
 
-def verify(entry, records_key, shared_srd):
+def verify(entry, records_key, shared_srd, sequoia=None):
     arrays = []
     for r in entry[records_key]:
         for prefix, field in [("old", "original"), ("new", "patched")]:
@@ -97,6 +98,11 @@ int main(int argc,const char*[]){
     harness = harness.replace("TARGET_DEVICE", hex(entry['device_id'])).replace(
         "SHARED_ASSERT", "assert((settings[8]&0x40)==(id==TARGET_DEVICE?0:0x40));".replace(
             "TARGET_DEVICE", hex(entry['device_id'])) if shared_srd else "assert(settings[8]==0x40);")
+    if sequoia:
+        addresses = [sequoia['targets'][1], sequoia['targets'][2], sequoia['records'][0]['address'],
+                     sequoia['records'][1]['address']]
+        for old, new in zip(['0x7ffb10c5422b', '0x7ffb10c545c6', '0x7ffb10d71a28', '0x7ffb10d71aff'], addresses):
+            harness = harness.replace(old, hex(new))
     path = WORK / "test-native.cpp"
     path.write_text(harness)
     exe = WORK / "test-native"
@@ -112,6 +118,12 @@ int main(int argc,const char*[]){
 
 
 if __name__ == "__main__":
+    if '--sequoia' in sys.argv:
+        WORK = ROOT / 'build/sequoia/surface'
+        data = json.loads((WORK / 'patch-data.json').read_text())
+        for entry in data['device_records']:
+            verify({'device_id': entry['device_id'], 'records': entry['records'][:2]}, 'records', True, data)
+        sys.exit(0)
     data = json.loads((WORK / "patch-data.json").read_text())
     for entry in data['device_records']:
         print(f"VERIFY PCI {entry['device_id']:#06x}", flush=True)

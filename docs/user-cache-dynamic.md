@@ -1,10 +1,10 @@
-# Tahoe 用户态动态缓存匹配
+# Sequoia / Tahoe 用户态动态缓存匹配
 
-macOS 14/15 的新增路径使用独立的精确缓存／页面配置，范围与参数见
-[多系统适配](macos-multi-os-compat.md)。以下动态匹配说明适用于 Tahoe。
+macOS 15/26 使用各自已核实的完整函数数据，复用公共动态解析器。macOS 14 继续使用
+独立的精确缓存／页面配置，范围与参数见 [多系统适配](macos-multi-os-compat.md)。
 
 显示组使用 `-NRedDisplayFix`，视频组使用 `-NRedVideoFix`；
-旧分项参数不再读取，完整组合见 [启动参数](boot-arguments.md)。本文中的动态解析限 Tahoe / Darwin 25.x。
+旧分项参数不再读取，完整组合见 [启动参数](boot-arguments.md)。本文中的动态解析适用于 Sequoia / Darwin 24.x 和 Tahoe / Darwin 25.x。
 设备范围保持不变：
 ComputeScratch 为 NRed 原生支持的六种 Vega APU；视频为四种 VCN 2.2 APU。
 
@@ -17,7 +17,7 @@ SrdShared、LegacyBlend、ComputeScratch 和视频补丁都复用这些基础能
 `tools/cache_resolver_data.py` 共用生成完整函数、指令／数据分界及引用描述的逻辑。
 
 参考 UUID `31374756-89B4-34E8-A34F-56C5D57216A1` 使用生成数据的静态快路径。
-其他 UUID 通过当前进程中的 dyld header、image table 与 Mach-O 解析定位映像，
+Tahoe 其他 UUID、Sequoia 所有 UUID 均通过当前进程中的 dyld header、image table 与 Mach-O 解析定位映像，
 再匹配补丁所在的完整原生函数或本机设备已应用的完整载荷。UUID 不作为动态路径的兼容证明。
 解析器仅读取并生成计划；桥接完成所有字节与 RX 权限检查后才写入私有 COW 页。
 
@@ -26,7 +26,9 @@ SrdShared、LegacyBlend、ComputeScratch 和视频补丁都复用这些基础能
 核对目标映像与 RVA，保留同一绑定的不同引用位置，不能把所有引用改到第一个 GOT 槽。
 这支持相同实现的缓存重排，不能自动适配任意新函数实现、外部符号 RVA 或驱动 ABI。
 
-ComputeScratch 同时核验已撤回 VT 跳转所在的完整原生函数，未知缓存不使用固定 VT 偏移。
+Tahoe ComputeScratch 同时核验已撤回 VT 跳转所在的完整原生函数，未知缓存不使用固定 VT 偏移。
+Sequoia 不含该撤回候选；它核验原生配置函数、完整 pipeline 构造函数和 456 字节 Scratch 函数，
+SubmitGuard 独立匹配完整提交方法，核对相对引用；重复安装还核对整个已安装守卫及返回地址。
 生成器以 `LC_FUNCTION_STARTS` 确定该内部函数边界，使用 `LC_DATA_IN_CODE` 区分跳转表与指令。
 参考文件中的链式指针按 [Apple dyld 缓存格式](https://github.com/apple-oss-distributions/dyld/blob/main/include/mach-o/dyld_cache_format.h)
 的 `slide_info2` 解析；运行时核验的是当前进程里已经重定位的指针。
@@ -45,4 +47,4 @@ ComputeScratch 同时核验已撤回 VT 跳转所在的完整原生函数，未�
 
 离线回归包括六种 Scratch 设备、四种视频设备、重排映像／函数／GOT、跨页部分写入、
 权限失败、幂等与撤回策略拒绝，并提供 ASan/UBSan。只读参考缓存回归还核对动态计划
-与静态数据逐项一致。不同 Tahoe 缓存的实机启动、画面与持续视频播放仍需测试人员验收。
+与静态数据逐项一致。不同 Sequoia / Tahoe 缓存的实机启动、画面与持续视频播放仍需测试人员验收。

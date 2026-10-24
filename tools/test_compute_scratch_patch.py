@@ -3,6 +3,7 @@ import ctypes
 import json
 import mmap
 import struct
+import argparse
 from pathlib import Path
 from metal_cache import CacheReader
 from build_compute_scratch_patch import generate, supported_devices
@@ -24,21 +25,30 @@ def function(code):
 
 
 def main():
-    data = json.loads((ROOT / 'build/user-surface-sync/patch-data.json').read_text())
-    variants = data['device_compute_scratch_records']
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--sequoia-cache', type=Path)
+    args = parser.parse_args()
+    data = json.loads((ROOT / ('build/sequoia/surface/patch-data.json' if args.sequoia_cache else
+                              'build/user-surface-sync/patch-data.json')).read_text())
+    variants = data['device_records'] if args.sequoia_cache else data['device_compute_scratch_records']
     devices = supported_devices()
     assert [entry['device_id'] for entry in variants] == devices
-    assert all(entry['records'][:3] == data['legacy_blend_records'] for entry in variants)
-    cache = CacheReader()
+    if not args.sequoia_cache:
+        assert all(entry['records'][:3] == data['legacy_blend_records'] for entry in variants)
+    profile = json.loads((ROOT / 'tools/fixtures/sequoia-compat.json').read_text()) if args.sequoia_cache else None
+    cache = CacheReader(args.sequoia_cache, profile['uuid']) if profile else CacheReader()
     try:
         cases = 0
         for entry in variants:
             target = entry['device_id']
             patch = entry['records'][3]
-            assert generate(cache, target) == patch, f'{target:#06x} 生成数据不可复现'
+            meta = profile['metal']['__ZL33amdMtl_GFX9_AllocateScratchBufferP28GFX9_MtlComputePipelineStatej'] if profile else None
+            regenerated = generate(cache, target, meta)
+            assert all(regenerated[k] == patch[k] for k in ['address', 'original', 'patched']), f'{target:#06x} 生成数据不可复现'
             original, changed = bytes.fromhex(patch['original']), bytes.fromhex(patch['patched'])
-            assert len(original) == len(changed) == 452
-            assert changed[0xCA:] == original[0xCA:], '资源分配、释放或原生调用尾部被改变'
+            assert len(original) == len(changed) == (456 if profile else 452)
+            tail = 0xD6 if profile else 0xCA
+            assert changed[tail:] == original[tail:], '资源分配、释放或原生调用尾部被改变'
             old_memory, old = function(original[0x55:0x69])
             new_memory, new = function(changed[0x50:0x6F])
             try:

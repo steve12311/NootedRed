@@ -7,7 +7,7 @@ import subprocess
 
 from audit_video_driver import symbols
 from build_video_decode_patch import HASHES
-from metal_cache import CACHE, CacheReader
+from metal_cache import CacheReader
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vcn-encode-patch"
@@ -18,16 +18,21 @@ HEVC = "__ZN27AVDVcn2HevcEncDataProcessor19ProcessEncodeStatusEP19_VAEncodeStatu
 
 
 def main():
+    global WORK
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.parse_args()
+    parser.add_argument('--sequoia-cache', type=Path)
+    args = parser.parse_args()
+    if args.sequoia_cache:
+        WORK = ROOT / 'build/sequoia/encode-test'
     WORK.mkdir(parents=True, exist_ok=True)
-    report = json.loads((ROOT / "build/vcn/user-patches.json").read_text())
+    report = json.loads((ROOT / ('build/sequoia/video/user-patches.json' if args.sequoia_cache else 'build/vcn/user-patches.json')).read_text())
     rows = [r for r in report["records"] if r["label"] in [PITCH, SIZE, AVC, HEVC]]
     assert len(rows) == 4
     assembly = ".text\n"
-    cache = CacheReader()
+    profile = json.loads((ROOT / 'tools/fixtures/sequoia-compat.json').read_text()) if args.sequoia_cache else None
+    cache = CacheReader(args.sequoia_cache, profile['uuid']) if profile else CacheReader()
     try:
-        lines = (CACHE / "dyld_shared_cache_x86_64h.map").read_text().splitlines()
+        lines = (cache.directory / "dyld_shared_cache_x86_64h.map").read_text().splitlines()
         image = "/System/Library/Extensions/AMDRadeonVADriver2.bundle/Contents/MacOS/AMDRadeonVADriver2"
         base = int(lines[lines.index(image) + 1].split()[1], 16)
         names, _ = symbols(cache.read, base)
@@ -35,7 +40,7 @@ def main():
             address = names[symbol]
             end = min(a for a in names.values() if a > address)
             original = cache.read(address, end - address)
-            assert hashlib.sha256(original).hexdigest() == HASHES[symbol]
+            assert hashlib.sha256(original).hexdigest() == (profile['video'][symbol]['sha256'] if profile else HASHES[symbol])
             patched = bytearray(original)
             row = next(r for r in rows if r["label"] == symbol)
             offset = row["address"] - address

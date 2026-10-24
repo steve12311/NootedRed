@@ -5,7 +5,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-WORK = ROOT / 'build/dynamic-cache/compute'
+WORK = ROOT / ('build/dynamic-cache/sequoia-compute' if '--sequoia' in sys.argv else 'build/dynamic-cache/compute')
 
 
 def main():
@@ -108,7 +108,16 @@ int main(){
  }
  printf("PASS %u compute dynamic bridge cases: six devices; relocated scratch/GOT/VT; eight-page rollback; withdrawn strategy guards\n",cases);
 }
-'''.replace('BODY', body)
+'''
+    if '--sequoia' in sys.argv:
+        start = harness.index('static uint64_t initAddress')
+        harness = harness[:start] + (ROOT / 'tools/fixtures/sequoia-surface-dynamic.cpp.in').read_text()
+        harness = harness.replace('static kern_return_t vm_allocate(vm_map_t,vm_address_t* page,unsigned,int){*page=0;return KERN_FAILURE;}',
+            'static kern_return_t vm_allocate(vm_map_t,vm_address_t* page,unsigned,int){'
+            '*page=0x600000;blocks[*page].resize(4096);protections[*page]=3;return 0;}')
+        harness = harness.replace('static kern_return_t vm_deallocate(vm_map_t,vm_address_t,unsigned){return KERN_SUCCESS;}',
+            'static kern_return_t vm_deallocate(vm_map_t,vm_address_t page,unsigned){blocks.erase(page);protections.erase(page);return 0;}')
+    harness = harness.replace('BODY', body)
     if '--baseline' in sys.argv:
         harness = harness.replace('call();if(!properties.contains("NRedImmediateSyncDynamicApplied"))', 'call();assert(writes==0&&protects==0);puts("PASS baseline reproduces unknown-cache rejection");return 0;if(!properties.contains("NRedImmediateSyncDynamicApplied"))',1)
     file, exe = WORK / 'test.cpp', WORK / 'test'

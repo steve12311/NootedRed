@@ -23,12 +23,13 @@ def supported_devices():
     return [0x1638] + sorted(set(devices) - {0x1638})
 
 
-def generate(cache, device_id=0x1638):
+def generate(cache, device_id=0x1638, profile=None):
     if device_id not in supported_devices():
         raise ValueError(f'不支持的 NRed APU PCI ID：{device_id:#06x}')
     WORK.mkdir(parents=True, exist_ok=True)
     address, original = cache.function(SYMBOL)
-    if len(original) != 452 or hashlib.sha256(original).hexdigest() != DIGEST:
+    size, digest = (profile['size'], profile['sha256']) if profile else (452, DIGEST)
+    if len(original) != size or hashlib.sha256(original).hexdigest() != digest:
         raise ValueError('scratch 分配函数未核实')
     source = WORK / 'native.s'
     source.write_text('.text\n.globl _native\n_native:\n.byte ' + ','.join(str(x) for x in original) + '\n')
@@ -55,17 +56,20 @@ def generate(cache, device_id=0x1638):
     def relative(prefix, target):
         emit(prefix)
         assembly.append(f'.long 0x{target:x} - 0x{address:x} - (. - _compute_scratch_allocate + 4)')
+    skips = [0x39, 0xC4, 0xD3] if profile else [0x39, 0xBA, 0xC7]
+    second_load = 0xBD if profile else 0xB3
+    ivar_load = 0xC7 if profile else 0xBD
     for offset, data, mnemonic, operand in instructions:
         assembly.append(f'L{offset:x}:')
-        if offset in [0x39, 0xBA, 0xC7]:
+        if offset in skips:
             continue
-        if offset in [0x32, 0xB3]:
+        if offset in [0x32, second_load]:
             target = address + offset + len(data) + struct.unpack('<i', data[-4:])[0]
-            relative(bytes.fromhex('4c8b2d' if offset == 0x32 else '488b35'), target)
+            relative(bytes.fromhex('4c8b2d' if offset == 0x32 else ('488b3d' if profile else '488b35')), target)
         elif offset == 0x49:
             emit(bytes.fromhex('83c9ff'))  # ecx=UINT32_MAX；下一条 cmp 重建 flags。
-        elif offset == 0xBD:
-            emit(bytes.fromhex('8bbc3138020000'))  # 同一不可变 ivar offset，只读取一次。
+        elif offset == ivar_load:
+            emit(bytes.fromhex('448b843e38020000' if profile else '8bbc3138020000'))
         elif mnemonic.startswith('j') or (mnemonic == 'callq' and not operand.startswith('*')):
             match = re.match(r'0x([a-f0-9]+)', operand)
             if not match:
@@ -98,7 +102,8 @@ def generate(cache, device_id=0x1638):
     patched = data[section[3]:section[3] + section[2]]
     if len(patched) != len(original) or address // 4096 != (address + len(patched) - 1) // 4096:
         raise ValueError(f'补丁越界：{len(patched)}')
-    if patched[0xCA:] != original[0xCA:]:
+    tail = 0xD6 if profile else 0xCA
+    if patched[tail:] != original[tail:]:
         raise ValueError('资源分配和释放尾部被改变')
     return {'label': 'compute-scratch-se', 'address': address, 'original': original.hex(), 'patched': patched.hex()}
 

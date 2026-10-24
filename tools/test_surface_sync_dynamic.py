@@ -41,11 +41,14 @@ using vm_map_t=void*;using task_t=void*;using proc_t=void*;using natural_t=unsig
 using mach_msg_type_number_t=unsigned;using vm_prot_t=int;using kern_return_t=int;
 struct vm_region_submap_short_info_data_64_t {int protection=0,is_submap=0;};using vm_region_recurse_info_t=int*;
 constexpr unsigned PAGE_SIZE=4096,VM_REGION_SUBMAP_SHORT_INFO_COUNT_64=12;
-constexpr int TRUE=1,FALSE=0,KERN_SUCCESS=0,KERN_INVALID_ADDRESS=1,KERN_PROTECTION_FAILURE=2,KERN_INVALID_ARGUMENT=4,KERN_FAILURE=5;
+constexpr int TRUE=1,FALSE=0,KERN_SUCCESS=0,KERN_INVALID_ADDRESS=1,KERN_PROTECTION_FAILURE=2,KERN_RESOURCE_SHORTAGE=3,KERN_INVALID_ARGUMENT=4,KERN_FAILURE=5;
 constexpr int VM_FLAGS_ANYWHERE=1;
 using vm_address_t=uint64_t;
 constexpr int VM_PROT_NONE=0,VM_PROT_READ=1,VM_PROT_WRITE=2,VM_PROT_EXECUTE=4,VM_PROT_COPY=16;
-#define SYSLOG(...) ((void)0)
+template<typename... Args>static void testLog(Args...){}
+#define SYSLOG(...) testLog(__VA_ARGS__)
+#define IONew(T,N) new T[N]
+#define IODelete(P,T,N) delete[] P
 template<typename T,size_t N>constexpr size_t arrsize(const T(&)[N]){return N;}
 static std::map<std::string,unsigned> properties;
 struct NRed{static NRed& singleton(){static NRed n;return n;}void setProp32(const char*k,unsigned v){properties[k]=v;}

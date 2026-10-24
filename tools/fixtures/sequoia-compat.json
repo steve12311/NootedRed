@@ -1,0 +1,138 @@
+{
+  "metal": {
+    "-[GFX9_MtlRenderPipelineState initWithDevice:pipelineStateDescriptor:vertexVariant:fragmentVariant:]": {
+      "address": 140716155805600,
+      "size": 9428,
+      "sha256": "8072175bbebd34cde337d2c00f3676c84cdc921a3069aff1ef03599bfb48b37b"
+    },
+    "-[GFX9AMD_MtlCmdQueue submitCommandBuffers:count:]": {
+      "address": 140716155876736,
+      "size": 47,
+      "sha256": "679fce8030a9d43b5ae005669eff199ba3cd58f3535889939f5166a14e036fb9"
+    },
+    "__ZL33amdMtl_GFX9_AllocateScratchBufferP28GFX9_MtlComputePipelineStatej": {
+      "address": 140716156061553,
+      "size": 456,
+      "sha256": "71cf0143fe4fe704b06dffb459b4b8c2c6d720da47f4d7b4a6354c7fde10dc96"
+    },
+    "__Z29amdMtl_OverrideDeviceSettingsP18AMD_DeviceSettings": {
+      "address": 140716156544271,
+      "size": 958,
+      "sha256": "3420353cfd7753a730214304c6502af998489ab0f2f5121619a7a84d05ddce6c"
+    },
+    "__Z29amdMtl_HWL_InitDeviceSettingsP18AMD_DeviceSettingsP18AMDCommonHwInfoRec": {
+      "address": 140716156569692,
+      "size": 215,
+      "sha256": "54ebf2cfa09839755428245de73b5e2662c259306fb9de9ce103e83fafeb423f"
+    },
+    "__Z33amdMtl_HWL_OverrideDeviceSettingsP18AMD_DeviceSettingsP18AMDCommonHwInfoRec": {
+      "address": 140716156569907,
+      "size": 10,
+      "sha256": "580a055bd41ed3f1aae6aa8f84c50b972558db30593f9e0c6e4ebbf8d761e21e"
+    }
+  },
+  "video": {
+    "__ZN11VACPFactory8createCPEP11_VAHWConfigP11VAIOConnectPP4VACp": {
+      "address": 140716154093190,
+      "length": 183,
+      "sha256": "4d6e96cf8b2b6ad3fb7aaa17b0b5a93c7649fed9308912caeaf851dbf3c19b84"
+    },
+    "__ZN17VAAcceleratorInfo8identifyEjj": {
+      "address": 140716154055136,
+      "length": 448,
+      "sha256": "dd95fd9d1ea9740465bcefa6d68770a0ebbb6e8161e97939be19ff1c1671737e"
+    },
+    "__ZN18VAAddrLibInterface4initEP11VAIOConnectP13sHardwareInfo": {
+      "address": 140716154061758,
+      "length": 528,
+      "sha256": "abafc0170bb2bfa7c333371531e68cc01c237d6ddf4f297711f71c6f0773a264"
+    },
+    "__ZN4Addr2V27Gfx9Lib20HwlConvertChipFamilyEjj": {
+      "address": 140716154541936,
+      "length": 160,
+      "sha256": "4a4a1d2337e580de8dcd851ec686179bc375639441ebf7020dcca69ea780f8fa"
+    },
+    "__ZN4Addr3Lib6CreateEPK18_ADDR_CREATE_INPUTP19_ADDR_CREATE_OUTPUT": {
+      "address": 140716154452912,
+      "length": 672,
+      "sha256": "b0a123ffae9ff1b251077346fe12ba2640c007bdbb12ec15716855c5bf160063"
+    },
+    "__ZN9VAFactory20createGraphicsEngineEP9VAContext": {
+      "address": 140716154092486,
+      "length": 152,
+      "sha256": "65ac04e1da1d0c5445de83db24583ffbfb29f2851928dc44cddb885c0d7846fc"
+    },
+    "__ZN9VAFactory14createImageBltEP9VAContextj": {
+      "address": 140716154092638,
+      "length": 82,
+      "sha256": "7052a8a0a8a73e5aac554bfd00a395e48a30af2de23587f0986710bd034cd2a2"
+    },
+    "__ZN9VAFactory17createDeblockerVPEi": {
+      "address": 140716154092228,
+      "length": 130,
+      "sha256": "58fcd2efbaca0055df4e6dbb2bd54da7d6fc07e9beebbd216cb047eeb9c2271e"
+    },
+    "__ZN9VAFactory17createDitheringVPEi": {
+      "address": 140716154092098,
+      "length": 130,
+      "sha256": "7bbd8395c27103ac3c5a7188fa79ef50b03c95cacf3dc6d5edee6fa8a7b9e72b"
+    },
+    "__ZN9VAFactory20createDeinterlacerVPEi": {
+      "address": 140716154092034,
+      "length": 64,
+      "sha256": "3eeaf7d7db19379578209f019145ef116dc1526ee091b3e42e43255a07ac89ad"
+    },
+    "__ZN9VAFactory29createColourFormatConverterVPEi": {
+      "address": 140716154091904,
+      "length": 130,
+      "sha256": "8ed81834c8e63adc03f7714b2cf866a15db0d4ee444e6d8be66363cbb17369cd"
+    },
+    "__ZN9VAFactory31createDynamicContrastEnhancerVPEi": {
+      "address": 140716154092358,
+      "length": 64,
+      "sha256": "d9e9dc85b70ed7c1f9fa236ba967bfe7f5fee5aee3d3f9fb88a1b44b85fd184b"
+    },
+    "__ZN14Vcn2EncCommand15getFeedbackSizeEv": {
+      "address": 140716154347396,
+      "length": 12,
+      "sha256": "571d3ec0d74000c103203b60450b43b67d758b74b470d0082d45879723021c7a"
+    },
+    "__ZN26AVDVcn2AvcEncDataProcessor19ProcessEncodeStatusEP19_VAEncodeStatusInfoPvP15VAVendorTexture": {
+      "address": 140716154353148,
+      "length": 408,
+      "sha256": "fe78c5a8d4508c9a0eab2ba96830634b5f8f8a7982b06cd91c2bc1f6a1e2f493"
+    },
+    "__ZN27AVDVcn2HevcEncDataProcessor19ProcessEncodeStatusEP19_VAEncodeStatusInfoPvP15VAVendorTexture": {
+      "address": 140716154357762,
+      "length": 508,
+      "sha256": "0ff1d68ec316f8497278a3be223c2eabe642f68e894fa7ecc808e70168c5b2c2"
+    },
+    "__ZN11Vcn2Encoder15setEncodeParamsEPvP15VAVendorTexture": {
+      "address": 140716154342084,
+      "length": 138,
+      "sha256": "c8193ea2d2c7193012a5618b6918d41fffe30ad0c1389256fee983e66ac24347"
+    }
+  },
+  "uuid": "42ec2890bc40317ebb2745142bff7f26",
+  "version": "15.8.1",
+  "build": "24H32",
+  "gva": {
+    "address": 140711826104728,
+    "size": 1704,
+    "sha256": "1836eb3109e90afac34824654063b2cab953dbb55903cb94f222850a1fa67523",
+    "offset": 643,
+    "branch": "0f84d6030000"
+  },
+  "encodeContexts": {
+    "__ZN14Vcn2EncCommand15getFeedbackSizeEv": [
+      "__ZN14Vcn2EncCommand20addSessionInitPacketEv",
+      36,
+      "30f2bdbaf54a9b10c7fe58119b8f288b5118bfa069bc062e01c15a7d248171d7"
+    ],
+    "__ZN11Vcn2Encoder15setEncodeParamsEPvP15VAVendorTexture": [
+      "__ZN11Vcn2Encoder18setAvcEncodeParamsEPv",
+      292,
+      "e7d4ca36567f06e784dda6aeb0238fa9947d04ec562518f28e8c98628e1bf1e7"
+    ]
+  }
+}

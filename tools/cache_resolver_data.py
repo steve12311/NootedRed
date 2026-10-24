@@ -2,7 +2,7 @@
 import re
 import struct
 import subprocess
-from metal_cache import CACHE, array, macho
+from metal_cache import array, macho
 
 
 class ResolverData:
@@ -10,7 +10,7 @@ class ResolverData:
         self.cache, self.work = cache, work
         self.catalog, self.images, self.functions = [], [], []
         path, ranges = None, []
-        for line in (CACHE / 'dyld_shared_cache_x86_64h.map').read_text().splitlines():
+        for line in (cache.directory / 'dyld_shared_cache_x86_64h.map').read_text().splitlines():
             if line.startswith('/'):
                 if path:
                     self.catalog.append((path, ranges))
