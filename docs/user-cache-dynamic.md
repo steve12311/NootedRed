@@ -16,6 +16,9 @@ SrdShared、LegacyBlend、ComputeScratch 和视频补丁都复用这些基础能
 `UserVideoDecodeResolver.hpp` 保留视频计划；公共层不依赖任一生成数据头。
 `tools/cache_resolver_data.py` 共用生成完整函数、指令／数据分界及引用描述的逻辑。
 
+OpenGL 的独立驱动修复见 [OpenGL 修复](opengl-display-fix.md)。它复用公共相对位移工具及引用数据，
+只匹配当前校验页内的完整修复块，不执行文件准备或 Mach-O 扫描；跨页块和页内歧义均拒绝。
+
 参考 UUID `31374756-89B4-34E8-A34F-56C5D57216A1` 使用生成数据的静态快路径。
 Tahoe 其他 UUID、Sequoia 所有 UUID 均通过当前进程中的 dyld header、image table 与 Mach-O 解析定位映像，
 再匹配补丁所在的完整原生函数或本机设备已应用的完整载荷。UUID 不作为动态路径的兼容证明。

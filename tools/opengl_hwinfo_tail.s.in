@@ -1,0 +1,64 @@
+// 合并三个 Vega 分支的相同写入，仅对所选核显修正 SE，保留无效家族和原生 CU 乘法。
+.text
+.globl _payload
+_payload:
+    testl $0x70000, %eax
+    je Lno_family
+    movl 0xac(%rdi), %eax
+    cmpl $0x31, %r8d
+    ja Linvalid
+    movl $0x8d, (%rdi)
+    movl $4, 0x78(%rdi)
+    cmpl $0x13, %r8d
+    ja Lsecond
+    .byte 0xc5, 0xf8, 0x28, 0x05
+    .long CONST0 - ADDRESS - (. - _payload + 4)
+    vmovups %xmm0, 0x80(%rdi)
+    movl $0x10, 0x90(%rdi)
+    orl $0x4d, %ecx
+    movl %ecx, 0xa0(%rdi)
+    orl $0xc1, %eax
+    jmp Lflags
+Lno_family:
+    andl $-0x41, %ecx
+Lcap_store:
+    movl %ecx, 0xa0(%rdi)
+    jmp Ltotal
+Lsecond:
+    cmpl $0x27, %r8d
+    ja Lthird
+    .byte 0xc5, 0xf8, 0x28, 0x05
+    .long CONST1 - ADDRESS - (. - _payload + 4)
+    vmovups %xmm0, 0x80(%rdi)
+    movl $8, 0x90(%rdi)
+    orl $0x4f, %ecx
+    movl %ecx, 0xa0(%rdi)
+    orl $0x1c2, %eax
+    jmp Lflags
+Lthird:
+    .byte 0xc5, 0xf8, 0x28, 0x05
+    .long CONST1 - ADDRESS - (. - _payload + 4)
+    vmovups %xmm0, 0x80(%rdi)
+    movl $0x10, 0x90(%rdi)
+    orl $0x4d, %ecx
+    movl %ecx, 0xa0(%rdi)
+    orl $0x1c4, %eax
+Lflags:
+    movl %eax, 0xac(%rdi)
+    cmpw $DEVICE, 0x0c(%rdi)
+    jne Ltotal
+    movl $1, 0x78(%rdi)
+Ltotal:
+    imull 0x78(%rdi), %edx
+    imull 0x80(%rdi), %edx
+    movl %edx, 0x64(%rdi)
+    popq %rbp
+    retq
+Linvalid:
+    movl $0, (%rdi)
+    orl $0x60, %eax
+    movl %eax, 0xac(%rdi)
+    andl $-0x4d, %ecx
+    orl $0x0c, %ecx
+    jmp Lcap_store
+    .org 256, 0x90

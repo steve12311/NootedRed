@@ -6,6 +6,8 @@ ROOT = Path(__file__).resolve().parents[1]
 OLD_FLAGS = [
     '-NRedVCN', '-NRedLegacyBlend', '-NRedImmediateSync', '-NRedSrdShared',
     '-NRedComputeScratch', '-NRedTransfer1x1', '-NRedHDRIntegerFilter', '-NRedNoSubmitGuard',
+    '-NRedGLFix', '-NRedGLFixOff', '-NRedGLFixResolve', '-NRedGLFixResolveOnly', '-NRedGLFixResolveOff',
+    '-NRedGLFixNoResolve',
 ]
 
 
@@ -22,10 +24,13 @@ def validate(kext):
 def main():
     surface = (ROOT / 'NootedRed/UserSurfaceSync.cpp').read_text()
     assert 'HDR' not in surface
-    for path in ['UserSurfaceSync.cpp', 'UserVideoDecode.cpp', 'VCN.cpp']:
+    for path in ['UserSurfaceSync.cpp', 'UserVideoDecode.cpp', 'UserOpenGL.cpp', 'VCN.cpp']:
         source = (ROOT / 'NootedRed' / path).read_text()
         for name in OLD_FLAGS:
             assert f'checkKernelArgument("{name}")' not in source, f'{path} 仍解析 {name}'
+    gl = (ROOT / 'NootedRed/UserOpenGL.cpp').read_text()
+    assert 'checkKernelArgument("-NRedDisplayFix")' in gl
+    assert 'UserOpenGL::init(patcher)' in (ROOT / 'NootedRed/NRed.cpp').read_text()
     ec = (ROOT / 'NootedRed/ECBacklight.cpp').read_text()
     assert 'PE_parse_boot_argn("NRedECBacklight"' not in ec
     for path in sys.argv[1:]:

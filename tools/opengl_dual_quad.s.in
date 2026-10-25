@@ -1,0 +1,45 @@
+// 双源混合时为所选核显设置 DISABLE_DUAL_QUAD，其他设备保留原生能力判断。
+.text
+.globl _payload
+_payload:
+    pushq %rbp
+    movq %rsp, %rbp
+    pushq %rbx
+    pushq %rax
+    movq %rdi, %rbx
+    movl 0x1398(%rbx), %eax
+    andl $-2, %eax
+    testb $4, 0x30ec(%rbx)
+    je Lstore
+    movq 0x12d8(%rbx), %rcx
+    cmpw $DEVICE, 0x0c(%rcx)
+    je Ldisable
+    testb $2, 0xa0(%rcx)
+    je Lstore
+Ldisable:
+    orl $1, %eax
+Lstore:
+    movl %eax, 0x1398(%rbx)
+    movq 0xd68(%rbx), %rcx
+    leaq 0xc(%rcx), %rdx
+    cmpq 0xd60(%rbx), %rdx
+    jb Lpacket
+    movq %rbx, %rdi
+    pushq $2
+    popq %rsi
+    .byte 0xe8
+    .long SUBMIT - ADDRESS - (. - _payload + 4)
+    movq 0xd68(%rbx), %rcx
+    movl 0x1398(%rbx), %eax
+Lpacket:
+    movabsq $0x202c0016900, %rdx
+    movq %rdx, (%rcx)
+    movl %eax, 8(%rcx)
+    addq $0xc, %rcx
+    movq %rcx, 0x30f8(%rbx)
+    movq %rcx, 0xd68(%rbx)
+    popq %rdx
+    popq %rbx
+    popq %rbp
+    retq
+    .org 142, 0x90

@@ -15,6 +15,7 @@
 | `-NRedDisplayFix` 中的 LegacyBlend | 完整页面核验后的条件修复 | 完整构造函数动态匹配 | 保留原有静态／动态匹配 |
 | `-NRedVideoFix` | 独立 ABI 与调用点；精确视频页面 | 独立 ABI；完整函数动态解析 | 保留原有 ABI 与动态解析 |
 | ImmediateSync | 关闭 | 关闭 | 关闭 |
+| OpenGL SE/CU / DualQuad | 页内完整修复块匹配，参考页快速路径 | 同左，本机参考页已核验 | 同左，本机参考页已核验 |
 | SrdShared / ComputeScratch | 尚未适配 | 启用，独立函数数据 | 启用 |
 | FairPlay 客户端 | 13 项 AMD 解码子集及 PSP 工厂适配 | 18 项 AMD 解码子集及 PSP 工厂适配 | 18 项 AMD 解码子集及 PSP 工厂适配 |
 
