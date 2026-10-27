@@ -45,7 +45,7 @@ static kern_return_t query(vm_map_t,uint64_t* a,uint64_t* size,unsigned*,int* p,
  assert(*count==VM_REGION_SUBMAP_SHORT_INFO_COUNT_64);auto*i=reinterpret_cast<vm_region_submap_short_info_data_64_t*>(p);
  i->protection=protections.at(*a);i->is_submap=0;*size=4096;return 0;}
 static void setup(unsigned id){
- using namespace UserVideoDecodeData;cache(ResolverImages,ResolverFunctions);devicePatches=findDevice(id);assert(devicePatches);
+ using namespace UserVideoDecodeData;cache(ResolverImages,ResolverFunctions,true);devicePatches=findDevice(id);assert(devicePatches);
  drmClient=false;clientEntitlement=nullptr;drmTouchedPages.clear();
 #ifndef BASELINE
  fairPlayDriverOnly=false;
@@ -135,7 +135,7 @@ int main(){
  setup(0x15e7);UserSharedCache::Input reused{reader,{}};UserVideoDecodeResolver::Plan reusedPlan;
  for(unsigned i=0;i<2;i++)assert(UserCacheResolver::resolve(reused,base,UserVideoDecodeData::ResolverImages,
  UserVideoDecodeData::ResolverFunctions,devicePatches,UserVideoDecodeData::ResolverLocations,reusedPlan.patches,
- &reusedPlan.original[0][0],&reusedPlan.patched[0][0],UserVideoDecodeData::MaxPatchSize));
+ &reusedPlan.original[0][0],&reusedPlan.patched[0][0],UserVideoDecodeData::MaxPatchSize,1));
  // 指针绑定、rel32 溢出与预算耗尽必须拒绝，且解析器本身不写缓存。
  setup(0x15e7);UserSharedCache::Input input{reader,{}};input.reads=32768;UserVideoDecodeResolver::Plan plan;
  assert(!UserCacheResolver::resolve(input,base,UserVideoDecodeData::ResolverImages,UserVideoDecodeData::ResolverFunctions,devicePatches,
@@ -144,6 +144,8 @@ int main(){
 }
 '''
     if '--sequoia' in sys.argv:
+        harness = harness.replace('cache(ResolverImages,ResolverFunctions,true)', 'cache(ResolverImages,ResolverFunctions,false)')
+        harness = harness.replace('UserVideoDecodeData::MaxPatchSize,1)', 'UserVideoDecodeData::MaxPatchSize,0)')
         harness = harness.replace('UserVideoDecodeData::', 'UserSequoiaVideoData::')
         harness = harness.replace('using namespace UserVideoDecodeData;', 'using namespace UserSequoiaVideoData;')
         harness = harness.replace('devicePatches,plan)', 'devicePatches,plan,true)')

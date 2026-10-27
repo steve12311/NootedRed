@@ -2,6 +2,7 @@
 #pragma once
 #include <UserSequoiaSurfaceData.hpp>
 #include <UserSharedCache.hpp>
+#include <UserSurfaceConstructorData.hpp>
 #include <UserSurfaceSyncData.hpp>
 #include <string.h>
 
@@ -68,27 +69,37 @@ namespace UserSurfaceSyncResolver
     {
         Input input{reader, {}};
         Image image;
-        if (!imageForCache(input, base, image)) { return false; }
         // Scratch 与撤回的 VT 策略按完整函数和实际相对引用核验。
         if (scratchMode) {
             using namespace ScratchResolverData;
             if (!UserCacheResolver::resolve(input, base, ResolverImages, ResolverFunctions, device.scratch + 3,
                                             ResolverLocations, plan.patches + 3, &plan.original[3][0],
-                                            &plan.patched[3][0], Plan::BufferSize))
+                                            &plan.patched[3][0], Plan::BufferSize, true))
             {
                 return false;
             }
         }
+        if (!imageForCache(input, base, image)) { return false; }
         UInt64 settings{0}, scratch{0}, constructor{0};
         if (!findFunction(input, image.text, NativeOverride, sizeof(NativeOverride), settings, false,
                           image.address + NativeOverrideRVA)
             || (!scratchMode
                 && !findFunction(input, image.text, ScratchOriginal, sizeof(ScratchOriginal), scratch, false,
-                                 image.address + ScratchRVA))
-            || !findFunction(input, image.text, BlendConstructor, sizeof(BlendConstructor), constructor, true,
-                             image.address + ConstructorRVA))
+                                 image.address + ScratchRVA)))
         {
             return false;
+        }
+        if (!findFunction(input, image.text, BlendConstructor, sizeof(BlendConstructor), constructor, true,
+                          image.address + ConstructorRVA))
+        {
+            namespace C = UserSurfaceConstructorData;
+            if (!UserCacheResolver::resolve(input, base, C::ResolverImages, C::ResolverFunctions, C::Patches,
+                                            C::ResolverLocations, plan.patches + 2, &plan.original[2][0],
+                                            &plan.patched[2][0], Plan::BufferSize, true))
+            {
+                return false;
+            }
+            constructor = base + plan.patches[2].offset - BlendGateInConstructor;
         }
         const UInt8*         variants[] = {Original0, device.immediate[0].patched, device.shared[0].patched};
         const RelativeField* links[]    = {OriginalInitLinks, ImmediateInitLinks, SharedInitLinks};
@@ -216,15 +227,19 @@ namespace UserSurfaceSyncResolver
         return true;
     }
 
-    inline bool resolveSequoiaSubmit(Reader reader, UInt64 base, UInt64& offset)
+    inline bool resolveSubmit(Reader reader, UInt64 base, UInt64& offset, bool sectionRelative)
     {
         using namespace UserSequoiaSurfaceData::Submit;
         Input input{reader, {}};
         Image image;
         if (!imageForCache(input, base, image)) { return false; }
-        const auto& fn = ResolverFunctions[0];
-        UInt64      found{0};
-        const auto  candidate = [&](UInt64 address)
+        const auto& fn =
+            sectionRelative ? UserSurfaceConstructorData::Submit::ResolverFunctions[0] : ResolverFunctions[0];
+        if (image.segmentCount > 8) { return false; }
+        UserCacheResolver::ImageBounds bounds{image.address, image.text, {}, image.segmentCount};
+        memcpy(bounds.segments, image.segments, image.segmentCount * sizeof(Range));
+        UInt64     found{0};
+        const auto candidate = [&](UInt64 address)
         {
             UInt8 entry[15];
             if (!input.read(address, entry, sizeof(entry))) { return false; }
@@ -243,10 +258,12 @@ namespace UserSurfaceSyncResolver
             for (UInt32 r = 0; r < fn.originalCount; ++r) {
                 const auto& ref = fn.originalRefs[r];
                 UInt8       field[4];
-                UInt64      target{0};
+                UInt64      target{0}, expected{0};
                 if (ref.indirect || ref.image != 0 || !input.read(address + ref.offset, field, 4)
                     || !relativeTarget(address + ref.offset, 0, field, target) || !image.contains(target, 4)
-                    || target != image.address + ref.rva)
+                    || !UserCacheResolver::target(input, ref, &bounds, 1, ResolverImages, &fn, &address, 1, expected,
+                                                  sectionRelative)
+                    || target != expected)
                 {
                     return false;
                 }
@@ -266,6 +283,16 @@ namespace UserSurfaceSyncResolver
         }
         offset = found - base;
         return true;
+    }
+
+    inline bool resolveSequoiaSubmit(Reader reader, UInt64 base, UInt64& offset)
+    {
+        return resolveSubmit(reader, base, offset, false);
+    }
+
+    inline bool resolveTahoeSubmit(Reader reader, UInt64 base, UInt64& offset)
+    {
+        return resolveSubmit(reader, base, offset, true);
     }
 
 }    // namespace UserSurfaceSyncResolver

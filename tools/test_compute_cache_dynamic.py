@@ -53,7 +53,7 @@ static kern_return_t query(vm_map_t,uint64_t* a,uint64_t* size,unsigned*,int* p,
 static uint64_t initAddress,overrideAddress,constructorAddress,settingsAddress,dumpAddress;
 static void setup(unsigned id){
  using namespace UserSurfaceSyncData;
- cache(ScratchResolverData::ResolverImages,ScratchResolverData::ResolverFunctions);
+ cache(ScratchResolverData::ResolverImages,ScratchResolverData::ResolverFunctions,true);
  devicePatches=findDevice(id);assert(devicePatches);renderRequested=computeScratch=legacyBlend=srdShared=true;
  auto image=imageAddresses[0];initAddress=image+0x21f80;overrideAddress=image+0x23ff8;constructorAddress=image+0x28fe5;
  settingsAddress=image+0x26000;dumpAddress=image+0x27000;

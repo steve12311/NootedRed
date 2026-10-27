@@ -22,7 +22,7 @@ namespace UserVideoDecodeResolver
         {
             return patches
                    && UserCacheResolver::resolve(input, base, images, functions, patches, locations, plan.patches,
-                                                 &plan.original[0][0], &plan.patched[0][0], MaxPatchSize);
+                                                 &plan.original[0][0], &plan.patched[0][0], MaxPatchSize, !sequoia);
         };
         if (!(sequoia ? resolve(UserSequoiaVideoData::ResolverImages, UserSequoiaVideoData::ResolverFunctions,
                                 UserSequoiaVideoData::ResolverLocations) :

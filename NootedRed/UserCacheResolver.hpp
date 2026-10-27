@@ -1,5 +1,6 @@
 // 完整函数匹配与 rel32 重建；不认识的实现或外部目标布局一律拒绝。
 #pragma once
+#include <UserCacheSectionData.hpp>
 #include <UserSharedCache.hpp>
 
 namespace UserCacheResolver
@@ -81,7 +82,7 @@ namespace UserCacheResolver
         UInt64 address;
         Range  text, segments[8];
         UInt32 segmentCount;
-        bool   contains(UInt64 value, UInt32 size) const
+        bool   contains(UInt64 value, UInt64 size) const
         {
             for (UInt32 i = 0; i < segmentCount; ++i) {
                 if (segments[i].contains(value, size)) { return true; }
@@ -171,8 +172,73 @@ namespace UserCacheResolver
         return scanFunction(input, text, function.size, 32, prefixMatches, candidateMatches, address);
     }
 
-    inline bool target(const Reference& ref, const ImageBounds* images, UInt32 imageCount, const Function* functions,
-                       const UInt64* addresses, UInt32 functionCount, UInt64& address)
+    inline bool sectionTarget(Input& input, const ImageBounds& image, const UserCacheSectionData::Target& target,
+                              UInt64& address)
+    {
+        UInt8 header[32], unslid[8];
+        if (!input.read(image.address, header, sizeof(header))
+            || !input.read(input.cache.address + 224, unslid, sizeof(unslid)))
+        {
+            return false;
+        }
+        const auto commandSize = word(header + 20), commandCount = word(header + 16);
+        if (commandSize > 65536 || commandCount > 128 || wide(unslid) > input.cache.address) { return false; }
+        const auto slide = input.cache.address - wide(unslid);
+        const auto named = [](const UInt8* bytes, const char* name)
+        {
+            const auto size = strlen(name);
+            return size <= 16 && memcmp(bytes, name, size) == 0 && (size == 16 || bytes[size] == 0);
+        };
+        const auto inspect = [&](UInt32 cursor, bool hinted)
+        {
+            UInt8 command[72], section[80];
+            if (cursor < 32 || cursor - 32 > commandSize || commandSize - (cursor - 32) < sizeof(command)
+                || !input.read(image.address + cursor, command, sizeof(command)) || word(command) != 0x19
+                || !named(command + 8, target.segment))
+            {
+                return false;
+            }
+            const auto count = word(command + 64), length = word(command + 4);
+            if (count > 64 || length != 72 + count * 80 || length > commandSize - (cursor - 32)) { return false; }
+            for (UInt32 j = 0; j < count; ++j) {
+                const auto index = hinted ? target.index : j;
+                if (index >= count || !input.read(image.address + cursor + 72 + index * 80, section, sizeof(section))) {
+                    return false;
+                }
+                if (named(section, target.section) && named(section + 16, target.segment)) {
+                    const auto start = wide(section + 32), size = wide(section + 40);
+                    if (start >= UserLimit - slide || target.offset > size || size - target.offset < 4
+                        || !image.contains(start + slide, size))
+                    {
+                        return false;
+                    }
+                    address = start + slide + target.offset;
+                    return true;
+                }
+                if (hinted) { break; }
+            }
+            return false;
+        };
+        // 命令位置只是提示；命令或节顺序改变后仍按名称和完整边界查找。
+        if (inspect(target.command, true)) { return true; }
+        for (UInt32 cursor = 32, i = 0; i < commandCount; ++i) {
+            UInt8 command[8];
+            if (cursor - 32 > commandSize || commandSize - (cursor - 32) < 8
+                || !input.read(image.address + cursor, command, sizeof(command)))
+            {
+                return false;
+            }
+            const auto size = word(command + 4);
+            if (size < 8 || (size & 7) != 0 || size > commandSize - (cursor - 32)) { return false; }
+            if (word(command) == 0x19 && inspect(cursor, false)) { return true; }
+            cursor += size;
+        }
+        return false;
+    }
+
+    inline bool target(Input& input, const Reference& ref, const ImageBounds* images, UInt32 imageCount,
+                       const ImageReference* imageRefs, const Function* functions, const UInt64* addresses,
+                       UInt32 functionCount, UInt64& address, bool sectionRelative)
     {
         if (ref.image >= imageCount || ref.rva >= UserLimit - images[ref.image].address) { return false; }
         address = images[ref.image].address + ref.rva;
@@ -182,7 +248,14 @@ namespace UserCacheResolver
                 && ref.rva - functions[i].rva < functions[i].size)
             {
                 address = addresses[i] + ref.rva - functions[i].rva;
-                break;
+                return images[ref.image].contains(address, 4);
+            }
+        }
+        if (sectionRelative) {
+            for (const auto& entry : UserCacheSectionData::Targets) {
+                if (entry.rva == ref.rva && strcmp(entry.path, imageRefs[ref.image].path) == 0) {
+                    return sectionTarget(input, images[ref.image], entry, address);
+                }
             }
         }
         return images[ref.image].contains(address, 4);
@@ -237,7 +310,7 @@ namespace UserCacheResolver
     inline bool resolve(Input& input, UInt64 base, const ImageReference (&imageRefs)[ImageCount],
                         const Function (&functions)[FunctionCount], const Patch* patches,
                         const Location (&locations)[PatchCount], Patch* output, UInt8* originals, UInt8* replacements,
-                        UInt32 stride)
+                        UInt32 stride, bool sectionRelative = false)
     {
         static_assert(ImageCount > 0 && ImageCount <= 16 && FunctionCount > 0 && FunctionCount <= 32);
         UInt64      addresses[FunctionCount]{};
@@ -282,7 +355,8 @@ namespace UserCacheResolver
                 if (refs[r].offset > fn.size || fn.size - refs[r].offset < 4
                     || !input.read(addresses[i] + refs[r].offset, field, 4)
                     || !relativeTarget(addresses[i] + refs[r].offset, 0, field, actual)
-                    || !target(refs[r], images, ImageCount, functions, addresses, FunctionCount, destination)
+                    || !target(input, refs[r], images, ImageCount, imageRefs, functions, addresses, FunctionCount,
+                               destination, sectionRelative)
                     || (refs[r].indirect ? !binding(input, actual, refs[r].indirect, destination) :
                                            actual != destination))
                 {
@@ -310,10 +384,10 @@ namespace UserCacheResolver
                     }
                     UInt64 destination;
                     if (refs[r].offset < loc.offset || refs[r].offset + 4 > loc.offset + patches[p].size
-                        || (refs[r].indirect ?
-                                !observedTarget(input, refs, r, loc.function, functions, addresses, variants,
-                                                destination) :
-                                !target(refs[r], images, ImageCount, functions, addresses, FunctionCount, destination))
+                        || (refs[r].indirect ? !observedTarget(input, refs, r, loc.function, functions, addresses,
+                                                               variants, destination) :
+                                               !target(input, refs[r], images, ImageCount, imageRefs, functions,
+                                                       addresses, FunctionCount, destination, sectionRelative))
                         || !setRelative(variant ? replacement : original, refs[r].offset - loc.offset, address,
                                         destination))
                     {

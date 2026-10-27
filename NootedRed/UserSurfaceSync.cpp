@@ -313,15 +313,18 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     UInt64     submitOffset{0};
     const bool knownCache =
         sequoia ? (submitGuard && UserSurfaceSyncResolver::resolveSequoiaSubmit(readUser, base, submitOffset)) :
-                  (legacyProfile ? memcmp(header + 88, legacyProfile->uuid, 16) == 0 : !dynamic);
+                  (legacyProfile ?
+                       memcmp(header + 88, legacyProfile->uuid, 16) == 0 :
+                       (!dynamic
+                        || (submitGuard && UserSurfaceSyncResolver::resolveTahoeSubmit(readUser, base, submitOffset))));
     if (sequoia && submitGuard && !knownCache) { NRed::singleton().setProp32("NRedSubmitGuardDynamicRejected", 1); }
     if (knownCache && submitGuard) {
         if (auto map = getTaskMap(current_task())) {
-            bool fresh{false};
+            bool       fresh{false};
             const auto installed = installSubmitGuard(map, base, fresh, submitOffset);
             if (installed == KERN_SUCCESS && fresh) {
                 const auto pid = process != nullptr ? proc_pid(process) : -1;
-                char name[32]{};
+                char       name[32]{};
                 if (pid > 0) { proc_name(pid, name, sizeof(name)); }
                 name[sizeof(name) - 1] = '\0';
                 if (strcmp(name, "WindowServer") == 0) {
@@ -337,7 +340,8 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
                     }
                 }
                 SYSLOG("UserSurfaceSync", "SubmitGuard-v1 installed in pid %d", pid);
-            } else if (installed != KERN_SUCCESS) {
+            }
+            else if (installed != KERN_SUCCESS) {
                 NRed::singleton().setProp32("NRedSubmitGuardRejected", static_cast<UInt32>(installed));
                 SYSLOG("UserSurfaceSync", "SubmitGuard-v1 not installed: error=0x%X", installed);
             }
@@ -545,6 +549,7 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
 void UserSurfaceSync::init(KernelPatcher& patcher)
 {
     NRed::singleton().setProp32("NRedSharedRegionStackRevision", 1);
+    NRed::singleton().setProp32("NRedCacheSectionRevision", 1);
     sequoia         = currentKernelVersion().major() == 24;
     legacyProfile   = sequoia ? nullptr : UserLegacyData::metal(currentKernelVersion().major());
     renderRequested = false;
