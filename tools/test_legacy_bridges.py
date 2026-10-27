@@ -41,6 +41,10 @@ static IOLock* IOLockAlloc(){return new IOLock;}
 static void IOLockFree(IOLock* p){delete p;}
 static void IOLockLock(IOLock* p){assert(!p->locked);p->locked=true;}
 static void IOLockUnlock(IOLock* p){assert(p->locked);p->locked=false;}
+constexpr int THREAD_UNINT=0;
+static int IOLockSleep(IOLock*,void*,int){assert(false);return 0;}
+static void IOLockWakeup(IOLock*,void*,bool){}
+#include <UserPatchMapGate.hpp>
 namespace Buffer {template<class T>T* create(size_t n){return new T[n];}template<class T>void deleter(T* p){delete[] p;}}
 template<typename T,size_t N>constexpr size_t arrsize(const T(&)[N]){return N;}
 static std::map<std::string,unsigned> properties;

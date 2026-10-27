@@ -1,4 +1,5 @@
 #include <mutex>
+#include <condition_variable>
 #include <vector>
 #include <algorithm>
 #include <UserVideoGuardResolver.hpp>
@@ -16,6 +17,11 @@ static IOLock* IOLockAlloc(){return failLock?nullptr:new IOLock;}
 static void IOLockFree(IOLock* p){delete p;}
 static void IOLockLock(IOLock* p){p->lock();}
 static void IOLockUnlock(IOLock* p){p->unlock();}
+constexpr int THREAD_UNINT=0;
+static std::condition_variable_any gateChanged;
+static int IOLockSleep(IOLock* p,void*,int){std::unique_lock held(*p,std::adopt_lock);gateChanged.wait(held);held.release();return 0;}
+static void IOLockWakeup(IOLock*,void*,bool){gateChanged.notify_all();}
+#include <UserPatchMapGate.hpp>
 #include "user-cache-dynamic.hpp"
 namespace D=UserVideoDecodeData;
 namespace G=UserVideoGuard25Data;

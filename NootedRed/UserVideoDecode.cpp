@@ -17,6 +17,7 @@
 #include <mach/vm_map.h>
 #include <mach/vm_region.h>
 #include <sys/proc.h>
+#include <UserPatchMapGate.hpp>
 
 namespace
 {
@@ -38,6 +39,8 @@ namespace
     CopyIn                            readUser{nullptr};
     CopyOut                           writeUser{nullptr};
     IOLock*                           guardLock{nullptr};
+    UserPatchMapGate::Registry<64>     taskPatchRegistry;
+    UInt32                            taskGatePeakReported{0};
     UInt32                            seenStages{0}, appliedCount{0}, errorCount{0};
     bool                              fairPlayDriverOnly{false};
     bool                              sequoia{false};
@@ -510,6 +513,16 @@ namespace
         return result;
     }
 
+    void recordTaskGatePeak()
+    {
+        IOLockLock(guardLock);
+        if (taskPatchRegistry.peak > taskGatePeakReported) {
+            taskGatePeakReported = taskPatchRegistry.peak;
+            NRed::singleton().setProp32("NRedVCNUserMapGatePeak", taskGatePeakReported);
+        }
+        IOLockUnlock(guardLock);
+    }
+
     // Only the first eight calls are traced, even in RELEASE; no per-call IORegistry writes.
     UInt32 hookTraceCount{0};
     __attribute__((noinline))
@@ -532,9 +545,12 @@ namespace
         if (result != 0) { stage(Stage::OriginalError); return result; }
         if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d patch-enter", ticket, pid); }
         if (!guardLock) { return result; }
-        IOLockLock(guardLock);
+        auto* identity = getTaskMap ? static_cast<void*>(getTaskMap(current_task())) : nullptr;
+        if (!identity) { identity = current_task(); }
+        UserPatchMapGate::Lease lease(taskPatchRegistry, guardLock, identity);
+        if (!lease) { return result; }
         const auto patchedResult = patchSharedRegion(process, args, result);
-        IOLockUnlock(guardLock);
+        recordTaskGatePeak();
         if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d patch-return=%d", ticket, pid, patchedResult); }
         return patchedResult;
     }
@@ -604,6 +620,7 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         return;
     }
     NRed::singleton().setProp32("NRedVCNUserEnabled", 1);
+    NRed::singleton().setProp32("NRedVCNUserMapGateRevision", 1);
     NRed::singleton().setProp32("NRedVCNRegionQueryVersion", 1);
     if (fairPlayDriverOnly) {
         NRed::singleton().setProp32("NRedDRMVideoEnabled", 1);

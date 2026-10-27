@@ -31,7 +31,10 @@ def main():
 #include <cstdio>
 #include <string>
 #include <vector>
-using UInt32=uint32_t;using proc_t=void*;
+using UInt32=uint32_t;using proc_t=void*;using task_t=void*;
+static task_t current_task(){return reinterpret_cast<void*>(1);}
+static void* mapForTask(task_t task){return task;}
+static auto getTaskMap=mapForTask;
 struct SharedRegionCheckArgs {uint64_t startAddress;};
 using SharedRegionCheck=int(*)(proc_t,SharedRegionCheckArgs*,int*);
 enum class Stage {Called,OriginalError};
@@ -43,6 +46,12 @@ static unsigned displayLogs=0,videoLogs=0;
 struct IOLock {bool locked=false;};static IOLock lock;static IOLock* guardLock=&lock;
 static void IOLockLock(IOLock* p){assert(!p->locked);p->locked=true;}
 static void IOLockUnlock(IOLock* p){assert(p->locked);p->locked=false;}
+constexpr int THREAD_UNINT=0;
+static int IOLockSleep(IOLock*,void*,int){assert(false);return 0;}
+static void IOLockWakeup(IOLock*,void*,bool){}
+#include <UserPatchMapGate.hpp>
+static UserPatchMapGate::Registry<64> taskPatchRegistry;
+static void recordTaskGatePeak(){}
 static void recordTrace(const char* module){(std::string(module)=="UserSurfaceSync"?displayLogs:videoLogs)++;}
 #define SYSLOG(module,...) recordTrace(module)
 __attribute__((noinline))
@@ -90,7 +99,7 @@ int main(){
     compiler = os.environ.get('CXX') or shutil.which('clang++')
     assert compiler, 'clang++ required'
     subprocess.run([compiler, '-std=c++20', '-O2', '-Wframe-larger-than=512', '-Werror',
-                    str(path), '-o', str(exe)], check=True, timeout=60)
+                    '-I' + str(ROOT / 'NootedRed'), str(path), '-o', str(exe)], check=True, timeout=60)
     subprocess.run([str(exe)], check=True, timeout=60)
 
 
