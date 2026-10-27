@@ -40,11 +40,14 @@ static int proc_pid(proc_t p){return int(reinterpret_cast<uintptr_t>(p));}
 static std::vector<int> order;
 static int nativeResult=0,nativeDepth=0;
 static unsigned displayLogs=0,videoLogs=0;
+struct IOLock {bool locked=false;};static IOLock lock;static IOLock* guardLock=&lock;
+static void IOLockLock(IOLock* p){assert(!p->locked);p->locked=true;}
+static void IOLockUnlock(IOLock* p){assert(p->locked);p->locked=false;}
 static void recordTrace(const char* module){(std::string(module)=="UserSurfaceSync"?displayLogs:videoLogs)++;}
 #define SYSLOG(module,...) recordTrace(module)
 __attribute__((noinline))
 static int native(proc_t,SharedRegionCheckArgs*,int* out){
- assert(nativeDepth==0);nativeDepth++;order.push_back(0);*out=123;nativeDepth--;return nativeResult;
+ assert(nativeDepth==0&&!lock.locked);nativeDepth++;order.push_back(0);*out=123;nativeDepth--;return nativeResult;
 }
 '''
     source = common

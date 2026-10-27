@@ -27,6 +27,8 @@ namespace UserSurfaceSyncResolver
         UInt8                      original[4][BufferSize]{};
         UInt8                      patched[4][BufferSize]{};
         UInt32                     reads{0};
+        UserCacheResolver::ImageBounds scratchImages[sizeof(ScratchResolverData::ResolverImages)
+                                                     / sizeof(ScratchResolverData::ResolverImages[0])]{};
     };
     inline bool imageForCache(Input& input, UInt64 base, Image& image)
     {
@@ -72,9 +74,9 @@ namespace UserSurfaceSyncResolver
         // Scratch 与撤回的 VT 策略按完整函数和实际相对引用核验。
         if (scratchMode) {
             using namespace ScratchResolverData;
-            if (!UserCacheResolver::resolve(input, base, ResolverImages, ResolverFunctions, device.scratch + 3,
+            if (!UserCacheResolver::resolveWithImages(input, base, ResolverImages, ResolverFunctions, device.scratch + 3,
                                             ResolverLocations, plan.patches + 3, &plan.original[3][0],
-                                            &plan.patched[3][0], Plan::BufferSize, true))
+                                            &plan.patched[3][0], Plan::BufferSize, plan.scratchImages, true))
             {
                 return false;
             }

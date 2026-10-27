@@ -25,6 +25,7 @@ namespace UserCacheResolver
     }
 
     template<typename PrefixMatches, typename CandidateMatches>
+    __attribute__((noinline))
     inline bool scanFunction(Input& input, const Range& text, UInt32 size, UInt32 prefixSize,
                              PrefixMatches prefixMatches, CandidateMatches candidateMatches, UInt64& found,
                              UInt64 hint = 0)
@@ -129,9 +130,9 @@ namespace UserCacheResolver
                           });
     }
 
-    template<typename Patch>
+    template<typename Patch, typename CandidateFilter>
     inline bool find(Input& input, const Range& text, const Function& function, UInt32 f, const Patch* patches,
-                     const Location* locations, UInt32 count, UInt64& address, bool& patched)
+                     const Location* locations, UInt32 count, UInt64& address, bool& patched, CandidateFilter filter)
     {
         if (function.size < 32) { return false; }
         UInt8 prefixes[2][32];
@@ -162,7 +163,8 @@ namespace UserCacheResolver
         const auto candidateMatches = [&](UInt64 candidate)
         {
             for (UInt32 variant = 0; variant < 2; ++variant) {
-                if (matches(input, candidate, function, f, variant != 0, patches, locations, count)) {
+                if (matches(input, candidate, function, f, variant != 0, patches, locations, count)
+                    && filter(candidate, variant != 0)) {
                     patched = variant != 0;
                     return true;
                 }
@@ -170,6 +172,14 @@ namespace UserCacheResolver
             return false;
         };
         return scanFunction(input, text, function.size, 32, prefixMatches, candidateMatches, address);
+    }
+
+    template<typename Patch>
+    inline bool find(Input& input, const Range& text, const Function& function, UInt32 f, const Patch* patches,
+                     const Location* locations, UInt32 count, UInt64& address, bool& patched)
+    {
+        return find(input, text, function, f, patches, locations, count, address, patched,
+                    [](UInt64, bool) { return true; });
     }
 
     inline bool sectionTarget(Input& input, const ImageBounds& image, const UserCacheSectionData::Target& target,
@@ -238,7 +248,8 @@ namespace UserCacheResolver
 
     inline bool target(Input& input, const Reference& ref, const ImageBounds* images, UInt32 imageCount,
                        const ImageReference* imageRefs, const Function* functions, const UInt64* addresses,
-                       UInt32 functionCount, UInt64& address, bool sectionRelative)
+                       UInt32 functionCount, UInt64& address, bool sectionRelative,
+                       const UserCacheSectionData::Target* scopedTargets = nullptr, UInt32 scopedTargetCount = 0)
     {
         if (ref.image >= imageCount || ref.rva >= UserLimit - images[ref.image].address) { return false; }
         address = images[ref.image].address + ref.rva;
@@ -252,6 +263,12 @@ namespace UserCacheResolver
             }
         }
         if (sectionRelative) {
+            for (UInt32 i = 0; i < scopedTargetCount; ++i) {
+                const auto& entry = scopedTargets[i];
+                if (entry.rva == ref.rva && strcmp(entry.path, imageRefs[ref.image].path) == 0) {
+                    return sectionTarget(input, images[ref.image], entry, address);
+                }
+            }
             for (const auto& entry : UserCacheSectionData::Targets) {
                 if (entry.rva == ref.rva && strcmp(entry.path, imageRefs[ref.image].path) == 0) {
                     return sectionTarget(input, images[ref.image], entry, address);
@@ -307,15 +324,17 @@ namespace UserCacheResolver
     }
 
     template<typename Patch, size_t ImageCount, size_t FunctionCount, size_t PatchCount>
-    inline bool resolve(Input& input, UInt64 base, const ImageReference (&imageRefs)[ImageCount],
+    __attribute__((noinline))
+    inline bool resolveWithImages(Input& input, UInt64 base, const ImageReference (&imageRefs)[ImageCount],
                         const Function (&functions)[FunctionCount], const Patch* patches,
                         const Location (&locations)[PatchCount], Patch* output, UInt8* originals, UInt8* replacements,
-                        UInt32 stride, bool sectionRelative = false)
+                        UInt32 stride, ImageBounds (&images)[ImageCount], bool sectionRelative = false,
+                        const UserCacheSectionData::Target* scopedTargets = nullptr, UInt32 scopedTargetCount = 0)
     {
         static_assert(ImageCount > 0 && ImageCount <= 16 && FunctionCount > 0 && FunctionCount <= 32);
+        if (scopedTargetCount > 128 || (scopedTargets == nullptr) != (scopedTargetCount == 0)) { return false; }
         UInt64      addresses[FunctionCount]{};
         bool        variants[FunctionCount]{};
-        ImageBounds images[ImageCount]{};
         input.imageRefs  = imageRefs;
         input.imageCount = ImageCount;
         input.tableRead  = false;
@@ -331,9 +350,38 @@ namespace UserCacheResolver
             memcpy(images[i].segments, image.segments, image.segmentCount * sizeof(Range));
         }
         for (UInt32 i = 0; i < FunctionCount; ++i) {
-            if (functions[i].image >= ImageCount
-                || !find(input, images[functions[i].image].text, functions[i], i, patches, locations, PatchCount,
-                         addresses[i], variants[i]))
+            if (functions[i].image >= ImageCount) { return false; }
+            const auto dataTargetsMatch = [&](UInt64 candidate, bool variant)
+            {
+                const auto& fn = functions[i];
+                const auto* refs = variant ? fn.patchedRefs : fn.originalRefs;
+                const auto count = variant ? fn.patchedCount : fn.originalCount;
+                for (UInt32 r = 0; r < count; ++r) {
+                    if (refs[r].image >= ImageCount) { return false; }
+                    bool scoped = false;
+                    for (UInt32 k = 0; k < scopedTargetCount; ++k) {
+                        const auto& entry = scopedTargets[k];
+                        if (entry.rva == refs[r].rva && strcmp(entry.path, imageRefs[refs[r].image].path) == 0) {
+                            scoped = true;
+                            break;
+                        }
+                    }
+                    if (!scoped) { continue; }
+                    UInt8 field[4];
+                    UInt64 actual, destination;
+                    if (refs[r].offset > fn.size || fn.size - refs[r].offset < sizeof(field)
+                        || !input.read(candidate + refs[r].offset, field, sizeof(field))
+                        || !relativeTarget(candidate + refs[r].offset, 0, field, actual)
+                        || !target(input, refs[r], images, ImageCount, imageRefs, functions, addresses, 0,
+                                   destination, true, scopedTargets, scopedTargetCount)
+                        || (refs[r].indirect ? !binding(input, actual, refs[r].indirect, destination) : actual != destination)) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+            if (!find(input, images[functions[i].image].text, functions[i], i, patches, locations, PatchCount,
+                      addresses[i], variants[i], dataTargetsMatch))
             {
                 return false;
             }
@@ -356,7 +404,7 @@ namespace UserCacheResolver
                     || !input.read(addresses[i] + refs[r].offset, field, 4)
                     || !relativeTarget(addresses[i] + refs[r].offset, 0, field, actual)
                     || !target(input, refs[r], images, ImageCount, imageRefs, functions, addresses, FunctionCount,
-                               destination, sectionRelative)
+                               destination, sectionRelative, scopedTargets, scopedTargetCount)
                     || (refs[r].indirect ? !binding(input, actual, refs[r].indirect, destination) :
                                            actual != destination))
                 {
@@ -387,7 +435,7 @@ namespace UserCacheResolver
                         || (refs[r].indirect ? !observedTarget(input, refs, r, loc.function, functions, addresses,
                                                                variants, destination) :
                                                !target(input, refs[r], images, ImageCount, imageRefs, functions,
-                                                       addresses, FunctionCount, destination, sectionRelative))
+                                                       addresses, FunctionCount, destination, sectionRelative, scopedTargets, scopedTargetCount))
                         || !setRelative(variant ? replacement : original, refs[r].offset - loc.offset, address,
                                         destination))
                     {
@@ -405,6 +453,18 @@ namespace UserCacheResolver
             }
         }
         return true;
+    }
+
+    template<typename Patch, size_t ImageCount, size_t FunctionCount, size_t PatchCount>
+    inline bool resolve(Input& input, UInt64 base, const ImageReference (&imageRefs)[ImageCount],
+                        const Function (&functions)[FunctionCount], const Patch* patches,
+                        const Location (&locations)[PatchCount], Patch* output, UInt8* originals, UInt8* replacements,
+                        UInt32 stride, bool sectionRelative = false,
+                        const UserCacheSectionData::Target* scopedTargets = nullptr, UInt32 scopedTargetCount = 0)
+    {
+        ImageBounds images[ImageCount]{};
+        return resolveWithImages(input, base, imageRefs, functions, patches, locations, output, originals, replacements,
+                                 stride, images, sectionRelative, scopedTargets, scopedTargetCount);
     }
 
 }    // namespace UserCacheResolver

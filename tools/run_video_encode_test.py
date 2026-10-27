@@ -4,6 +4,7 @@ import datetime
 import json
 from pathlib import Path
 import subprocess
+from video_hardware_guard import require_guard, GPUMonitor, HardwareFault, wait_for_case
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,17 +33,33 @@ def main():
         "-framework", "Foundation", "-framework", "VideoToolbox", "-framework", "CoreMedia",
         "-framework", "CoreVideo", str(ROOT / "tools/test_video_encode.m"), "-o", str(executable),
     ], check=True, timeout=60)
+    if args.hardware:
+        print(f"Guarded encoder PID: {require_guard()}", flush=True)
     rows = []
     cases = [("list", ["--list"])]
     modes = ["software"] + (["auto", "hardware"] if args.hardware else [])
     cases += [(f"{mode}-{codec}", [f"--{mode}", codec]) for mode in modes for codec in ["h264", "hevc"]]
+    monitor = GPUMonitor(work) if args.hardware else None
+    try:
+        return run_cases(args, work, executable, cases, monitor, rows)
+    finally:
+        if monitor: monitor.close()
+
+
+def run_cases(args, work, executable, cases, monitor, rows):
     for label, options in cases:
+        if label.startswith(("auto-", "hardware-")):
+            require_guard()
+            monitor.check()
         print(f"BEGIN {label}", flush=True)
         with (work / f"{label}.jsonl").open("w") as output, (work / f"{label}.stderr.txt").open("w") as errors:
             process = subprocess.Popen([str(executable), *options], stdout=output, stderr=errors)
             try:
-                returncode = process.wait(timeout=args.timeout)
+                returncode = wait_for_case(process, args.timeout, monitor)
                 row = {"case": label, "returncode": returncode, "timeout": False}
+            except HardwareFault as fault:
+                process.kill(); process.wait(timeout=10)
+                row = {"case": label, "returncode": process.returncode, "timeout": False, "hardwareFault": str(fault)}
             except subprocess.TimeoutExpired:
                 # 进程级超时不能解除内核或 GPU 锁；首次阻塞后停止全部后续测试。
                 sample_status = None
@@ -72,12 +89,13 @@ def main():
             summary["lastEvent"] = {"stage": "list", "status": events[-1].get("status"),
                                     "encoderCount": len(events[-1].get("encoders", []))}
         print(json.dumps(summary, ensure_ascii=False), flush=True)
-        if row["timeout"]:
-            print("STOP: 超时，未继续硬件测试", flush=True)
+        if row["timeout"] or row.get("hardwareFault"):
+            print("STOP: 超时或硬件异常，未继续后续测试；结束进程不代表 GPU 工作已取消", flush=True)
             break
     print("Saved:", work, flush=True)
     return 0 if len(rows) == len(cases) and all(
-        r["returncode"] == 0 and not r["timeout"] and not r.get("invalidJSON") for r in rows) else 1
+        r["returncode"] == 0 and not r["timeout"] and not r.get("invalidJSON")
+        and not r.get("hardwareFault") for r in rows) else 1
 
 
 if __name__ == "__main__":

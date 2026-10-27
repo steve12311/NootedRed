@@ -13,10 +13,9 @@ namespace UserVideoDecodeResolver
         UInt8                      patched[sizeof(Patches) / sizeof(Patches[0])][MaxPatchSize]{};
         UInt32                     reads{0};
     };
-    inline bool resolve(UserSharedCache::Reader reader, UInt64 base, const UserVideoDecodeData::Patch* patches,
+    inline bool resolve(UserSharedCache::Input& input, UInt64 base, const UserVideoDecodeData::Patch* patches,
                         Plan& plan, bool sequoia = false)
     {
-        UserSharedCache::Input input{reader, {}};
         const auto             resolve = [&]<typename Images, typename Functions, typename Locations>(
                                  const Images& images, const Functions& functions, const Locations& locations)
         {
@@ -32,6 +31,13 @@ namespace UserVideoDecodeResolver
         }
         plan.reads = input.reads;
         return true;
+    }
+
+    inline bool resolve(UserSharedCache::Reader reader, UInt64 base, const UserVideoDecodeData::Patch* patches,
+                        Plan& plan, bool sequoia = false)
+    {
+        UserSharedCache::Input input{reader, {}};
+        return resolve(input, base, patches, plan, sequoia);
     }
 
 }    // namespace UserVideoDecodeResolver

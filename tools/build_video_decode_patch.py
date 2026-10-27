@@ -111,7 +111,19 @@ def main():
     global WORK
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sequoia-cache', type=Path)
+    parser.add_argument('--safety-major', type=int, choices=[24, 25], help='生成对应系统的第一阶段安全守卫')
+    parser.add_argument('--safety-cache', type=Path)
+    parser.add_argument('--check-safety', action='store_true')
     args = parser.parse_args()
+    if args.safety_major:
+        import build_video_capability_patch
+        options = ['--major', str(args.safety_major)]
+        if args.safety_cache: options += ['--cache', str(args.safety_cache)]
+        if args.check_safety: options += ['--check']
+        build_video_capability_patch.main(options)
+        return
+    if args.safety_cache or args.check_safety:
+        parser.error('--safety-cache / --check-safety 需要 --safety-major')
     profile = json.loads((ROOT / 'tools/fixtures/sequoia-compat.json').read_text()) if args.sequoia_cache else None
     if profile:
         WORK = ROOT / 'build/sequoia/video'

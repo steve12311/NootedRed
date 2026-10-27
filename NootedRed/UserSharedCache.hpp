@@ -6,6 +6,7 @@ namespace UserSharedCache
 {
 
     using Reader                   = int (*)(UInt64, void*, size_t);
+    using ContextReader            = int (*)(void*, UInt64, void*, size_t);
     constexpr UInt64   UserLimit   = 0x0000800000000000ULL;
     constexpr UInt32   MaxTextSize = 8 * 1024 * 1024;
     struct ImageReference
@@ -32,6 +33,8 @@ namespace UserSharedCache
         const ImageReference* imageRefs{nullptr};
         UInt32                imageCount{0};
         UInt64                imageAddresses[16]{};
+        void*                 readerContext{nullptr};
+        ContextReader         contextReader{nullptr};
         bool                  read(UInt64 address, void* value, UInt32 size)
         {
             if (failed || !cache.contains(address, size) || reads >= 32768 || size > 32 * 1024 * 1024 - bytes) {
@@ -40,7 +43,7 @@ namespace UserSharedCache
             }
             ++reads;
             bytes += size;
-            if (reader(address, value, size) != 0) {
+            if ((contextReader ? contextReader(readerContext, address, value, size) : reader(address, value, size)) != 0) {
                 failed = true;
                 return false;
             }
@@ -118,6 +121,7 @@ namespace UserSharedCache
         }
     };
 
+    __attribute__((noinline))
     inline bool imageForCache(Input& input, UInt64 base, Image& image, const char* pathName, UInt32 pathSize)
     {
         UInt8 header[456];

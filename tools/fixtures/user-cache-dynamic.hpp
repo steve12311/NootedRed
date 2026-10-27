@@ -7,6 +7,7 @@ static std::vector<std::string> imagePaths;
 struct MockSection { std::string segment,name; uint64_t address,size; };
 static std::vector<std::vector<MockSection>> imageSections;
 static bool sectionRebased=false;
+static std::vector<UserCacheSectionData::Target> activeSectionTargets;
 static constexpr uint64_t base=0x7ff800200000ULL,unslid=base-0x200000;
 static unsigned writes=0,protects=0,failWrite=0,failedProtect=0;
 static std::set<unsigned> failedProtectCalls;
@@ -30,7 +31,7 @@ static void rel(uint64_t a,uint32_t offset,uint64_t target){uint8_t b[4];
 static uint64_t destination(const UserCacheResolver::Reference& ref,const UserCacheResolver::Function* functions,unsigned count){
  for(unsigned f=0;f<count;f++)if(functions[f].image==ref.image&&ref.rva>=functions[f].rva&&ref.rva-functions[f].rva<functions[f].size)
   return functionAddresses[f]+ref.rva-functions[f].rva;
- if(sectionRebased)for(auto& target:UserCacheSectionData::Targets)
+ if(sectionRebased)for(auto& target:activeSectionTargets)
   if(target.rva==ref.rva && imagePaths[ref.image]==target.path)
    for(auto& section:imageSections[ref.image])if(section.segment==target.segment&&section.name==target.section)
     return section.address+target.offset;
@@ -38,7 +39,7 @@ static uint64_t destination(const UserCacheResolver::Reference& ref,const UserCa
 }
 static void sectionCommands(uint64_t a,const char* path,unsigned image){
  std::map<std::pair<std::string,std::string>,uint64_t> sizes;
- for(auto& t:UserCacheSectionData::Targets)if(strcmp(t.path,path)==0)
+ for(auto& t:activeSectionTargets)if(strcmp(t.path,path)==0)
   sizes[{t.segment,t.section}]=std::max(sizes[{t.segment,t.section}],t.offset+4);
  auto& sections=imageSections[image];
  sections.push_back({"__TEXT","__text",a+0x1000,0x6f000});
@@ -65,9 +66,11 @@ static void sectionCommands(uint64_t a,const char* path,unsigned image){
  }
  word32(a+20,cursor-32);
 }
-template<size_t I,size_t F>static void cache(const UserCacheResolver::ImageReference(&images)[I],const UserCacheResolver::Function(&functions)[F],bool rebase=false){
+template<size_t I,size_t F>static void cache(const UserCacheResolver::ImageReference(&images)[I],const UserCacheResolver::Function(&functions)[F],bool rebase=false,const UserCacheSectionData::Target* scoped=nullptr,unsigned scopedCount=0){
  blocks.clear();protections.clear();properties.clear();failedProtectCalls.clear();imageAddresses.clear();functionAddresses.clear();
  writes=protects=failWrite=failedProtect=0;failedRead=0;
+ activeSectionTargets.clear();if(scopedCount)activeSectionTargets.assign(scoped,scoped+scopedCount);
+ activeSectionTargets.insert(activeSectionTargets.end(),std::begin(UserCacheSectionData::Targets),std::end(UserCacheSectionData::Targets));
  sectionRebased=rebase;imagePaths.clear();imageSections.clear();imageSections.resize(I);
  blocks[base].resize(0x20000);put(base,"dyld_v1 x86_64h",16);memset(blocks[base].data()+88,0xa7,16);
  word32(base+16,0x300);word32(base+20,1);word64(base+224,unslid);word64(base+232,0x400000000ULL);word64(base+240,0x200000);

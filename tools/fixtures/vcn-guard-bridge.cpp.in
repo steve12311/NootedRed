@@ -1,0 +1,213 @@
+#include <mutex>
+#include <vector>
+#include <algorithm>
+#include <UserVideoGuardResolver.hpp>
+static unsigned failNewAt=0,newCalls=0;
+template<class T> static T* allocateObjects(size_t count){
+ return ++newCalls==failNewAt?nullptr:new T[count];
+}
+#undef IONew
+#define IONew(T,N) allocateObjects<T>(N)
+using vm_address_t=uint64_t;
+constexpr int VM_FLAGS_ANYWHERE=1;
+using IOLock=std::mutex;
+static bool failLock=false;
+static IOLock* IOLockAlloc(){return failLock?nullptr:new IOLock;}
+static void IOLockFree(IOLock* p){delete p;}
+static void IOLockLock(IOLock* p){p->lock();}
+static void IOLockUnlock(IOLock* p){p->unlock();}
+#include "user-cache-dynamic.hpp"
+namespace D=UserVideoDecodeData;
+namespace G=UserVideoGuard25Data;
+static constexpr unsigned major=25;
+static constexpr unsigned BaseFunctions=std::size(D::ResolverFunctions),GuardFunctions=std::size(G::ResolverFunctions);
+static UserCacheResolver::Function merged[BaseFunctions+GuardFunctions];
+static std::vector<UserCacheResolver::Reference> refs[GuardFunctions];
+static std::map<uint64_t,int> maxima;
+static std::set<unsigned> failWrites;
+static bool failAllocation=false,noMap=false;
+static int originalResult=0,regionMode=0;
+static unsigned allocations=0,deallocations=0,payloadWrites=0;
+static const char* processName="Other";
+static kern_return_t vm_allocate(vm_map_t,uint64_t* a,unsigned size,int){
+ allocations++;if(failAllocation)return 3;assert(size==4096);*a=0x40000000;
+ assert(!blocks.contains(*a));blocks[*a].resize(4096);protections[*a]=3;maxima[*a]=7;return 0;
+}
+static kern_return_t vm_deallocate(vm_map_t,uint64_t a,unsigned){deallocations++;assert(blocks.erase(a)==1);protections.erase(a);maxima.erase(a);return 0;}
+static std::set<uint64_t> touchedPages;
+static kern_return_t vm_protect(vm_map_t,uint64_t a,unsigned,int maximum,int flags){
+ protects++;if(protects==failedProtect||failedProtectCalls.contains(protects))return 42;
+ assert(protections.contains(a));touchedPages.insert(a);int value=flags&7;
+ if(maximum){maxima[a]=value;protections[a]&=value;}else {protections[a]=value;maxima[a]|=value;}
+ return 0;
+}
+static int proc_pid(proc_t p){return int(reinterpret_cast<uintptr_t>(p));}
+static void proc_name(int,char* name,int size){snprintf(name,size,"%s",processName);}
+BODY
+INIT
+static int original(proc_t,SharedRegionCheckArgs*,int* value){*value=123;return originalResult;}
+static vm_map_t map(task_t){return noMap?nullptr:reinterpret_cast<void*>(2);}
+static kern_return_t query(vm_map_t,uint64_t* a,uint64_t* size,unsigned* depth,int* p,unsigned* count){
+ if(regionMode==1)return 42;assert(*count==VM_REGION_SUBMAP_SHORT_INFO_COUNT_64);
+ auto* info=reinterpret_cast<vm_region_submap_short_info_data_64_t*>(p);*size=4096;
+ info->is_submap=*depth==0;info->protection=*depth==0?1:protections.at(*a);
+ info->max_protection=*depth==0?5:maxima.at(*a);
+ if(regionMode==2)*a+=4096;if(regionMode==3)*count=1;if(regionMode==4)*size=4095;
+ return 0;
+}
+static int copyout(const void* p,uint64_t a,size_t n){
+ if(a==0x40000000)payloadWrites++;
+ if(failWrites.contains(writes+1)){writes++;put(a,p,std::min(n,size_t(2)));return 1;}
+ return writer(p,a,n);
+}
+static UserVideoDecodeResolver::Plan nativePlan;
+static UserVideoGuardResolver::Plan safetyPlan;
+static void setup(unsigned id=0x1638){
+ for(unsigned i=0;i<BaseFunctions;i++)merged[i]=D::ResolverFunctions[i];
+ for(unsigned i=0;i<GuardFunctions;i++){
+  auto fn=G::ResolverFunctions[i];refs[i].assign(fn.originalRefs,fn.originalRefs+fn.originalCount);
+  for(auto& ref:refs[i]){assert(ref.image==0);ref.image=2;}
+  assert(fn.image==0);fn.image=2;fn.originalRefs=fn.patchedRefs=refs[i].data();merged[BaseFunctions+i]=fn;
+ }
+ cache(D::ResolverImages,merged,true,G::SectionTargets,std::size(G::SectionTargets));
+ // 模拟所有函数跨页和数据节独立迁移；代码匹配仍使用各自来源版本的完整证据。
+ NRed::device=id;Version::majorValue=major;devicePatches=D::findDevice(id);sequoia=major==24;legacyProfile=nullptr;
+ fairPlayDriverOnly=true;maxima.clear();failWrites.clear();failAllocation=noMap=false;originalResult=regionMode=0;
+ allocations=deallocations=payloadWrites=0;touchedPages.clear();seenStages=appliedCount=errorCount=0;
+ failNewAt=newCalls=0;
+ clientEntitlement=nullptr;processName="Other";entitlementQueries=0;trueEntitlement.releases=falseEntitlement.releases=0;
+ originalCheck=reinterpret_cast<uint64_t>(original);getTaskMap=map;queryRegion=query;readUser=reader;writeUser=copyout;
+ if(!guardLock)guardLock=IOLockAlloc();
+ nativePlan={};safetyPlan={};UserSharedCache::Input input{reader,{}};
+ assert(UserVideoDecodeResolver::resolve(input,base,devicePatches,nativePlan,sequoia));
+ assert(UserVideoGuardResolver::resolve(input,base,major,safetyPlan));
+ pages(nativePlan.patches,D::PatchCount);pages(safetyPlan.patches,safetyPlan.count);
+ for(auto[a,p]:protections)maxima[a]=p;
+}
+static void call(){SharedRegionCheckArgs args{0x1000};int value=0;
+ assert(wrappedSharedRegionCheck(reinterpret_cast<void*>(217),&args,&value)==originalResult&&value==123);
+}
+static void unchanged(const std::map<uint64_t,std::vector<uint8_t>>& before){assert(blocks==before);rx();for(auto[a,p]:protections)assert(maxima.at(a)==5);}
+static void noApplied(){assert(!properties.contains("NRedVCNUserApplied")&&!properties.contains("NRedVCNEncodeGuardRevision"));}
+static unsigned cases;
+static void accepted(bool fair){
+ call();assert(properties.at("NRedVCNEncodeGuardRevision")==1&&properties.at("NRedVCNDecodeGuardRevision")==1);
+ assert(writes==(fair?18:D::PatchCount)+safetyPlan.count+1);assert(allocations==1&&deallocations==0&&payloadWrites==1);rx();
+ for(auto[a,p]:protections)assert(maxima.at(a)==5);
+ for(unsigned i=0;i<D::PatchCount;i++){
+  const auto& p=nativePlan.patches[i];uint8_t bytes[D::MaxPatchSize];assert(reader(base+p.offset,bytes,p.size)==0);
+  bool selected=!fair || ((major==24?0x7FE1FEU:0x7F87FEU)&(1U<<i));
+  assert(memcmp(bytes,selected?p.patched:p.original,p.size)==0);
+ }
+ const auto oldWrites=writes,oldProtects=protects;call();assert(writes==oldWrites&&protects==oldProtects&&allocations==1);
+ assert(properties.at("NRedVCNUserD07")==1);if(fair)assert(properties.at("NRedDRMVideoState")==3);
+ cases++;
+}
+int main(int argc,char** argv){
+ const unsigned group=argc>2?std::stoul(argv[2]):0;
+ for(unsigned id=0;id<=0xffff;id++){
+  bool supported=id==0x15e7||id==0x1636||id==0x1638||id==0x164c;
+  assert((D::findDevice(id)!=nullptr)==supported);assert((VCNCapabilities::rejection(id,MACOS_26)==0)==supported);
+ }
+ for(unsigned os:{22U,23U,24U,25U,26U})for(unsigned minor:{0U,6U,7U}){
+  Version::majorValue=os;Version::minorValue=minor;properties.clear();KernelPatcher p;UserVideoDecode::init(p);
+  assert(p.routes==int(os==24||os==25));if(os==23)assert(properties.at("NRedVCNUserSafetyProfileMissing")==1);cases++;
+ }
+ for(unsigned id:{0x15d8U,0x15ddU,0x6863U,0U,0xffff1638U}){
+  Version::majorValue=major;NRed::device=id;KernelPatcher p;UserVideoDecode::init(p);assert(p.solves==0&&p.routes==0);cases++;
+ }
+ NRed::device=0x1638;Version::majorValue=major;
+ {flag=false;KernelPatcher p;UserVideoDecode::init(p);assert(p.solves==0&&p.routes==0);flag=true;cases++;}
+ {KernelPatcher p;p.missing=true;UserVideoDecode::init(p);assert(!devicePatches&&p.routes==0);cases++;}
+ IOLockFree(guardLock);guardLock=nullptr;failLock=true;
+ {KernelPatcher p;UserVideoDecode::init(p);assert(!devicePatches&&p.routes==0);cases++;}failLock=false;
+ {KernelPatcher p;p.routeOK=false;UserVideoDecode::init(p);assert(!guardLock&&!devicePatches);cases++;}
+ for(unsigned id:{0x15e7U,0x1636U,0x1638U,0x164cU}){
+  if(argc>=2&&id!=std::stoul(argv[1],nullptr,16))continue;
+  if(group==0){
+  setup(id);processName="VTEncoderXPCService";accepted(false);assert(properties.at("NRedVCNGuardedEncoderPID")==217);
+  for(const char* name:{"Music","TV","lskdd","MusicHelper","MusicX","music","Other",""}){
+   setup(id);processName=name;clientEntitlement=kOSBooleanTrue;accepted(true);
+   assert(properties.at("NRedDRMVideoPID")==217&&properties.at("NRedDRMVideoPatchCount")==18);
+   assert(entitlementQueries==2&&trueEntitlement.releases==2);
+   for(auto* entitlement:{static_cast<OSObject*>(nullptr),static_cast<OSObject*>(kOSBooleanFalse)}){
+    setup(id);processName=name;clientEntitlement=entitlement;accepted(false);
+   }
+  }
+  }
+  for(bool fair:{false,true}){
+   const unsigned start=fair?6:1;
+   if(group<start||group>start+4)continue;
+   setup(id);if(fair)clientEntitlement=kOSBooleanTrue;
+   std::set<uint64_t> selectedPages;
+   for(unsigned i=0;i<D::PatchCount+safetyPlan.count;i++){
+    if(i<D::PatchCount&&fair&&!((major==24?0x7FE1FEU:0x7F87FEU)&(1U<<i)))continue;
+    auto& p=i<D::PatchCount?nativePlan.patches[i]:safetyPlan.patches[i-D::PatchCount];
+    for(auto a=(base+p.offset)&~uint64_t(4095);a<=((base+p.offset+p.size-1)&~uint64_t(4095));a+=4096)selectedPages.insert(a);
+   }
+   const unsigned sourcePages=selectedPages.size(),entries=(fair?18:D::PatchCount)+safetyPlan.count;
+   if(group==start)for(unsigned entry=1;entry<=entries+1;entry++){
+    setup(id);if(fair)clientEntitlement=kOSBooleanTrue;auto before=blocks;failWrite=entry;call();unchanged(before);noApplied();assert(deallocations==1);cases++;
+   }
+   if(group==start+1)for(unsigned page=1;page<=sourcePages+2;page++){
+    setup(id);if(fair)clientEntitlement=kOSBooleanTrue;auto before=blocks;failedProtect=page;call();unchanged(before);noApplied();cases++;
+   }
+   // 每个当前/最大权限恢复调用均单独故障；双重故障也必须回滚全部入口。
+   for(unsigned page=0;page<sourcePages;page++)for(unsigned mode:{0U,1U,2U}){
+    if(group!=start+2+mode)continue;
+    setup(id);if(fair)clientEntitlement=kOSBooleanTrue;auto before=blocks;
+    auto at=sourcePages+3+page*2;failedProtectCalls={at+(mode==1)};
+    if(mode==2)failedProtectCalls.insert(at+1);
+    call();if(mode==0){assert(properties.contains("NRedVCNUserApplied"));rx();}
+    else {unchanged(before);noApplied();}cases++;
+   }
+  }
+ }
+ if(group==11){
+ for(unsigned mode=1;mode<=4;mode++){setup();regionMode=mode;auto before=blocks;call();assert(writes==0&&protects==0);unchanged(before);cases++;}
+ setup();UserSharedCache::Input reused{reader,{}};UserVideoDecodeResolver::Plan repeated;
+ for(unsigned i=0;i<2;i++)assert(UserVideoDecodeResolver::resolve(reused,base,devicePatches,repeated,sequoia));
+ UserSharedCache::Input exhausted{reader,{}};exhausted.reads=32768;
+ assert(!UserVideoDecodeResolver::resolve(exhausted,base,devicePatches,repeated,sequoia));cases+=3;
+ setup();failAllocation=true;auto before=blocks;call();unchanged(before);assert(writes==0);noApplied();cases++;
+ for(unsigned allocation=1;allocation<=4;allocation++){
+  setup();auto before=blocks;failNewAt=allocation;call();unchanged(before);noApplied();assert(writes==0&&allocations==0);cases++;
+ }
+ setup();noMap=true;call();assert(writes==0&&protects==0);cases++;
+ setup();originalResult=42;call();assert(writes==0&&protects==0);cases++;
+ setup();VCN::active=false;call();assert(writes==0&&protects==0);VCN::active=true;cases++;
+ for(unsigned i=0;i<D::PatchCount;i++){
+  setup();const auto& p=nativePlan.patches[i];put(base+p.offset,p.patched,p.size);auto before=blocks;call();unchanged(before);assert(writes==0&&protects==0);cases++;
+ }
+ for(unsigned kind=0;kind<12;kind++){
+  setup();switch(kind){
+   case 0:word32(base+452,8193);break;case 1:word32(base+448,0xfffffff0);break;
+   case 2:word32(imageAddresses[0],0);break;case 3:word32(imageAddresses[0]+36,7);break;
+   case 4:word32(functionAddresses[0]+100,0);break;
+   case 5:word64(base+0x1000+32,imageAddresses[0]-0x200000);word32(base+0x1018+32,0x3000);break;
+   case 6:word64(base+232,~uint64_t(0));break;case 7:failedRead=functionAddresses[0];break;
+   case 8:put(imageAddresses[0]+0x5e000,D::ResolverFunctions[0].original,D::ResolverFunctions[0].size);break;
+   case 9:word64(base+0x7000000,0);break;
+   case 10:rel(functionAddresses[0],D::ResolverFunctions[0].originalRefs[0].offset,base+0x7010000);break;
+   case 11:put(base,"invalid",7);break;
+  }auto before=blocks;call();unchanged(before);assert(writes==0&&protects==0);cases++;
+ }
+ // 入口已经指向代码页时，篡改内容、当前/最大权限或混合页均不能记录安全状态。
+ for(unsigned kind=0;kind<5;kind++){
+  setup();call();assert(properties.contains("NRedVCNUserApplied"));properties.clear();
+  if(kind==0)word32(0x40000020,0x12345678);
+  if(kind==1)protections[0x40000000]=3;
+  if(kind==2)maxima[0x40000000]=7;
+  if(kind==3)maxima[(base+safetyPlan.patches[0].offset)&~uint64_t(4095)]=7;
+  if(kind==4)put(base+safetyPlan.patches[0].offset,safetyPlan.original[0],safetyPlan.patches[0].size);
+  auto oldWrites=writes,oldProtects=protects;call();assert(writes==oldWrites&&protects==oldProtects);noApplied();cases++;
+ }
+ setup();const unsigned entryCount=D::PatchCount+safetyPlan.count;
+ failWrites={entryCount+1,entryCount+2};call();assert(properties.at("NRedVCNGuardRollbackRetainedPage")==1);
+ assert(deallocations==0&&blocks.contains(0x40000000));noApplied();cases++;
+ UserSharedCache::Input retained{reader,{}};UserVideoGuardResolver::Plan intact;
+ assert(UserVideoGuardResolver::resolve(retained,base,major,intact)&&intact.installed);rx();cases++;
+ }
+ IOLockFree(guardLock);guardLock=nullptr;
+ printf("PASS %u atomic VCN bridge cases Darwin %u: four devices, FairPlay policy, cross-page COW, every write/protection failure, guard ownership and OS gates\n",cases,major);
+}

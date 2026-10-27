@@ -16,7 +16,9 @@
 代际依据 [Linux 内核 AMD 硬件组件表](https://www.kernel.org/doc/html/v6.17/gpu/amdgpu/amd-hardware-list-info.html)。
 同一视频代际是复用现有桥接的依据，不代表 Apple 驱动已经支持或新设备已经硬解成功。
 
-版本入口允许 Darwin `23/24/25`，14/15 使用独立配置，具体缓存与限制见
+第一阶段安全候选仅在 Darwin `24/25` 完整核验守卫后启用用户态适配；Darwin `23`
+因缺少安全入口的完整证据而拒绝启用，详见 [VCN2 第一阶段](vcn2-phase1.md)。内核能力分类仍保留 `23/24/25`。
+14/15 的既有配置与限制见
 [多系统适配](macos-multi-os-compat.md)。VCN 启用前还必须通过已核实的内核 ABI：两侧硬件虚表的六个槽位
 分别核对具名方法身份或完整 getter 内容，包含 getter 访问的字段偏移；不兼容时不安装桥接。
 引擎写入复用 X5000 的 PM4 引擎数组基址与 `kAMDHWEngineTypeVCN0`，不另设 `0x3F8` 常量。

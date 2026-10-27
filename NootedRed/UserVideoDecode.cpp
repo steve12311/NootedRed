@@ -9,6 +9,7 @@
 #include <UserVideoDecode.hpp>
 #include <UserVideoDecodeData.hpp>
 #include <UserVideoDecodeResolver.hpp>
+#include <UserVideoGuardResolver.hpp>
 #include <VCN.hpp>
 #include <VCNCapabilities.hpp>
 #include <kern/task.h>
@@ -36,13 +37,15 @@ namespace
     RegionRecurse                     queryRegion{nullptr};
     CopyIn                            readUser{nullptr};
     CopyOut                           writeUser{nullptr};
+    IOLock*                           guardLock{nullptr};
     UInt32                            seenStages{0}, appliedCount{0}, errorCount{0};
     bool                              fairPlayDriverOnly{false};
     bool                              sequoia{false};
     const UserVideoDecodeData::Patch* devicePatches{nullptr};
     const UserLegacyCompat::Profile*  legacyProfile{nullptr};
     constexpr auto                    PatchCount   = arrsize(UserVideoDecodeData::Patches);
-    constexpr UInt32                  MaxPageCount = PatchCount * 2;
+    constexpr UInt32                  Capacity = PatchCount + UserVideoGuardData::MaxEntries;
+    constexpr UInt32                  MaxPageCount = Capacity * 2;
     static_assert(PatchCount <= 32 && UserVideoDecodeData::PageCount <= 16);
     static_assert(arrsize(UserSequoiaVideoData::Patches) == PatchCount);
     static_assert(UserSequoiaVideoData::MaxPatchSize <= UserVideoDecodeData::MaxPatchSize);
@@ -120,22 +123,37 @@ namespace
     {
         UInt8 bytes[UserVideoDecodeData::MaxPatchSize];
     };
+    struct TransactionState
+    {
+        UserVideoDecodeData::Patch legacy[PatchCount]{}, combined[Capacity]{};
+        Page pages[MaxPageCount]{};
+        UserSharedCache::Input input{nullptr, {}};
+    };
+    struct TransactionBuffer
+    {
+        TransactionState* state{nullptr};
+        TransactionBuffer() { state = IONew(TransactionState, 1); }
+        ~TransactionBuffer() { if (state) { IODelete(state, TransactionState, 1); } }
+    };
     struct SavedBuffer
     {
         SavedRow* rows{nullptr};
-        SavedBuffer() { rows = IONew(SavedRow, PatchCount); }
+        SavedBuffer() { rows = IONew(SavedRow, Capacity); }
         ~SavedBuffer()
         {
-            if (rows) { IODelete(rows, SavedRow, PatchCount); }
+            if (rows) { IODelete(rows, SavedRow, Capacity); }
         }
     };
 
     bool rollback(vm_map_t map, Page* pages, const UInt32 pageCount, const UInt64 base,
-                  const UserVideoDecodeData::Patch* patches, const SavedRow* saved, const UInt32 touched)
+                  const UserVideoDecodeData::Patch* patches, const SavedRow* saved, const UInt32 touched,
+                  const UInt32 guardCount)
     {
         using namespace UserVideoDecodeData;
         bool ok = true;
-        for (UInt32 i = 0; i < touched; ++i) {
+        for (UInt32 remaining = touched; remaining > 0; --remaining) {
+            const UInt32 i = remaining - 1;
+            if (!ok && i < guardCount) { continue; }
             const auto address = base + patches[i].offset;
             const bool ready = UserPatchMemory::prepareRollback(map, pages, pageCount, address, patches[i].size, error);
             if (!ready) {
@@ -150,6 +168,66 @@ namespace
             error(KERN_FAILURE);
         }
         return ok;
+    }
+
+    struct GuardBuffer
+    {
+        UserVideoGuardResolver::Plan* plan{nullptr};
+        GuardBuffer() { plan = IONew(UserVideoGuardResolver::Plan, 1); }
+        ~GuardBuffer() { if (plan) { IODelete(plan, UserVideoGuardResolver::Plan, 1); } }
+    };
+
+    struct GuardPage
+    {
+        vm_map_t map;
+        vm_address_t page{0};
+        bool retained{false};
+        ~GuardPage()
+        {
+            if (page && !retained) {
+                const auto status = vm_deallocate(map, page, PAGE_SIZE);
+                if (status != KERN_SUCCESS) { error(status); }
+            }
+        }
+    };
+
+    bool executableGuard(vm_map_t map, UInt64 page)
+    {
+        vm_prot_t current{0}, maximum{0};
+        return UserPatchMemory::leafProtection(map, page, current, queryRegion, error, &maximum)
+               && current == (VM_PROT_READ | VM_PROT_EXECUTE) && maximum == current;
+    }
+
+    bool createGuard(GuardPage& owner, UserVideoGuardResolver::Plan& plan)
+    {
+        auto status = vm_allocate(owner.map, &owner.page, PAGE_SIZE, VM_FLAGS_ANYWHERE);
+        if (status != KERN_SUCCESS) { error(status); return false; }
+        if (!UserVideoGuardResolver::setPage(plan, owner.page, currentKernelVersion().major())
+            || writeUser(plan.expected, owner.page, plan.length) != 0) { return false; }
+        status = vm_protect(owner.map, owner.page, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+        if (status == KERN_SUCCESS) {
+            status = vm_protect(owner.map, owner.page, PAGE_SIZE, TRUE, VM_PROT_READ | VM_PROT_EXECUTE);
+        }
+        if (status != KERN_SUCCESS) { error(status); return false; }
+        return executableGuard(owner.map, owner.page)
+               && readUser(owner.page, plan.observed, plan.length) == 0
+               && memcmp(plan.expected, plan.observed, plan.length) == 0;
+    }
+
+    void recordSafety(proc_t process)
+    {
+        NRed::singleton().setProp32("NRedVCNEncodeGuardRevision", UserVideoGuardData::Revision);
+        NRed::singleton().setProp32("NRedVCNDecodeGuardRevision", UserVideoGuardData::Revision);
+        if (!process) { return; }
+        const auto pid = proc_pid(process);
+        char name[32]{};
+        if (pid > 0) { proc_name(pid, name, sizeof(name)); }
+        if (strncmp(name, "VTEncoderXPC", 12) == 0) {
+            NRed::singleton().setProp32("NRedVCNGuardedEncoderPID", static_cast<UInt32>(pid));
+        }
+        else if (strncmp(name, "VTDecoderXPC", 12) == 0) {
+            NRed::singleton().setProp32("NRedVCNGuardedDecoderPID", static_cast<UInt32>(pid));
+        }
     }
 
     struct DynamicBuffer
@@ -218,9 +296,11 @@ namespace
             return result;
         }
         using namespace UserVideoDecodeData;
+        TransactionBuffer transaction;
+        if (!transaction.state) { error(KERN_RESOURCE_SHORTAGE); return result; }
         const auto* patches    = devicePatches;
         UInt32      patchCount = legacyProfile ? legacyProfile->patchCount : static_cast<UInt32>(PatchCount);
-        UserVideoDecodeData::Patch legacyPatches[PatchCount];
+        auto* legacyPatches = transaction.state->legacy;
         if (legacyProfile) {
             if (patchCount > PatchCount) { return result; }
             for (UInt32 i = 0; i < patchCount; ++i) {
@@ -262,12 +342,14 @@ namespace
         }
         const bool    dynamic = sequoia || (!legacyProfile && memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0);
         DynamicBuffer dynamicBuffer(dynamic);
+        auto& input = transaction.state->input;
+        input.reader = readUser;
         if (dynamic) {
             if (!dynamicBuffer.plan) {
                 error(KERN_RESOURCE_SHORTAGE);
                 return result;
             }
-            if (!UserVideoDecodeResolver::resolve(readUser, base, devicePatches, *dynamicBuffer.plan, sequoia)) {
+            if (!UserVideoDecodeResolver::resolve(input, base, devicePatches, *dynamicBuffer.plan, sequoia)) {
                 stage(Stage::CacheMismatch, fairPlayPID);
                 NRed::singleton().setProp32("NRedVCNUserDynamicRejected", 1);
                 return result;
@@ -286,13 +368,21 @@ namespace
             NRed::singleton().setProp32("NRedDRMVideoPatchCount", patchCount);
         }
 
+        GuardBuffer guard;
+        if (!guard.plan || !UserVideoGuardResolver::resolve(input, base, currentKernelVersion().major(), *guard.plan)) {
+            NRed::singleton().setProp32("NRedVCNUserGuardRejected", 1);
+            return result;
+        }
+        NRed::singleton().setProp32("NRedVCNUserGuardReads", guard.plan->reads);
+        vm_map_t map = getTaskMap(current_task());
+        if (!map) { stage(Stage::NoMap, fairPlayPID); return result; }
         SavedBuffer buffer;
         if (!buffer.rows) {
             error(KERN_RESOURCE_SHORTAGE);
             return result;
         }
         auto*  saved = buffer.rows;
-        Page   pages[MaxPageCount];
+        auto&  pages = transaction.state->pages;
         UInt32 pageCount{0}, originals{0}, patched{0};
         for (UInt32 i = 0; i < patchCount; ++i) {
             const auto address = base + patches[i].offset;
@@ -318,19 +408,32 @@ namespace
                 return result;
             }
         }
-        if (patched == patchCount) {
+        if (patched == patchCount && guard.plan->installed) {
+            if (!executableGuard(map, guard.plan->page)) { stage(Stage::Region, fairPlayPID); return result; }
+            for (UInt32 i = 0; i < guard.plan->count; ++i) {
+                const auto& entry = guard.plan->patches[i];
+                if (!UserPatchMemory::collectPages(pages, pageCount, base + entry.offset, entry.size)) { return result; }
+            }
+            for (UInt32 p = 0; p < pageCount; ++p) {
+                if (!executableGuard(map, pages[p].address)) { stage(Stage::Region, fairPlayPID); return result; }
+            }
             stage(Stage::Already, fairPlayPID);
+            recordSafety(process);
             if (fairPlayDecode) { NRed::singleton().setProp32("NRedDRMVideoState", 3); }
             return result;
         }
-        if (originals != patchCount) {
+        if (originals != patchCount || guard.plan->installed) {
             stage(Stage::Mixed, fairPlayPID);
             return result;
         }
-        vm_map_t map = getTaskMap(current_task());
-        if (map == nullptr) {
-            stage(Stage::NoMap, fairPlayPID);
-            return result;
+        auto* combined = transaction.state->combined;
+        if (patchCount + guard.plan->count > Capacity) { return result; }
+        memcpy(combined, patches, patchCount * sizeof(combined[0]));
+        for (UInt32 i = 0; i < guard.plan->count; ++i) {
+            const auto& entry = guard.plan->patches[i];
+            if (readUser(base + entry.offset, saved[patchCount + i].bytes, entry.size) != 0
+                || memcmp(saved[patchCount + i].bytes, entry.original, entry.size) != 0
+                || !UserPatchMemory::collectPages(pages, pageCount, base + entry.offset, entry.size)) { return result; }
         }
         for (UInt32 p = 0; p < pageCount; ++p) {
             if (!leafProtection(map, pages[p].address, pages[p].protection)
@@ -340,6 +443,20 @@ namespace
                 return result;
             }
         }
+        GuardPage owner{map};
+        if (!createGuard(owner, *guard.plan)) {
+            NRed::singleton().setProp32("NRedVCNUserGuardAllocationRejected", 1);
+            return result;
+        }
+        // 先安装守卫，再启用设备适配；回滚按相反顺序撤销，避免适配先于安全检查生效。
+        memmove(combined + guard.plan->count, combined, patchCount * sizeof(combined[0]));
+        memmove(saved + guard.plan->count, saved, patchCount * sizeof(saved[0]));
+        for (UInt32 i = 0; i < guard.plan->count; ++i) {
+            combined[i] = guard.plan->patches[i];
+            memcpy(saved[i].bytes, guard.plan->original[i], combined[i].size);
+        }
+        patchCount += guard.plan->count;
+        patches = combined;
         // 所有匹配和保护检查完成后才进入写入；各页均先 COW、去掉 EXECUTE。
         for (UInt32 p = 0; p < pageCount; ++p) {
             const auto protection =
@@ -356,15 +473,23 @@ namespace
             if (writeUser(patches[i].patched, base + patches[i].offset, patches[i].size) != 0) {
                 stage(Stage::Write, fairPlayPID);
                 error(KERN_FAILURE);
-                rollback(map, pages, pageCount, base, patches, saved, i + 1);
+                if (!rollback(map, pages, pageCount, base, patches, saved, i + 1, guard.plan->count)) {
+                    owner.retained = true;
+                    NRed::singleton().setProp32("NRedVCNGuardRollbackRetainedPage", 1);
+                }
                 return result;
             }
         }
         if (!restorePages(map, pages, pageCount)) {
             stage(Stage::Restore, fairPlayPID);
-            rollback(map, pages, pageCount, base, patches, saved, patchCount);
+            if (!rollback(map, pages, pageCount, base, patches, saved, patchCount, guard.plan->count)) {
+                owner.retained = true;
+                NRed::singleton().setProp32("NRedVCNGuardRollbackRetainedPage", 1);
+            }
             return result;
         }
+        owner.retained = true;
+        recordSafety(process);
         stage(Stage::Applied, fairPlayPID);
         if (fairPlayDecode) { NRed::singleton().setProp32("NRedDRMVideoState", 2); }
         if (dynamic) { NRed::singleton().setProp32("NRedVCNUserDynamicApplied", 1); }
@@ -404,7 +529,10 @@ namespace
         if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d original-return=%d", ticket, pid, result); }
         if (result != 0) { stage(Stage::OriginalError); return result; }
         if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d patch-enter", ticket, pid); }
+        if (!guardLock) { return result; }
+        IOLockLock(guardLock);
         const auto patchedResult = patchSharedRegion(process, args, result);
+        IOLockUnlock(guardLock);
         if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d patch-return=%d", ticket, pid, patchedResult); }
         return patchedResult;
     }
@@ -415,6 +543,8 @@ void UserVideoDecode::init(KernelPatcher& patcher)
 {
     NRed::singleton().setProp32("NRedVCNSharedRegionStackRevision", 1);
     fairPlayDriverOnly = false;
+    devicePatches = nullptr;
+    legacyProfile = nullptr;
     if (!checkKernelArgument("-NRedVideoFix")) { return; }
     const auto  deviceID   = NRed::singleton().getDeviceID();
     const auto* capability = VCNCapabilities::findDevice(deviceID);
@@ -427,6 +557,11 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         NRed::singleton().setProp32("NRedVCNRejected", rejected);
         NRed::singleton().setProp32("NRedVCNUserRejected", rejected);
         SYSLOG("UserVideoDecode", "VCN capability rejected: device=0x%X reason=%u", deviceID, rejected);
+        return;
+    }
+    if (currentKernelVersion().major() == 23) {
+        NRed::singleton().setProp32("NRedVCNUserSafetyProfileMissing", 1);
+        NRed::singleton().setProp32("NRedVCNUserRejected", 6);
         return;
     }
     sequoia       = currentKernelVersion().major() == 24;
@@ -447,12 +582,22 @@ void UserVideoDecode::init(KernelPatcher& patcher)
     writeUser = reinterpret_cast<CopyOut>(patcher.solveSymbol(KernelPatcher::KernelID, "_copyout"));
     patcher.clearError();
     if (!getTaskMap || !queryRegion || !readUser || !writeUser) {
+        devicePatches = nullptr;
         NRed::singleton().setProp32("NRedVCNUserRejected", 1);
+        return;
+    }
+    const bool allocatedLock = guardLock == nullptr;
+    if (allocatedLock) { guardLock = IOLockAlloc(); }
+    if (!guardLock) {
+        devicePatches = nullptr;
+        NRed::singleton().setProp32("NRedVCNUserRejected", 7);
         return;
     }
     KernelPatcher::RouteRequest request{"_shared_region_check_np", wrappedSharedRegionCheck, originalCheck};
     if (!patcher.routeMultipleLong(KernelPatcher::KernelID, &request, 1)) {
         patcher.clearError();
+        devicePatches = nullptr;
+        if (allocatedLock) { IOLockFree(guardLock); guardLock = nullptr; }
         NRed::singleton().setProp32("NRedVCNUserRejected", 2);
         return;
     }

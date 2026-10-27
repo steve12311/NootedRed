@@ -13,6 +13,7 @@ WORK = ROOT / 'build/cache-section-targets/live'
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cache', type=Path, default=Path('/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld'))
+    parser.add_argument('--major',type=int,choices=[24,25],default=25)
     args = parser.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
     with (args.cache / 'dyld_shared_cache_x86_64h').open('rb') as handle:
@@ -46,6 +47,7 @@ def main():
 #include <unistd.h>
 #include <UserSurfaceSyncResolver.hpp>
 #include <UserVideoDecodeResolver.hpp>
+#include <UserVideoGuardResolver.hpp>
 struct Mapping {uint64_t start,end,offset,mask,add;const char* path;int fd=-1;};
 static Mapping mappings[]={MAPPINGS};
 static int reader(uint64_t address,void* bytes,size_t length){
@@ -66,22 +68,27 @@ template<class Plan>static void originals(const Plan& plan,unsigned count){
 }
 int main(){
  auto base=UserSurfaceSyncData::CacheBase;
- for(auto&device:UserSurfaceSyncData::DevicePatches){
+ if(MAJOR==25)for(auto&device:UserSurfaceSyncData::DevicePatches){
   UserSurfaceSyncResolver::Plan plan;
   assert(UserSurfaceSyncResolver::resolve(reader,base,device,true,true,plan,true));
   originals(plan,4);printf("PASS real surface device=%x reads=%u\n",device.deviceID,plan.reads);
  }
- for(auto&device:UserVideoDecodeData::DevicePatches){
+ for(auto&device:VIDEO_DATA::DevicePatches){
   UserVideoDecodeResolver::Plan plan;
-  assert(UserVideoDecodeResolver::resolve(reader,base,device.patches,plan));
+  UserSharedCache::Input input{reader,{}};
+  assert(UserVideoDecodeResolver::resolve(input,base,device.patches,plan,MAJOR==24));
   originals(plan,sizeof(plan.patches)/sizeof(plan.patches[0]));
   printf("PASS real video device=%x reads=%u\n",device.deviceID,plan.reads);
+  UserVideoGuardResolver::Plan guard;
+  assert(UserVideoGuardResolver::resolve(input,base,MAJOR,guard));
+  originals(guard,guard.count);
+  printf("PASS real video+guard device=%x cumulative reads=%u bytes=%u\n",device.deviceID,input.reads,input.bytes);
  }
- uint64_t offset=0;assert(UserSurfaceSyncResolver::resolveTahoeSubmit(reader,base,offset));
- printf("PASS real full submit method offset=%llx\n",offset);
+ if(MAJOR==25){uint64_t offset=0;assert(UserSurfaceSyncResolver::resolveTahoeSubmit(reader,base,offset));
+ printf("PASS real full submit method offset=%llx\n",offset);}
  for(auto&m:mappings)if(m.fd>=0)close(m.fd);
 }
-'''.replace('MAPPINGS', ',\n'.join(mappings))
+'''.replace('MAPPINGS', ',\n'.join(mappings)).replace('MAJOR',str(args.major)).replace('VIDEO_DATA','UserSequoiaVideoData' if args.major==24 else 'UserVideoDecodeData')
     stub = WORK / 'stubs/IOKit'
     stub.mkdir(parents=True, exist_ok=True)
     (stub / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')

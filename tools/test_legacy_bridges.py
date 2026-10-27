@@ -22,19 +22,25 @@ COMMON = r'''
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserSurfaceSyncResolver.hpp>
 #include <UserVideoDecodeResolver.hpp>
+#include <UserVideoGuardResolver.hpp>
 #include <UserSubmitGuardData.hpp>
 #include <UserLegacyData.hpp>
 #include <VCNCapabilities.hpp>
 using user_addr_t=uint64_t;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
 using vm_map_t=void*;using task_t=void*;using proc_t=void*;using natural_t=unsigned;
 using mach_msg_type_number_t=unsigned;using vm_prot_t=int;using kern_return_t=int;using vm_address_t=uint64_t;
-struct vm_region_submap_short_info_data_64_t {int protection=0,is_submap=0;};using vm_region_recurse_info_t=int*;
+struct vm_region_submap_short_info_data_64_t {int protection=0,max_protection=0,is_submap=0;};using vm_region_recurse_info_t=int*;
 constexpr unsigned PAGE_SIZE=4096,VM_REGION_SUBMAP_SHORT_INFO_COUNT_64=12;
 constexpr int TRUE=1,FALSE=0,KERN_SUCCESS=0,KERN_INVALID_ADDRESS=1,KERN_PROTECTION_FAILURE=2,KERN_INVALID_ARGUMENT=4,KERN_FAILURE=5,KERN_RESOURCE_SHORTAGE=3,VM_FLAGS_ANYWHERE=1;
 constexpr int VM_PROT_NONE=0,VM_PROT_READ=1,VM_PROT_WRITE=2,VM_PROT_EXECUTE=4,VM_PROT_COPY=16;
 #define SYSLOG(...) ((void)0)
 #define IONew(T,N) new T[N]
 #define IODelete(P,T,N) delete[] P
+struct IOLock {bool locked=false;};
+static IOLock* IOLockAlloc(){return new IOLock;}
+static void IOLockFree(IOLock* p){delete p;}
+static void IOLockLock(IOLock* p){assert(!p->locked);p->locked=true;}
+static void IOLockUnlock(IOLock* p){assert(p->locked);p->locked=false;}
 namespace Buffer {template<class T>T* create(size_t n){return new T[n];}template<class T>void deleter(T* p){delete[] p;}}
 template<typename T,size_t N>constexpr size_t arrsize(const T(&)[N]){return N;}
 static std::map<std::string,unsigned> properties;
@@ -228,6 +234,21 @@ def main():
         main_code = main_code.replace('FAIRPLAY', '' if module == 'UserSurfaceSync' else FAIRPLAY)
         main_code = main_code.replace('GUARD', GUARD if module == 'UserSurfaceSync' else '')
         main_code = main_code.replace('SUBMIT_OFF', 'submitGuard=false;' if module == 'UserSurfaceSync' else '')
+        if module == 'UserVideoDecode':
+            main_code = r'''
+int main(){
+ hostMajor=23;
+ for(unsigned device:{0x15E7U,0x1636U,0x1638U,0x164CU})for(bool drm:{false,true}){
+  NRed::singleton().device=device;KernelPatcher kernel;UserVideoDecode::init(kernel);
+  assert(kernel.routes==0&&!devicePatches&&properties.at("NRedVCNUserRejected")==6);
+  assert(properties.at("NRedVCNUserSafetyProfileMissing")==1);
+  auto* profile=UserLegacyData::video(23,device);reset(profile);fairPlay=drm;
+  auto pristine=memory;call();assert(memory==pristine&&writes==0&&protects==0&&allocations==0);
+  assert(!properties.contains("NRedVCNUserApplied"));
+ }
+ puts("PASS actual Sonoma video entry: all four devices and both FairPlay states reject missing safety evidence without memory writes");
+}
+'''
         text = COMMON.replace('BODY', body).replace('INIT', init).replace('MAIN', main_code)
         text = text.replace('namespace UserSurfaceSync {void init(struct KernelPatcher&);}',
                             f'struct KernelPatcher;namespace {module} {{void init(KernelPatcher&);}}')

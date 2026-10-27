@@ -167,4 +167,12 @@ int main(){
 
 
 if __name__ == '__main__':
-    main()
+    if '--baseline' in sys.argv:
+        main()
+    else:
+        # 新事务夹具合并设备补丁与全部安全入口，继续覆盖本文件的重排、
+        # 元数据拒绝、FairPlay 和跨页故障场景，避免用不含守卫的模拟计划测试安装器。
+        import test_vcn_user_bridge
+        sys.argv = [sys.argv[0], '--major', '24' if '--sequoia' in sys.argv else '25'] + (
+            ['--sanitize'] if '--sanitize' in sys.argv else [])
+        test_vcn_user_bridge.main()

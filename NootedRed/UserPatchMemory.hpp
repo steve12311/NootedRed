@@ -21,7 +21,7 @@ namespace UserPatchMemory
     };
 
     inline bool leafProtection(vm_map_t map, mach_vm_address_t page, vm_prot_t& protection, RegionQuery query,
-                               ReportError report)
+                               ReportError report, vm_prot_t* maximum = nullptr)
     {
         natural_t depth{0};
         for (UInt32 attempt = 0; attempt < 8; ++attempt) {
@@ -43,6 +43,7 @@ namespace UserPatchMemory
             }
             if (!info.is_submap) {
                 protection = info.protection;
+                if (maximum) { *maximum = info.max_protection; }
                 return true;
             }
             if (depth == ~0U) { break; }

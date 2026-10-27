@@ -20,7 +20,7 @@ using UInt32=uint32_t;using UInt64=uint64_t;
 using vm_map_t=void*;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
 using natural_t=unsigned;using mach_msg_type_number_t=unsigned;
 using vm_prot_t=int;using kern_return_t=int;using vm_region_recurse_info_t=int*;
-struct vm_region_submap_short_info_data_64_t {int protection=0,is_submap=0;};
+struct vm_region_submap_short_info_data_64_t {int protection=0,max_protection=0,is_submap=0;};
 constexpr unsigned PAGE_SIZE=4096,VM_REGION_SUBMAP_SHORT_INFO_COUNT_64=12;
 constexpr int FALSE=0,TRUE=1,KERN_SUCCESS=0;
 enum {VM_PROT_NONE=0,VM_PROT_READ=1,VM_PROT_WRITE=2,VM_PROT_EXECUTE=4,VM_PROT_COPY=16};
