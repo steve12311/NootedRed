@@ -27,8 +27,13 @@ namespace UserSurfaceSyncResolver
         UInt8                      original[4][BufferSize]{};
         UInt8                      patched[4][BufferSize]{};
         UInt32                     reads{0};
+        Input                      input{nullptr, {}};
+        Image                      image;
+        UInt8                      scan[Input::ScanSize];
         UserCacheResolver::ImageBounds scratchImages[sizeof(ScratchResolverData::ResolverImages)
                                                      / sizeof(ScratchResolverData::ResolverImages[0])]{};
+        UserCacheResolver::ImageBounds constructorImages[sizeof(UserSurfaceConstructorData::ResolverImages)
+                                                         / sizeof(UserSurfaceConstructorData::ResolverImages[0])]{};
     };
     inline bool imageForCache(Input& input, UInt64 base, Image& image)
     {
@@ -66,11 +71,11 @@ namespace UserSurfaceSyncResolver
             [&](UInt64 address) { return matches(input, address, expected, size, nullptr, 0, blend); }, found, hint);
     }
 
-    inline bool resolve(Reader reader, UInt64 base, const DevicePatchSet& device, bool shared, bool blend, Plan& plan,
+    inline bool resolve(Input& input, UInt64 base, const DevicePatchSet& device, bool shared, bool blend, Plan& plan,
                         bool scratchMode = false)
     {
-        Input input{reader, {}};
-        Image image;
+        auto& image = plan.image;
+        image = {};
         // Scratch 与撤回的 VT 策略按完整函数和实际相对引用核验。
         if (scratchMode) {
             using namespace ScratchResolverData;
@@ -95,9 +100,9 @@ namespace UserSurfaceSyncResolver
                           image.address + ConstructorRVA))
         {
             namespace C = UserSurfaceConstructorData;
-            if (!UserCacheResolver::resolve(input, base, C::ResolverImages, C::ResolverFunctions, C::Patches,
+            if (!UserCacheResolver::resolveWithImages(input, base, C::ResolverImages, C::ResolverFunctions, C::Patches,
                                             C::ResolverLocations, plan.patches + 2, &plan.original[2][0],
-                                            &plan.patched[2][0], Plan::BufferSize, true))
+                                            &plan.patched[2][0], Plan::BufferSize, plan.constructorImages, true))
             {
                 return false;
             }
@@ -202,10 +207,17 @@ namespace UserSurfaceSyncResolver
         return true;
     }
 
-    inline bool resolveSequoia(Reader reader, UInt64 base, UInt32 deviceID, Plan& plan)
+    inline bool resolve(Reader reader, UInt64 base, const DevicePatchSet& device, bool shared, bool blend, Plan& plan,
+                        bool scratchMode = false)
+    {
+        plan.input = {reader, {}};
+        plan.input.scanBuffer = plan.scan;
+        return resolve(plan.input, base, device, shared, blend, plan, scratchMode);
+    }
+
+    inline bool resolveSequoia(Input& input, UInt64 base, UInt32 deviceID, Plan& plan)
     {
         using namespace UserSequoiaSurfaceData;
-        Input       input{reader, {}};
         const auto* patches = UserSequoiaSurfaceData::findDevice(deviceID);
         if (!patches
             || !UserCacheResolver::resolve(input, base, ResolverImages, ResolverFunctions, patches, ResolverLocations,
@@ -229,10 +241,16 @@ namespace UserSurfaceSyncResolver
         return true;
     }
 
-    inline bool resolveSubmit(Reader reader, UInt64 base, UInt64& offset, bool sectionRelative)
+    inline bool resolveSequoia(Reader reader, UInt64 base, UInt32 deviceID, Plan& plan)
+    {
+        plan.input = {reader, {}};
+        plan.input.scanBuffer = plan.scan;
+        return resolveSequoia(plan.input, base, deviceID, plan);
+    }
+
+    inline bool resolveSubmit(Input& input, UInt64 base, UInt64& offset, bool sectionRelative)
     {
         using namespace UserSequoiaSurfaceData::Submit;
-        Input input{reader, {}};
         Image image;
         if (!imageForCache(input, base, image)) { return false; }
         const auto& fn =
@@ -285,6 +303,12 @@ namespace UserSurfaceSyncResolver
         }
         offset = found - base;
         return true;
+    }
+
+    inline bool resolveSubmit(Reader reader, UInt64 base, UInt64& offset, bool sectionRelative)
+    {
+        Input input{reader, {}};
+        return resolveSubmit(input, base, offset, sectionRelative);
     }
 
     inline bool resolveSequoiaSubmit(Reader reader, UInt64 base, UInt64& offset)

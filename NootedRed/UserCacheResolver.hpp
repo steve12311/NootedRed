@@ -26,22 +26,13 @@ namespace UserCacheResolver
 
     template<typename PrefixMatches, typename CandidateMatches>
     __attribute__((noinline))
-    inline bool scanFunction(Input& input, const Range& text, UInt32 size, UInt32 prefixSize,
-                             PrefixMatches prefixMatches, CandidateMatches candidateMatches, UInt64& found,
-                             UInt64 hint = 0)
+    inline bool scanBuffered(Input& input, const Range& text, UInt32 size, UInt32 prefixSize,
+                             const PrefixMatches& prefixMatches, const CandidateMatches& candidateMatches, UInt64& found,
+                             UInt8* scan, UInt32 capacity)
     {
         found = 0;
-        if (prefixSize == 0 || prefixSize > 32 || size < prefixSize || size > text.size || text.size > MaxTextSize) {
-            return false;
-        }
-        // 渲染基线保留完整核验后的参考 RVA 快路径；其他调用默认验证扫描唯一性。
-        if (hint && text.contains(hint, size) && candidateMatches(hint)) {
-            found = hint;
-            return !input.failed;
-        }
-        UInt8 scan[1024];
         for (UInt64 offset = 0; offset <= text.size - size;) {
-            const auto length = text.size - offset < sizeof(scan) ? UInt32(text.size - offset) : UInt32(sizeof(scan));
+            const auto length = text.size - offset < capacity ? UInt32(text.size - offset) : capacity;
             if (!input.read(text.address + offset, scan, length)) { return false; }
             const auto positions = length - prefixSize + 1;
             for (UInt32 j = 0; j < positions && offset + j <= text.size - size; ++j) {
@@ -56,6 +47,56 @@ namespace UserCacheResolver
         }
         return found != 0 && !input.failed;
     }
+
+    template<typename PrefixMatches, typename CandidateMatches>
+    __attribute__((noinline))
+    inline bool scanUnbuffered(Input& input, const Range& text, UInt32 size, UInt32 prefixSize,
+                               const PrefixMatches& prefixMatches, const CandidateMatches& candidateMatches, UInt64& found)
+    {
+        UInt8 scan[1024];
+        return scanBuffered(input, text, size, prefixSize, prefixMatches, candidateMatches, found, scan, sizeof(scan));
+    }
+
+    template<typename PrefixMatches, typename CandidateMatches>
+    __attribute__((noinline))
+    inline bool scanFunction(Input& input, const Range& text, UInt32 size, UInt32 prefixSize,
+                             const PrefixMatches& prefixMatches, const CandidateMatches& candidateMatches, UInt64& found,
+                             UInt64 hint = 0)
+    {
+        found = 0;
+        if (prefixSize == 0 || prefixSize > 32 || size < prefixSize || size > text.size || text.size > MaxTextSize) {
+            return false;
+        }
+        // 渲染基线保留完整核验后的参考 RVA 快路径；其他调用默认验证扫描唯一性。
+        if (hint && text.contains(hint, size) && candidateMatches(hint)) {
+            found = hint;
+            return !input.failed;
+        }
+        if (input.scanBuffer) {
+            return scanBuffered(input, text, size, prefixSize, prefixMatches, candidateMatches, found,
+                                input.scanBuffer, Input::ScanSize);
+        }
+        return scanUnbuffered(input, text, size, prefixSize, prefixMatches, candidateMatches, found);
+    }
+
+    struct Prefix
+    {
+        UInt64 values[4]{}, masks[4]{};
+        void set(UInt32 index, UInt8 value, bool skipped)
+        {
+            if (skipped) { return; }
+            const auto shift = (index % 8) * 8;
+            masks[index / 8] |= UInt64(0xFF) << shift;
+            values[index / 8] |= UInt64(value) << shift;
+        }
+        bool matches(const UInt8* bytes) const
+        {
+            for (UInt32 i = 0; i < 4; ++i) {
+                if ((wide(bytes + i * 8) & masks[i]) != values[i]) { return false; }
+            }
+            return true;
+        }
+    };
     using UserSharedCache::ImageReference;
     struct Reference
     {
@@ -135,30 +176,20 @@ namespace UserCacheResolver
                      const Location* locations, UInt32 count, UInt64& address, bool& patched, CandidateFilter filter)
     {
         if (function.size < 32) { return false; }
-        UInt8 prefixes[2][32];
-        bool  masks[2][32];
+        Prefix prefixes[2];
         // 扫描热点只比较已准备的前缀，避免对每个文本字节重新遍历整份补丁表。
         for (UInt32 variant = 0; variant < 2; ++variant) {
             const auto* refs      = variant ? function.patchedRefs : function.originalRefs;
             const auto  countRefs = variant ? function.patchedCount : function.originalCount;
             for (UInt32 i = 0; i < 32; ++i) {
-                prefixes[variant][i] = expected(function, i, f, variant != 0, patches, locations, count);
-                masks[variant][i]    = skipped(i, refs, countRefs);
+                prefixes[variant].set(i, expected(function, i, f, variant != 0, patches, locations, count),
+                                      skipped(i, refs, countRefs));
             }
         }
+        const bool samePrefix = memcmp(prefixes, prefixes + 1, sizeof(Prefix)) == 0;
         const auto prefixMatches = [&](const UInt8* bytes)
         {
-            for (UInt32 variant = 0; variant < 2; ++variant) {
-                bool valid = true;
-                for (UInt32 i = 0; i < 32; ++i) {
-                    if (!masks[variant][i] && bytes[i] != prefixes[variant][i]) {
-                        valid = false;
-                        break;
-                    }
-                }
-                if (valid) { return true; }
-            }
-            return false;
+            return prefixes[0].matches(bytes) || (!samePrefix && prefixes[1].matches(bytes));
         };
         const auto candidateMatches = [&](UInt64 candidate)
         {
@@ -335,10 +366,7 @@ namespace UserCacheResolver
         if (scopedTargetCount > 128 || (scopedTargets == nullptr) != (scopedTargetCount == 0)) { return false; }
         UInt64      addresses[FunctionCount]{};
         bool        variants[FunctionCount]{};
-        input.imageRefs  = imageRefs;
-        input.imageCount = ImageCount;
-        input.tableRead  = false;
-        memset(input.imageAddresses, 0, sizeof(input.imageAddresses));
+        input.selectImages(base, imageRefs, ImageCount);
         for (UInt32 i = 0; i < ImageCount; ++i) {
             Image image;
             if (!imageForCache(input, base, image, imageRefs[i].path, imageRefs[i].size) || image.segmentCount > 8) {

@@ -302,6 +302,19 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     }
     const bool dynamic = sequoia || (!legacyProfile && memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0);
     auto& plan = workspace.value->plan;
+    auto& input = plan.input;
+    input.reader = readUser;
+    input.scanBuffer = plan.scan;
+    if (dynamic && renderRequested) {
+        if (sequoia) {
+            using namespace UserSequoiaSurfaceData;
+            input.selectImages(base, ResolverImages, arrsize(ResolverImages));
+        }
+        else if (computeScratch) {
+            using namespace ScratchResolverData;
+            input.selectImages(base, ResolverImages, arrsize(ResolverImages));
+        }
+    }
     const char* const             uuidKeys[] = {"NRedImmediateSyncCacheUUID0", "NRedImmediateSyncCacheUUID1",
                                                 "NRedImmediateSyncCacheUUID2", "NRedImmediateSyncCacheUUID3"};
     for (UInt32 i = 0; i < 4; ++i) {
@@ -312,11 +325,11 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     // Sequoia 核验完整提交方法；旧路径继续使用已核实缓存的入口偏移。
     UInt64     submitOffset{0};
     const bool knownCache =
-        sequoia ? (submitGuard && UserSurfaceSyncResolver::resolveSequoiaSubmit(readUser, base, submitOffset)) :
+        sequoia ? (submitGuard && UserSurfaceSyncResolver::resolveSubmit(input, base, submitOffset, false)) :
                   (legacyProfile ?
                        memcmp(header + 88, legacyProfile->uuid, 16) == 0 :
                        (!dynamic
-                        || (submitGuard && UserSurfaceSyncResolver::resolveTahoeSubmit(readUser, base, submitOffset))));
+                        || (submitGuard && UserSurfaceSyncResolver::resolveSubmit(input, base, submitOffset, true))));
     if (sequoia && submitGuard && !knownCache) { NRed::singleton().setProp32("NRedSubmitGuardDynamicRejected", 1); }
     if (knownCache && submitGuard) {
         if (auto map = getTaskMap(current_task())) {
@@ -355,8 +368,8 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     }
     if (dynamic) {
         const bool resolved =
-            sequoia ? UserSurfaceSyncResolver::resolveSequoia(readUser, base, NRed::singleton().getDeviceID(), plan) :
-                      UserSurfaceSyncResolver::resolve(readUser, base, *devicePatches, srdShared, legacyBlend, plan,
+            sequoia ? UserSurfaceSyncResolver::resolveSequoia(input, base, NRed::singleton().getDeviceID(), plan) :
+                      UserSurfaceSyncResolver::resolve(input, base, *devicePatches, srdShared, legacyBlend, plan,
                                                        computeScratch);
         if (!resolved) {
             stage(Stage::CacheMismatch);

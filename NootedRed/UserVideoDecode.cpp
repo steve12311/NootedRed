@@ -128,6 +128,7 @@ namespace
         UserVideoDecodeData::Patch legacy[PatchCount]{}, combined[Capacity]{};
         Page pages[MaxPageCount]{};
         UserSharedCache::Input input{nullptr, {}};
+        UInt8 scan[UserSharedCache::Input::ScanSize];
     };
     struct TransactionBuffer
     {
@@ -344,6 +345,7 @@ namespace
         DynamicBuffer dynamicBuffer(dynamic);
         auto& input = transaction.state->input;
         input.reader = readUser;
+        input.scanBuffer = transaction.state->scan;
         if (dynamic) {
             if (!dynamicBuffer.plan) {
                 error(KERN_RESOURCE_SHORTAGE);

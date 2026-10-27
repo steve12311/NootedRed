@@ -57,10 +57,7 @@ namespace UserVideoGuardResolver
     {
         static_assert(FunctionCount <= MaxFunctions && EntryCount <= MaxEntries && PayloadSize <= PageSize);
         if (!input.reader || input.failed || plan.count != 0 || base >= UserSharedCache::UserLimit) { return false; }
-        input.imageRefs = images;
-        input.imageCount = ImageCount;
-        input.tableRead = false;
-        memset(input.imageAddresses, 0, sizeof(input.imageAddresses));
+        input.selectImages(base, images, ImageCount);
         UInt32 installedCount{0};
         for (UInt32 i = 0; i < EntryCount; ++i) {
             const auto& entry = entries[i];
@@ -83,27 +80,19 @@ namespace UserVideoGuardResolver
                 return UserCacheResolver::skipped(offset, fn.originalRefs, fn.originalCount)
                        || value == fn.original[offset];
             };
-            UInt8 prefixes[2][32];
-            bool masks[2][32];
+            UserCacheResolver::Prefix prefixes[2];
             for (UInt32 variant = 0; variant < 2; ++variant) {
                 for (UInt32 j = 0; j < 32; ++j) {
                     static constexpr UInt8 jump[6] = {0xFF, 0x25, 0, 0, 0, 0};
                     const bool entryByte = variant && j < entry.size;
-                    masks[variant][j] = entryByte ? j >= 6 && j < 14 :
+                    const bool masked = entryByte ? j >= 6 && j < 14 :
                         UserCacheResolver::skipped(j, fn.originalRefs, fn.originalCount);
-                    prefixes[variant][j] = entryByte ? (j < 6 ? jump[j] : 0x90) : fn.original[j];
+                    prefixes[variant].set(j, entryByte ? (j < 6 ? jump[j] : 0x90) : fn.original[j], masked);
                 }
             }
             const auto prefixMatches = [&](const UInt8* bytes)
             {
-                for (UInt32 variant = 0; variant < 2; ++variant) {
-                    bool valid = true;
-                    for (UInt32 j = 0; j < 32; ++j) {
-                        if (!masks[variant][j] && bytes[j] != prefixes[variant][j]) { valid = false; break; }
-                    }
-                    if (valid) { return true; }
-                }
-                return false;
+                return prefixes[0].matches(bytes) || prefixes[1].matches(bytes);
             };
             const auto candidateMatches = [&](UInt64 address)
             {
