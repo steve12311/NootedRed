@@ -2,9 +2,6 @@
 #pragma once
 #include <IOKit/IOTypes.h>
 #include <UserSharedCache.hpp>
-#include <mach/kern_return.h>
-#include <mach/vm_map.h>
-#include <mach/vm_region.h>
 #include <string.h>
 
 namespace VPF
@@ -137,23 +134,37 @@ namespace VPF
         return (deviceID & 0xFFFFU) | (flags << 16);
     }
 
-    using RegionQuery = kern_return_t (*)(vm_map_t, mach_vm_address_t*, mach_vm_size_t*, natural_t*,
-                                          vm_region_recurse_info_t, mach_msg_type_number_t*);
+    // mach/vm_region.h 的 SM_TRUESHARED；VPF 层不包含内核 VM 头，由调用方适配。
+    constexpr UInt8 MappingShareTrueShared = 5;
+
+    struct MappingInfo
+    {
+        UInt64 start;
+        UInt64 size;
+        UInt32 depth;
+        UInt32 objectId;
+        UInt8  shareMode;
+        UInt32 shadowDepth;
+        bool   isSubmap;
+        bool   writable;
+    };
+
+    // 调用方提供的当前 map 区域查询；只返回属性，不读取用户内容。
+    using MappingProbe = bool (*)(void* context, UInt64 address, UInt32 depth, MappingInfo& info);
 
     struct MappingFacts
     {
         UInt32 objectId;
         UInt8  shareMode;
-        UInt8  shadowDepth;
+        UInt32 shadowDepth;
         bool   writable;
     };
 
     // 要求整个范围由同一非私有只读共享对象覆盖；任何 COW/私有页或混合对象都拒绝。
-    // 调用方只持有当前 map，查询本身不读取用户内容，也不修改映射。
-    inline bool inspectMapping(const RegionQuery query, const vm_map_t map, const UInt64 address, const UInt64 size,
+    inline bool inspectMapping(const MappingProbe probe, void* context, const UInt64 address, const UInt64 size,
                                MappingFacts& facts)
     {
-        if (!query || !map || address == 0 || size == 0 || address >= UserSharedCache::UserLimit
+        if (!probe || address == 0 || size == 0 || address >= UserSharedCache::UserLimit
             || size > UserSharedCache::UserLimit - address)
         {
             return false;
@@ -170,45 +181,38 @@ namespace VPF
         bool   found    = false;
         while (cursor < end) {
             if (++regions > 4096) { return false; }
-            mach_vm_address_t               region = cursor;
-            mach_vm_size_t                  regionSize{0};
-            natural_t                       regionDepth = depth;
-            vm_region_submap_info_data_64_t info{};
-            mach_msg_type_number_t          count = VM_REGION_SUBMAP_INFO_COUNT_64;
-            if (query(map, &region, &regionSize, &regionDepth, reinterpret_cast<vm_region_recurse_info_t>(&info),
-                      &count)
-                    != KERN_SUCCESS
-                || count < VM_REGION_SUBMAP_INFO_COUNT_64 || region > cursor || regionSize == 0
-                || regionSize > UserSharedCache::UserLimit - region)
+            MappingInfo info{};
+            if (!probe(context, cursor, depth, info) || info.start > cursor || info.size == 0
+                || info.size > UserSharedCache::UserLimit - info.start)
             {
                 return false;
             }
-            const UInt64 regionEnd = region + regionSize;
+            const UInt64 regionEnd = info.start + info.size;
             if (regionEnd <= cursor) { return false; }
-            if (info.is_submap) {
+            if (info.isSubmap) {
                 // 子映射只用于找到叶子区域；实际证据必须来自叶子条目。
-                if (levelCount == MaxLevels || regionDepth >= MaxLevels) { return false; }
+                if (levelCount == MaxLevels || info.depth >= MaxLevels) { return false; }
                 levels[levelCount++] = {depth, regionEnd};
-                depth                = regionDepth + 1;
+                depth                = info.depth + 1;
                 continue;
             }
-            if (info.share_mode != SM_TRUESHARED || info.shadow_depth != 0 || (info.protection & VM_PROT_WRITE) != 0
-                || info.object_id == 0)
+            if (info.shareMode != MappingShareTrueShared || info.shadowDepth != 0 || info.writable
+                || info.objectId == 0)
             {
                 return false;
             }
             if (!found) {
-                objectId = info.object_id;
+                objectId = info.objectId;
                 found    = true;
             }
-            else if (info.object_id != objectId) {
+            else if (info.objectId != objectId) {
                 return false;
             }
             cursor = regionEnd;
             while (levelCount != 0 && cursor >= levels[levelCount - 1].end) { depth = levels[--levelCount].depth; }
         }
         if (!found) { return false; }
-        facts = {objectId, SM_TRUESHARED, 0, false};
+        facts = {objectId, MappingShareTrueShared, 0, false};
         return true;
     }
 

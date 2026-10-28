@@ -26,7 +26,6 @@ inline void IOLockUnlock(IOLock* lock){ pthread_mutex_unlock(&lock->mutex); }
 #include <cstring>
 #include <map>
 #include <vector>
-#include <mach/mach.h>
 #include <UserCacheResolver.hpp>
 #include <VPF/FastResolution.hpp>
 using namespace VPF;
@@ -91,52 +90,45 @@ static uint64_t build(uint64_t newBase,uint64_t imageShift=0){
 }
 static int mapCalls=0;
 static uint64_t mapTextStart=0,mapTextSize=0,mapObjectId=0x1234;
-static uint8_t mapShareMode=SM_TRUESHARED;
+static uint8_t mapShareMode=5;
 static bool mapSplitPrivate=false,mapSubmap=false,mapGap=false,mapWrongObject=false;
-static kern_return_t query(vm_map_t,mach_vm_address_t* address,mach_vm_size_t* size,natural_t* depth,
-                           vm_region_recurse_info_t raw,mach_msg_type_number_t* count){
- assert(*count==VM_REGION_SUBMAP_INFO_COUNT_64);mapCalls++;
- auto* info=reinterpret_cast<vm_region_submap_info_data_64_t*>(raw);
- if(mapGap){*address=*address+0x1000;*size=0x1000;return KERN_SUCCESS;}
- if(mapSubmap&&*depth==0){*address=mapTextStart;*size=mapTextSize;memset(info,0,sizeof(*info));info->is_submap=1;return KERN_SUCCESS;}
- const uint64_t start=*address<mapTextStart?mapTextStart:*address;
+static bool probe(void*,uint64_t address,uint32_t depth,VPF::MappingInfo& info){
+ mapCalls++;
+ if(mapGap){info={address+0x1000,0x1000,depth,0x1234,5,0,false,false};return true;}
+ if(mapSubmap&&depth==0){info={mapTextStart,mapTextSize,depth,0,0,0,true,false};return true;}
+ const uint64_t start=address<mapTextStart?mapTextStart:address;
  uint64_t length=mapTextStart+mapTextSize-start;
- if(length==0)return KERN_INVALID_ADDRESS;
+ if(length==0)return false;
  if((mapSplitPrivate||mapWrongObject)&&start==mapTextStart&&length>0x800)length=0x800;
- memset(info,0,sizeof(*info));*address=start;*size=length;
- info->protection=VM_PROT_READ;info->max_protection=VM_PROT_READ;
- info->share_mode=mapShareMode;info->object_id=mapObjectId();
- assert(false);
- return KERN_SUCCESS;
+ uint32_t objectId=static_cast<uint32_t>(mapObjectId);
+ uint8_t share=mapShareMode;
+ if(mapWrongObject&&start>=mapTextStart+0x800)objectId++;
+ if(mapSplitPrivate&&start>=mapTextStart+0x800){share=2;objectId++;}
+ info={start,length,depth,objectId,share,0,false,false};
+ return true;
 }
 '''
-    # 上面 query 中的 mapObjectId() 是笔误占位；用真实实现覆盖。
-    source = source.replace('info->share_mode=mapShareMode;info->object_id=mapObjectId();\n assert(false);\n return KERN_SUCCESS;',
-                            '''info->share_mode=mapShareMode;info->object_id=static_cast<uint32_t>(mapObjectId);
- if(mapWrongObject&&start>=mapTextStart+0x800)info->object_id++;
- if(mapSplitPrivate&&start>=mapTextStart+0x800){info->share_mode=SM_PRIVATE;info->object_id++;}
- return KERN_SUCCESS;''')
     source += r'''
 static void resetMapping(uint64_t textStart,uint64_t textSize=TextSize){
- mapCalls=0;mapTextStart=textStart;mapTextSize=textSize;mapObjectId=0x1234;mapShareMode=SM_TRUESHARED;
+ mapCalls=0;mapTextStart=textStart;mapTextSize=textSize;mapObjectId=0x1234;mapShareMode=5;
  mapSplitPrivate=mapSubmap=mapGap=mapWrongObject=false;
 }
 static void mapping(){
  const uint64_t image=build(base);(void)image;resetMapping(image+0x1000);
  MappingFacts facts{};
- assert(inspectMapping(query,mach_task_self(),image+0x1000,TextSize,facts));
- assert(facts.objectId==0x1234&&facts.shareMode==SM_TRUESHARED&&!facts.writable);
+ assert(inspectMapping(probe,nullptr,image+0x1000,TextSize,facts));
+ assert(facts.objectId==0x1234&&facts.shareMode==5&&!facts.writable);
  const auto cleanCalls=mapCalls;
- mapSplitPrivate=true;assert(!inspectMapping(query,mach_task_self(),image+0x1000,TextSize,facts));
+ mapSplitPrivate=true;assert(!inspectMapping(probe,nullptr,image+0x1000,TextSize,facts));
  assert(mapCalls>cleanCalls);
- mapSplitPrivate=false;mapWrongObject=true;assert(!inspectMapping(query,mach_task_self(),image+0x1000,TextSize,facts));
- mapWrongObject=false;mapShareMode=SM_PRIVATE;assert(!inspectMapping(query,mach_task_self(),image+0x1000,TextSize,facts));
- mapShareMode=SM_TRUESHARED;mapSubmap=true;assert(inspectMapping(query,mach_task_self(),image+0x1000,TextSize,facts));
+ mapSplitPrivate=false;mapWrongObject=true;assert(!inspectMapping(probe,nullptr,image+0x1000,TextSize,facts));
+ mapWrongObject=false;mapShareMode=2;assert(!inspectMapping(probe,nullptr,image+0x1000,TextSize,facts));
+ mapShareMode=5;mapSubmap=true;assert(inspectMapping(probe,nullptr,image+0x1000,TextSize,facts));
  assert(facts.objectId==0x1234);
- mapSubmap=false;mapGap=true;assert(!inspectMapping(query,mach_task_self(),image+0x1000,TextSize,facts));
- mapGap=false;assert(!inspectMapping(nullptr,mach_task_self(),image+0x1000,TextSize,facts));
- assert(!inspectMapping(query,mach_task_self(),0,TextSize,facts));
- assert(!inspectMapping(query,mach_task_self(),image+0x1000,0,facts));
+ mapSubmap=false;mapGap=true;assert(!inspectMapping(probe,nullptr,image+0x1000,TextSize,facts));
+ mapGap=false;assert(!inspectMapping(nullptr,nullptr,image+0x1000,TextSize,facts));
+ assert(!inspectMapping(probe,nullptr,0,TextSize,facts));
+ assert(!inspectMapping(probe,nullptr,image+0x1000,0,facts));
  printf("PASS mapping: clean shared object, split COW page, object mismatch, writable/private, submap walk, gap and argument rejection\n");
 }
 static void resolver(){
@@ -209,13 +201,13 @@ static void resolver(){
 static void fast(){
  pattern();
  const uint8_t uuid[16]={1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
- ResolutionDiagnostics::setEnabled(true);resolutionCache.init();assert(resolutionCache.lock);
+ ResolutionDiagnostics::setEnabled(true);resolutionCache.init();assert(resolutionCache.ready);
  const UserCacheResolver::ImageReference imagesRef[1]={{"/x",3}};
- const uint16_t functionImages[1]={0};
+ const uint32_t functionImages[1]={0};
  const uint64_t firstImage=build(base);resetMapping(firstImage+0x1000);
  UserSharedCache::Input input{reader,{}};uint8_t scan[UserSharedCache::Input::ScanSize];input.scanBuffer=scan;
  UserCacheResolver::ImageBounds bounds[1]{};
- FastResolution fast;fast.begin(uuid,25,0x1234,0,mach_task_self(),query);
+ FastResolution fast;fast.begin(uuid,25,0x1234,0,probe,nullptr);
  assert(UserCacheResolver::resolveImages(input,base,imagesRef,bounds));
  assert(fast.observeImages(base,0x40000000,bounds,imagesRef,1)&&fast.mappingClean);
  UserCacheResolver::KnownLocation located[1]{};uint8_t originals[16]{},replacements[16]{};TestPatch output[1]{};
@@ -231,7 +223,7 @@ static void fast(){
  UserSharedCache::Input hot{reader,{}};uint8_t hotScan[UserSharedCache::Input::ScanSize];hot.scanBuffer=hotScan;
  UserCacheResolver::ImageBounds hotBounds[1]{};
  assert(UserCacheResolver::resolveImages(hot,secondBase,imagesRef,hotBounds));
- FastResolution hotFast;hotFast.begin(uuid,25,0x1234,0,mach_task_self(),query);
+ FastResolution hotFast;hotFast.begin(uuid,25,0x1234,0,probe,nullptr);
  assert(hotFast.observeImages(secondBase,0x40000000,hotBounds,imagesRef,1)&&hotFast.mappingClean);
  UserCacheResolver::KnownLocation known[1]{};
  assert(hotFast.lookup(FunctionGroup::VideoDecode,functionImages,1,known)&&hotFast.hot);
@@ -243,33 +235,33 @@ static void fast(){
  assert(memcmp(originals,hotOriginals,16)==0&&memcmp(replacements,hotReplacements,16)==0);
  assert(coldTextBytes>=TextSize&&textBytes<512);
  // 私有页、不同对象身份与布局变化都不得命中。
- mapShareMode=SM_PRIVATE;
- FastResolution dirty;dirty.begin(uuid,25,0x1234,0,mach_task_self(),query);
+ mapShareMode=2;
+ FastResolution dirty;dirty.begin(uuid,25,0x1234,0,probe,nullptr);
  assert(dirty.observeImages(secondBase,0x40000000,hotBounds,imagesRef,1)&&!dirty.mappingClean);
  UserCacheResolver::KnownLocation dirtyLocated[1]={{secondImage+rva,false}};
  dirty.publish(FunctionGroup::VideoGuard,dirtyLocated,functionImages,1);
  assert(!dirty.lookup(FunctionGroup::VideoGuard,functionImages,1,known));
- mapShareMode=SM_TRUESHARED;mapObjectId=0x9999;
- FastResolution other;other.begin(uuid,25,0x1234,0,mach_task_self(),query);
+ mapShareMode=5;mapObjectId=0x9999;
+ FastResolution other;other.begin(uuid,25,0x1234,0,probe,nullptr);
  assert(other.observeImages(secondBase,0x40000000,hotBounds,imagesRef,1)&&other.mappingClean);
  assert(!other.lookup(FunctionGroup::VideoDecode,functionImages,1,known));
  mapObjectId=0x1234;
  const uint64_t shifted=build(secondBase,0x1000);resetMapping(shifted+0x1000);
  UserSharedCache::Input shiftedInput{reader,{}};UserCacheResolver::ImageBounds shiftedBounds[1]{};
  assert(UserCacheResolver::resolveImages(shiftedInput,secondBase,imagesRef,shiftedBounds));
- FastResolution shiftedFast;shiftedFast.begin(uuid,25,0x1234,0,mach_task_self(),query);
+ FastResolution shiftedFast;shiftedFast.begin(uuid,25,0x1234,0,probe,nullptr);
  assert(shiftedFast.observeImages(secondBase,0x40000000,shiftedBounds,imagesRef,1));
  assert(!shiftedFast.lookup(FunctionGroup::VideoDecode,functionImages,1,known));
  // 伪造的错误 RVA 必须被完整核验拒绝，并允许回退到冷扫描。
  build(secondBase);resetMapping(secondImage+0x1000);
  resolutionCache.init();
- FastResolution forged;forged.begin(uuid,25,0x1234,0,mach_task_self(),query);
+ FastResolution forged;forged.begin(uuid,25,0x1234,0,probe,nullptr);
  assert(forged.observeImages(secondBase,0x40000000,hotBounds,imagesRef,1));
  CachedResolution tampered{};
  tampered.key=forged.key(FunctionGroup::DisplaySubmit);tampered.proof=ProofClass::ReusableImmutableIdentity;
  tampered.imageCount=1;tampered.functionCount=1;tampered.resolverRevision=ResolutionVerifierRevision;
  tampered.cacheSize=0x40000000;
- tampered.images[0]={0,0x1234,UInt8(SM_TRUESHARED),secondImage-secondBase,secondImage+0x1000-secondBase,UInt32(TextSize)};
+ tampered.images[0]={0,0x1234,UInt8(5),secondImage-secondBase,secondImage+0x1000-secondBase,UInt32(TextSize)};
  tampered.functions[0]={0,0,0,0x1000};
  assert(resolutionCache.publish(tampered)==PublishResult::Published);
  UserCacheResolver::KnownLocation forgedKnown[1]{};

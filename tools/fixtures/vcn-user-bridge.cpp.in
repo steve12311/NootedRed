@@ -33,7 +33,10 @@ using user_addr_t=uint64_t;using mach_vm_address_t=uint64_t;using mach_vm_size_t
 using vm_map_t=void*;using task_t=void*;using proc_t=void*;using natural_t=unsigned;
 using mach_msg_type_number_t=unsigned;using vm_prot_t=int;using kern_return_t=int;
 struct vm_region_submap_short_info_data_64_t {int protection=0,max_protection=0,is_submap=0;};using vm_region_recurse_info_t=int*;
+struct vm_region_submap_info_data_64_t {int protection=0,max_protection=0,is_submap=0;unsigned object_id=0;
+ unsigned char share_mode=0;unsigned short shadow_depth=0;};
 constexpr unsigned PAGE_SIZE=4096,VM_REGION_SUBMAP_SHORT_INFO_COUNT_64=12;
+constexpr unsigned VM_REGION_SUBMAP_INFO_COUNT_64=VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
 constexpr int TRUE=1,FALSE=0,KERN_SUCCESS=0,KERN_INVALID_ARGUMENT=4,KERN_FAILURE=5;
 constexpr int VM_PROT_NONE=0,VM_PROT_READ=1,VM_PROT_WRITE=2,VM_PROT_EXECUTE=4,VM_PROT_COPY=16;
 #define SYSLOG(...) ((void)0)
@@ -43,7 +46,9 @@ struct NRed {static NRed& singleton(){static NRed n;return n;}void setProp32(con
  unsigned getDeviceID(){return device; }static unsigned device;};unsigned NRed::device=0x1638;
 struct Version{unsigned major(){return majorValue;}unsigned minor(){return minorValue;}static unsigned majorValue,minorValue;};unsigned Version::majorValue=25;unsigned Version::minorValue=6;
 const PenguinWizardry::KernelVersion& currentKernelVersion(){static std::optional<PenguinWizardry::KernelVersion> current;return current.emplace(Version::majorValue,Version::minorValue);}
-static bool flag=true;static bool checkKernelArgument(const char* s){assert(strcmp(s,"-NRedVideoFix")==0);return flag;}
+static bool flag=true;static bool checkKernelArgument(const char* s){
+ assert(strcmp(s,"-NRedVideoFix")==0||strcmp(s,"-NRedFVRC")==0);
+ return strcmp(s,"-NRedVideoFix")==0&&flag;}
 namespace VCN { static bool active=true; bool allocated(){return active;} }
 #define IONew(T,N) (new T[N])
 #define IODelete(P,T,N) delete[] P

@@ -8,29 +8,21 @@
 namespace VPF
 {
 
-    struct FastImageLayout
-    {
-        const char* path;
-        UInt32      pathSize;
-        UInt64      relativeStart;
-        UInt64      textRelativeStart;
-        UInt32      textLength;
-    };
-
     // 由调用方在每个功能组开始时重置；所有证据只对当前 map 的本次调用有效。
     struct FastResolution
     {
-        const UInt8*     uuid;
-        UInt32           darwinMajor;
-        UInt32           profileId;
-        UInt32           flags;
-        vm_map_t         map;
-        RegionQuery      query;
-        UInt64           cacheBase;
-        UInt64           cacheSize;
-        UInt32           imageCount;
-        UInt64           imageAddresses[ResolutionMaxImages];
-        FastImageLayout  images[ResolutionMaxImages];
+        const UInt8* uuid;
+        UInt32       darwinMajor;
+        UInt32       profileId;
+        UInt32       flags;
+        MappingProbe probe;
+        void*        probeContext;
+        UInt64       cacheBase;
+        UInt64       cacheSize;
+        UInt32       imageCount;
+        UInt64       imageAddresses[ResolutionMaxImages];
+        // 布局保存在调用方工作区中，避免大数组占用内核栈。
+        ImageLayout      layouts[ResolutionMaxImages];
         UInt32           objectIds[ResolutionMaxImages];
         ImageSetIdentity identity;
         bool             mappingClean;
@@ -39,21 +31,22 @@ namespace VPF
         bool             enabled;
 
         void begin(const UInt8* cacheUUID, const UInt32 major, const UInt32 profile, const UInt32 policyFlags,
-                   const vm_map_t targetMap, const RegionQuery regionQuery)
+                   const MappingProbe mappingProbe, void* mappingContext)
         {
-            uuid        = cacheUUID;
-            darwinMajor = major;
-            profileId   = profile;
-            flags       = policyFlags;
-            map         = targetMap;
-            query       = regionQuery;
+            uuid         = cacheUUID;
+            darwinMajor  = major;
+            profileId    = profile;
+            flags        = policyFlags;
+            probe        = mappingProbe;
+            probeContext = mappingContext;
             cacheBase = cacheSize = 0;
             imageCount            = 0;
             identity              = {0, 0};
             mappingClean = observed = hot = false;
-            enabled = ResolutionDiagnostics::enabled() && resolutionCache.lock != nullptr && uuid != nullptr;
+            enabled =
+                ResolutionDiagnostics::enabled() && resolutionCache.ready != 0 && uuid != nullptr && probe != nullptr;
             memset(imageAddresses, 0, sizeof(imageAddresses));
-            memset(images, 0, sizeof(images));
+            memset(layouts, 0, sizeof(layouts));
             memset(objectIds, 0, sizeof(objectIds));
         }
 
@@ -67,7 +60,6 @@ namespace VPF
             {
                 return false;
             }
-            ImageLayout layouts[ResolutionMaxImages]{};
             for (UInt32 i = 0; i < count; ++i) {
                 if (!refs[i].path || refs[i].size == 0 || refs[i].size > 256 || bounds[i].address < base
                     || bounds[i].text.address < base || bounds[i].text.size == 0 || bounds[i].text.size > 0xFFFFFFFFULL)
@@ -84,8 +76,6 @@ namespace VPF
                 layout.mappingShareMode  = 0;
                 if (!layout.valid(size)) { return false; }
                 imageAddresses[i] = bounds[i].address;
-                images[i]         = {layout.path, layout.pathSize, layout.relativeStart, layout.textRelativeStart,
-                                     layout.textLength};
             }
             identity = imageSetIdentity(layouts, count, size);
             if (identity.low == 0 && identity.high == 0) { return false; }
@@ -95,7 +85,7 @@ namespace VPF
             mappingClean = true;
             for (UInt32 i = 0; i < count; ++i) {
                 MappingFacts facts{};
-                if (!inspectMapping(query, map, bounds[i].text.address, bounds[i].text.size, facts)) {
+                if (!inspectMapping(probe, probeContext, bounds[i].text.address, bounds[i].text.size, facts)) {
                     mappingClean = false;
                     objectIds[i] = 0;
                     continue;
@@ -120,7 +110,7 @@ namespace VPF
         }
 
         // 仅当快照带可复用证明、布局与内核映射身份都匹配时才填充已知位置。
-        bool lookup(const FunctionGroup group, const UInt16* functionImages, const UInt32 functionCount,
+        bool lookup(const FunctionGroup group, const UInt32* functionImages, const UInt32 functionCount,
                     UserCacheResolver::KnownLocation* known)
         {
             hot = false;
@@ -140,10 +130,10 @@ namespace VPF
             }
             for (UInt32 i = 0; i < imageCount; ++i) {
                 const auto& image = cached.images[i];
-                if (image.relativeStart != images[i].relativeStart
-                    || image.textRelativeStart != images[i].textRelativeStart
-                    || image.textLength != images[i].textLength || image.mappingObjectId != objectIds[i]
-                    || image.mappingShareMode != SM_TRUESHARED)
+                if (image.relativeStart != layouts[i].relativeStart
+                    || image.textRelativeStart != layouts[i].textRelativeStart
+                    || image.textLength != layouts[i].textLength || image.mappingObjectId != objectIds[i]
+                    || image.mappingShareMode != MappingShareTrueShared)
                 {
                     ResolutionDiagnostics::counters.record(ResolutionEvent::Fallback);
                     return false;
@@ -157,7 +147,7 @@ namespace VPF
                     ResolutionDiagnostics::counters.record(ResolutionEvent::Fallback);
                     return false;
                 }
-                const auto& image   = images[function.imageIndex];
+                const auto& image   = layouts[function.imageIndex];
                 const auto  address = imageAddresses[function.imageIndex] + function.imageRelativeRVA;
                 const auto  text    = cacheBase + image.textRelativeStart;
                 if (address < text || address - text >= image.textLength) {
@@ -174,7 +164,7 @@ namespace VPF
 
         // 完整冷扫描成功后发布；只有整段文本都由同一可信共享对象提供时才可升级为 Reusable。
         void publish(const FunctionGroup group, const UserCacheResolver::KnownLocation* locations,
-                     const UInt16* functionImages, const UInt32 functionCount)
+                     const UInt32* functionImages, const UInt32 functionCount)
         {
             if (!enabled || !observed || !locations || !functionImages || functionCount == 0
                 || functionCount > ResolutionMaxFunctions || imageCount == 0)
@@ -191,24 +181,24 @@ namespace VPF
             value.cacheSize        = cacheSize;
             UInt64 fingerprint     = identity.low ^ identity.high;
             for (UInt32 i = 0; i < imageCount; ++i) {
-                value.images[i].imageIndex        = static_cast<UInt16>(i);
+                value.images[i].imageIndex        = static_cast<UInt32>(i);
                 value.images[i].mappingObjectId   = mappingClean ? objectIds[i] : 0;
-                value.images[i].mappingShareMode  = static_cast<UInt8>(mappingClean ? SM_TRUESHARED : 0);
-                value.images[i].relativeStart     = images[i].relativeStart;
-                value.images[i].textRelativeStart = images[i].textRelativeStart;
-                value.images[i].textLength        = images[i].textLength;
+                value.images[i].mappingShareMode  = static_cast<UInt8>(mappingClean ? MappingShareTrueShared : 0);
+                value.images[i].relativeStart     = layouts[i].relativeStart;
+                value.images[i].textRelativeStart = layouts[i].textRelativeStart;
+                value.images[i].textLength        = layouts[i].textLength;
                 fingerprint                       = identityMix(fingerprint, objectIds[i]);
             }
             for (UInt32 i = 0; i < functionCount; ++i) {
                 const auto image = functionImages[i];
                 if (image >= imageCount || locations[i].address == 0) { return; }
                 const auto start =
-                    imageAddresses[image] + (images[image].textRelativeStart - images[image].relativeStart);
-                if (locations[i].address < start || locations[i].address - start >= images[image].textLength) {
+                    imageAddresses[image] + (layouts[image].textRelativeStart - layouts[image].relativeStart);
+                if (locations[i].address < start || locations[i].address - start >= layouts[image].textLength) {
                     return;
                 }
                 const auto rva     = locations[i].address - imageAddresses[image];
-                value.functions[i] = {static_cast<UInt16>(image), static_cast<UInt16>(i),
+                value.functions[i] = {static_cast<UInt32>(image), static_cast<UInt32>(i),
                                       static_cast<UInt8>(locations[i].patched ? 1 : 0), rva};
                 fingerprint        = identityMix(fingerprint, rva);
             }

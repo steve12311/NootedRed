@@ -4,6 +4,7 @@
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserPatchCoordinator.hpp>
+#include <UserPatchMapGate.hpp>
 #include <UserPatchMemory.hpp>
 #include <UserPatchPolicy.hpp>
 #include <UserVideoDecode.hpp>
@@ -23,7 +24,6 @@
 #include <mach/vm_map.h>
 #include <mach/vm_region.h>
 #include <sys/proc.h>
-#include <UserPatchMapGate.hpp>
 
 namespace
 {
@@ -33,30 +33,62 @@ namespace
         user_addr_t startAddress;
     };
     static_assert(sizeof(SharedRegionCheckArgs) == 8);
-    using SharedRegionCheck = int       (*)(proc_t, SharedRegionCheckArgs*, int*);
-    using GetTaskMap        = vm_map_t         (*)(task_t);
+    using SharedRegionCheck = int (*)(proc_t, SharedRegionCheckArgs*, int*);
+    using GetTaskMap        = vm_map_t   (*)(task_t);
     using RegionRecurse     = UserPatchMemory::RegionQuery;
-    using CopyIn            = int                  (*)(user_addr_t, void*, size_t);
-    using CopyOut           = int                 (*)(const void*, user_addr_t, size_t);
-    using MapDestroy        = void                (*)(vm_map_t);
+    using CopyIn            = int      (*)(user_addr_t, void*, size_t);
+    using CopyOut           = int     (*)(const void*, user_addr_t, size_t);
+    using MapDestroy        = void (*)(vm_map_t);
 
-    mach_vm_address_t                 originalCheck{0};
-    MapDestroy                        originalMapDestroy{nullptr};
-    GetTaskMap                        getTaskMap{nullptr};
-    RegionRecurse                     queryRegion{nullptr};
-    CopyIn                            readUser{nullptr};
-    CopyOut                           writeUser{nullptr};
-    IOLock*                           guardLock{nullptr};
-    UserPatchMapGate::Registry<64>     taskPatchRegistry;
-    UInt32                            taskGatePeakReported{0};
-    UInt32                            seenStages{0}, appliedCount{0}, errorCount{0};
-    struct Published { UInt64 uuid[4], matched, reads, guardReads, path, planState, ledgerState, planner; } published{};
-    VPF::CapabilityLedger              videoLedger;
+    struct MappingProbeState
+    {
+        vm_map_t      map;
+        RegionRecurse query;
+    };
+
+    // VPF 层不包含 Mach 头；由当前调用提供完整区域信息，只读映射属性。
+    bool probeMapping(void* context, UInt64 address, UInt32 depth, VPF::MappingInfo& info)
+    {
+        const auto&                     state  = *static_cast<MappingProbeState*>(context);
+        mach_vm_address_t               region = address;
+        mach_vm_size_t                  regionSize{0};
+        natural_t                       regionDepth = depth;
+        vm_region_submap_info_data_64_t raw{};
+        mach_msg_type_number_t          count = VM_REGION_SUBMAP_INFO_COUNT_64;
+        if (!state.query
+            || state.query(state.map, &region, &regionSize, &regionDepth,
+                           reinterpret_cast<vm_region_recurse_info_t>(&raw), &count)
+                   != KERN_SUCCESS
+            || count < VM_REGION_SUBMAP_INFO_COUNT_64)
+        {
+            return false;
+        }
+        info = {region,         regionSize,       regionDepth,        raw.object_id,
+                raw.share_mode, raw.shadow_depth, raw.is_submap != 0, (raw.protection & VM_PROT_WRITE) != 0};
+        return true;
+    }
+
+    mach_vm_address_t              originalCheck{0};
+    MapDestroy                     originalMapDestroy{nullptr};
+    GetTaskMap                     getTaskMap{nullptr};
+    RegionRecurse                  queryRegion{nullptr};
+    CopyIn                         readUser{nullptr};
+    CopyOut                        writeUser{nullptr};
+    IOLock*                        guardLock{nullptr};
+    UserPatchMapGate::Registry<64> taskPatchRegistry;
+    UInt32                         taskGatePeakReported{0};
+    UInt32                         seenStages{0}, appliedCount{0}, errorCount{0};
+    struct Published
+    {
+        UInt64 uuid[4], matched, reads, guardReads, path, planState, ledgerState, planner;
+        UInt64 fvrcDecode, fvrcGuard, fvrcDecodeCold, fvrcGuardCold;
+    } published{};
+    VPF::CapabilityLedger             videoLedger;
     bool                              fairPlayDriverOnly{false};
     bool                              sequoia{false};
     const UserVideoDecodeData::Patch* devicePatches{nullptr};
     constexpr auto                    PatchCount   = arrsize(UserVideoDecodeData::Patches);
-    constexpr UInt32                  Capacity = PatchCount + UserVideoGuardData::MaxEntries;
+    constexpr UInt32                  Capacity     = PatchCount + UserVideoGuardData::MaxEntries;
     constexpr UInt32                  MaxPageCount = Capacity * 2;
     static_assert(PatchCount <= 32 && UserVideoDecodeData::PageCount <= 16);
     static_assert(arrsize(UserSequoiaVideoData::Patches) == PatchCount);
@@ -158,7 +190,8 @@ namespace
         for (UInt32 i = 0; i < source.siteCount(); ++i) {
             const auto& site = source.site(i);
             if (!out.addSite(site.address, site.offset, site.size, site.functionIndex, site.instructionOffset,
-                             site.original, site.replacement)) {
+                             site.original, site.replacement))
+            {
                 return false;
             }
         }
@@ -174,14 +207,15 @@ namespace
         input.deviceID = deviceID;
         input.requested =
             VPF::featureBit(VPF::FeatureId::Vcn2SafetyGuard) | VPF::featureBit(VPF::FeatureId::Vcn2Decode)
-            | (fairPlay ? VPF::featureBit(VPF::FeatureId::FairPlayNativeDecodeSubset) :
-                          (VPF::featureBit(VPF::FeatureId::Vcn2Encode)
-                           | VPF::featureBit(VPF::FeatureId::AppleGVASelection)));
+            | (fairPlay ?
+                   VPF::featureBit(VPF::FeatureId::FairPlayNativeDecodeSubset) :
+                   (VPF::featureBit(VPF::FeatureId::Vcn2Encode) | VPF::featureBit(VPF::FeatureId::AppleGVASelection)));
         input.verified = (guardVerified ? VPF::featureBit(VPF::FeatureId::Vcn2SafetyGuard) : 0)
                          | (decodeVerified ? (VPF::featureBit(VPF::FeatureId::Vcn2Decode)
                                               | VPF::featureBit(VPF::FeatureId::Vcn2Encode)
                                               | VPF::featureBit(VPF::FeatureId::AppleGVASelection)
-                                              | VPF::featureBit(VPF::FeatureId::FairPlayNativeDecodeSubset)) : 0);
+                                              | VPF::featureBit(VPF::FeatureId::FairPlayNativeDecodeSubset)) :
+                                             0);
         input.external = VPF::ExternalVcnBridge | (fairPlay ? VPF::ExternalFairPlay : 0);
         result         = VPF::plan(input);
         return !result.cycle && (result.enabled & input.requested) == input.requested
@@ -329,11 +363,12 @@ namespace
     struct TransactionState
     {
         UserVideoDecodeData::Patch selected[PatchCount]{}, install[Capacity]{};
-        VPF::VerifiedPatchPlan decodePlan{}, guardPlan{}, installPlan{};
-        VPF::PlannerResult planner{};
-        Page pages[MaxPageCount]{};
-        UserSharedCache::Input input{nullptr, {}};
-        UInt8 scan[UserSharedCache::Input::ScanSize];
+        VPF::VerifiedPatchPlan     decodePlan{}, guardPlan{}, installPlan{};
+        VPF::PlannerResult         planner{};
+        Page                       pages[MaxPageCount]{};
+        UserSharedCache::Input     input{nullptr, {}};
+        UInt8                      scan[UserSharedCache::Input::ScanSize];
+        VPF::FastResolution        fast, guardFast;
     };
     struct TransactionBuffer
     {
@@ -343,7 +378,10 @@ namespace
             state = IONew(TransactionState, 1);
             if (state) { memset(state, 0, sizeof(*state)); }
         }
-        ~TransactionBuffer() { if (state) { IODelete(state, TransactionState, 1); } }
+        ~TransactionBuffer()
+        {
+            if (state) { IODelete(state, TransactionState, 1); }
+        }
     };
     struct SavedBuffer
     {
@@ -363,14 +401,17 @@ namespace
             plan = IONew(UserVideoGuardResolver::Plan, 1);
             if (plan) { memset(plan, 0, sizeof(*plan)); }
         }
-        ~GuardBuffer() { if (plan) { IODelete(plan, UserVideoGuardResolver::Plan, 1); } }
+        ~GuardBuffer()
+        {
+            if (plan) { IODelete(plan, UserVideoGuardResolver::Plan, 1); }
+        }
     };
 
     struct GuardPage
     {
-        vm_map_t map;
+        vm_map_t     map;
         vm_address_t page{0};
-        bool retained{false};
+        bool         retained{false};
         ~GuardPage()
         {
             if (page && !retained) {
@@ -390,16 +431,24 @@ namespace
     bool createGuard(GuardPage& owner, UserVideoGuardResolver::Plan& plan)
     {
         auto status = vm_allocate(owner.map, &owner.page, PAGE_SIZE, VM_FLAGS_ANYWHERE);
-        if (status != KERN_SUCCESS) { error(status); return false; }
+        if (status != KERN_SUCCESS) {
+            error(status);
+            return false;
+        }
         if (!UserVideoGuardResolver::setPage(plan, owner.page, currentKernelVersion().major())
-            || writeUser(plan.expected, owner.page, plan.length) != 0) { return false; }
+            || writeUser(plan.expected, owner.page, plan.length) != 0)
+        {
+            return false;
+        }
         status = vm_protect(owner.map, owner.page, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
         if (status == KERN_SUCCESS) {
             status = vm_protect(owner.map, owner.page, PAGE_SIZE, TRUE, VM_PROT_READ | VM_PROT_EXECUTE);
         }
-        if (status != KERN_SUCCESS) { error(status); return false; }
-        return executableGuard(owner.map, owner.page)
-               && readUser(owner.page, plan.observed, plan.length) == 0
+        if (status != KERN_SUCCESS) {
+            error(status);
+            return false;
+        }
+        return executableGuard(owner.map, owner.page) && readUser(owner.page, plan.observed, plan.length) == 0
                && memcmp(plan.expected, plan.observed, plan.length) == 0;
     }
 
@@ -409,7 +458,7 @@ namespace
         NRed::singleton().setProp32("NRedVCNDecodeGuardRevision", UserVideoGuardData::Revision);
         if (!process) { return; }
         const auto pid = proc_pid(process);
-        char name[32]{};
+        char       name[32]{};
         if (pid > 0) { proc_name(pid, name, sizeof(name)); }
         if (strncmp(name, "VTEncoderXPC", 12) == 0) {
             NRed::singleton().setProp32("NRedVCNGuardedEncoderPID", static_cast<UInt32>(pid));
@@ -462,8 +511,7 @@ namespace
         return selectedCount != 0;
     }
 
-    __attribute__((noinline))
-    int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result)
+    __attribute__((noinline)) int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result)
     {
         // 按 FairPlay 权限统一选择策略；客户端只允许 AMD 驱动侧解码项，
         // 保留 AppleGVA 和编码代码原样。
@@ -489,12 +537,15 @@ namespace
         }
         using namespace UserVideoDecodeData;
         TransactionBuffer transaction;
-        if (!transaction.state) { error(KERN_RESOURCE_SHORTAGE); return result; }
-        const auto* patches    = devicePatches;
-        UInt32      patchCount = static_cast<UInt32>(PatchCount);
+        if (!transaction.state) {
+            error(KERN_RESOURCE_SHORTAGE);
+            return result;
+        }
+        const auto* patches         = devicePatches;
+        UInt32      patchCount      = static_cast<UInt32>(PatchCount);
         auto*       selectedPatches = transaction.state->selected;
         UInt64      base{0};
-        UInt8  header[104];
+        UInt8       header[104];
         if (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0
             || base >= UserSharedCache::UserLimit - sizeof(header) || (base & (PAGE_SIZE - 1)) != 0
             || readUser(base, header, sizeof(header)) != 0)
@@ -521,15 +572,28 @@ namespace
         }
         const bool    dynamic = sequoia || memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0;
         DynamicBuffer dynamicBuffer(dynamic);
-        auto& input = transaction.state->input;
-        input.reader = readUser;
-        input.scanBuffer = transaction.state->scan;
+        auto&         input = transaction.state->input;
+        input.reader        = readUser;
+        input.scanBuffer    = transaction.state->scan;
+        const auto major    = currentKernelVersion().major();
+        const auto mask     = darwinMask(major);
+        const auto deviceID = NRed::singleton().getDeviceID();
+        vm_map_t   map      = getTaskMap(current_task());
+        if (!map) {
+            stage(Stage::NoMap, fairPlayPID);
+            return result;
+        }
+        const auto        mapKey = reinterpret_cast<UInt64>(map);
+        MappingProbeState probeState{map, queryRegion};
         if (dynamic) {
             if (!dynamicBuffer.plan) {
                 error(KERN_RESOURCE_SHORTAGE);
                 return result;
             }
-            if (!UserVideoDecodeResolver::resolve(input, base, devicePatches, *dynamicBuffer.plan, sequoia)) {
+            auto& fast = transaction.state->fast;
+            fast.begin(&header[88], major, VPF::resolutionProfile(deviceID, sequoia ? 1U : 0U), 0, probeMapping,
+                       &probeState);
+            if (!UserVideoDecodeResolver::resolve(input, base, devicePatches, *dynamicBuffer.plan, sequoia, &fast)) {
                 stage(Stage::CacheMismatch, fairPlayPID);
                 NRed::singleton().setProp32("NRedVCNUserDynamicRejected", 1);
                 return result;
@@ -537,6 +601,8 @@ namespace
             patches = dynamicBuffer.plan->patches;
             publish(published.matched, "NRedVCNUserDynamicMatched", 1);
             publish(published.reads, "NRedVCNUserDynamicReads", dynamicBuffer.plan->reads);
+            publish(published.fvrcDecode, "NRedFVRCDecodeHot", fast.hot ? 1 : 0);
+            publish(published.fvrcDecodeCold, "NRedFVRCDecodeCold", fast.hot ? 0 : 1);
         }
 
         if (fairPlayDecode) {
@@ -549,18 +615,15 @@ namespace
         }
 
         GuardBuffer guard;
-        if (!guard.plan || !UserVideoGuardResolver::resolve(input, base, currentKernelVersion().major(), *guard.plan)) {
+        auto&       guardFast = transaction.state->guardFast;
+        guardFast.begin(&header[88], major, VPF::resolutionProfile(deviceID, 0), 0, probeMapping, &probeState);
+        if (!guard.plan || !UserVideoGuardResolver::resolve(input, base, major, *guard.plan, &guardFast)) {
             NRed::singleton().setProp32("NRedVCNUserGuardRejected", 1);
             return result;
         }
         publish(published.guardReads, "NRedVCNUserGuardReads", guard.plan->reads);
-        vm_map_t map = getTaskMap(current_task());
-        if (!map) { stage(Stage::NoMap, fairPlayPID); return result; }
-        const auto mapKey   = reinterpret_cast<UInt64>(map);
-
-        const auto major = currentKernelVersion().major();
-        const auto mask  = darwinMask(major);
-        const auto deviceID = NRed::singleton().getDeviceID();
+        publish(published.fvrcGuard, "NRedFVRCGuardHot", guardFast.hot ? 1 : 0);
+        publish(published.fvrcGuardCold, "NRedFVRCGuardCold", guardFast.hot ? 0 : 1);
         const auto* decodeManifest = VPF::ManifestData::find(VPF::FeatureId::Vcn2Decode, mask, deviceID);
         const auto* guardManifest  = VPF::ManifestData::find(VPF::FeatureId::Vcn2SafetyGuard, mask, 0);
         if (!decodeManifest || !guardManifest) {
@@ -568,7 +631,7 @@ namespace
             error(KERN_INVALID_ARGUMENT);
             return result;
         }
-        const auto cache = dynamic ? input.cache : UserSharedCache::Range{base, UserSharedCache::UserLimit - base};
+        const auto cache     = dynamic ? input.cache : UserSharedCache::Range{base, UserSharedCache::UserLimit - base};
         auto&      workspace = *transaction.state;
         // FairPlay 只选择解码子集，站点顺序不再与 Manifest 一一对应。
         const bool aligned = !fairPlayDecode;
@@ -685,7 +748,7 @@ namespace
         using Executor = VPF::SharedRegionTransaction<ExecutorOps, UserVideoDecodeData::Patch, Page,
                                                       UserVideoDecodeData::MaxPatchSize>;
         Executor executor(ops, base, workspace.install, installCount,
-                          reinterpret_cast<UInt8 (*)[UserVideoDecodeData::MaxPatchSize]>(saved), pages, pageCount,
+                          reinterpret_cast<UInt8(*)[UserVideoDecodeData::MaxPatchSize]>(saved), pages, pageCount,
                           guard.plan->count);
         markLedger(mapKey, VPF::CapabilityState::Installing);
         const auto committed = executor.commit(
@@ -698,11 +761,8 @@ namespace
                 return true;
             });
         switch (committed.status) {
-            case VPF::TransactionStatus::CheckFailed:
-                stage(Stage::Region, fairPlayPID);
-                return result;
-            case VPF::TransactionStatus::BeforeWriteFailed:
-                return result;
+            case VPF::TransactionStatus::CheckFailed      : stage(Stage::Region, fairPlayPID); return result;
+            case VPF::TransactionStatus::BeforeWriteFailed: return result;
             case VPF::TransactionStatus::ProtectionFailed:
                 stage(Stage::Protection, fairPlayPID);
                 markFailure(mapKey, committed.restoreOk);
@@ -730,8 +790,7 @@ namespace
                     NRed::singleton().setProp32("NRedVCNGuardRollbackRetainedPage", 1);
                 }
                 return result;
-            case VPF::TransactionStatus::Installed:
-                break;
+            case VPF::TransactionStatus::Installed: break;
         }
         owner.retained = true;
         recordSafety(process);
@@ -796,15 +855,16 @@ namespace
     }
 
     // Only the first eight calls are traced, even in RELEASE; no per-call IORegistry writes.
-    UInt32 hookTraceCount{0};
-    __attribute__((noinline))
-    int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* returnValue)
+    UInt32                        hookTraceCount{0};
+    __attribute__((noinline)) int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args,
+                                                           int* returnValue)
     {
         auto ticket = __atomic_load_n(&hookTraceCount, __ATOMIC_RELAXED);
         bool trace{false};
         while (ticket < 8) {
-            if (__atomic_compare_exchange_n(&hookTraceCount, &ticket, ticket + 1, false,
-                                            __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
+            if (__atomic_compare_exchange_n(&hookTraceCount, &ticket, ticket + 1, false, __ATOMIC_RELAXED,
+                                            __ATOMIC_RELAXED))
+            {
                 trace = true;
                 break;
             }
@@ -813,8 +873,13 @@ namespace
         stage(Stage::Called);
         if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d original-enter", ticket, pid); }
         const auto result = reinterpret_cast<SharedRegionCheck>(originalCheck)(process, args, returnValue);
-        if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d original-return=%d", ticket, pid, result); }
-        if (result != 0) { stage(Stage::OriginalError); return result; }
+        if (trace) {
+            SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d original-return=%d", ticket, pid, result);
+        }
+        if (result != 0) {
+            stage(Stage::OriginalError);
+            return result;
+        }
         if (UserPatchCoordinator::deferModulePatches()) {
             if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d coordinated", ticket, pid); }
             return result;
@@ -827,7 +892,9 @@ namespace
         if (!lease) { return result; }
         const auto patchedResult = patchSharedRegion(process, args, result);
         recordTaskGatePeak();
-        if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d patch-return=%d", ticket, pid, patchedResult); }
+        if (trace) {
+            SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d patch-return=%d", ticket, pid, patchedResult);
+        }
         return patchedResult;
     }
 
@@ -838,6 +905,10 @@ void UserVideoDecode::init(KernelPatcher& patcher)
     UserPatchCoordinator::clearVideo();
     VPF::ResolutionDiagnostics::setEnabled(checkKernelArgument("-NRedFVRC"));
     NRed::singleton().setProp32("NRedFVRCEnabled", VPF::ResolutionDiagnostics::enabled() ? 1 : 0);
+    if (VPF::ResolutionDiagnostics::enabled()) {
+        VPF::resolutionCache.init();
+        NRed::singleton().setProp32("NRedFVRCCacheReady", VPF::resolutionCache.ready ? 1 : 0);
+    }
     NRed::singleton().setProp32("NRedVCNSharedRegionStackRevision", 1);
     fairPlayDriverOnly = false;
     devicePatches      = nullptr;
@@ -941,7 +1012,7 @@ void UserVideoDecode::init(KernelPatcher& patcher)
     UserPatchCoordinator::registerVideo(
         [](void* process, void* args, const int result)
         {
-            return patchSharedRegion(reinterpret_cast<proc_t>(process),
-                                     reinterpret_cast<SharedRegionCheckArgs*>(args), result);
+            return patchSharedRegion(reinterpret_cast<proc_t>(process), reinterpret_cast<SharedRegionCheckArgs*>(args),
+                                     result);
         });
 }

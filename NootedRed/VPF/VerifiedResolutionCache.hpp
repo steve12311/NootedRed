@@ -1,6 +1,5 @@
 // VPF：有界、不可变的解析位置缓存；条目只保存相对布局，不引用 map 或进程内存。
 #pragma once
-#include <IOKit/IOLib.h>
 #include <VPF/ResolutionIdentity.hpp>
 #include <string.h>
 
@@ -9,7 +8,7 @@ namespace VPF
 
     struct CachedImageLocation
     {
-        UInt16 imageIndex;
+        UInt32 imageIndex;
         UInt32 mappingObjectId;
         UInt8  mappingShareMode;
         UInt64 relativeStart;
@@ -19,8 +18,8 @@ namespace VPF
 
     struct CachedFunctionLocation
     {
-        UInt16 imageIndex;
-        UInt16 functionIndex;
+        UInt32 imageIndex;
+        UInt32 functionIndex;
         // 0 为原始函数，1 为生成数据中的已补丁变体；不表示本进程已安装。
         UInt8  variant;
         UInt64 imageRelativeRVA;
@@ -70,19 +69,18 @@ namespace VPF
         CachedResolution value;
     };
 
-    // 固定容量；满表不淘汰、不覆盖。发布与快照复制都在短锁内完成。
+    // 固定容量；满表不淘汰、不覆盖。发布与快照复制都在短锁内完成，
+    // 临界区只有固定结构复制，不读取用户内存、不等待其它 map。
     struct VerifiedResolutionCache
     {
         static constexpr UInt32 Capacity = 32;
 
-        IOLock*              lock;
+        UInt32               ready;
+        UInt32               guard;
         ResolutionCacheEntry entries[Capacity];
         UInt64               stats[static_cast<UInt32>(ResolutionStat::Count)];
 
-        void init()
-        {
-            if (!lock) { lock = IOLockAlloc(); }
-        }
+        void init() { ready = 1; }
 
         void record(const ResolutionStat stat, const UInt64 amount = 1)
         {
@@ -97,11 +95,11 @@ namespace VPF
         // 复制稳定快照后立即释放锁；调用方不得在持锁期间读取用户内存。
         bool lookup(const ResolutionKey& key, CachedResolution& out)
         {
-            if (!lock) {
+            if (!ready) {
                 record(ResolutionStat::LookupMiss);
                 return false;
             }
-            IOLockLock(lock);
+            acquire();
             bool found = false;
             for (UInt32 i = 0; i < Capacity; ++i) {
                 const auto& entry = entries[i];
@@ -111,7 +109,7 @@ namespace VPF
                     break;
                 }
             }
-            IOLockUnlock(lock);
+            release();
             record(found ? ResolutionStat::LookupHit : ResolutionStat::LookupMiss);
             return found;
         }
@@ -122,17 +120,25 @@ namespace VPF
                 record(ResolutionStat::Invalid);
                 return PublishResult::Invalid;
             }
-            if (!lock) {
+            if (!ready) {
                 record(ResolutionStat::Disabled);
                 return PublishResult::Disabled;
             }
-            IOLockLock(lock);
+            acquire();
             const auto result = insert(value);
-            IOLockUnlock(lock);
+            release();
             return result;
         }
 
     private:
+        void acquire()
+        {
+            while (__atomic_exchange_n(&guard, 1U, __ATOMIC_ACQUIRE) != 0) {
+                while (__atomic_load_n(&guard, __ATOMIC_RELAXED) != 0) { }
+            }
+        }
+        void release() { __atomic_store_n(&guard, 0U, __ATOMIC_RELEASE); }
+
         static bool valid(const CachedResolution& value)
         {
             if (!value.key.valid() || value.resolverRevision == 0

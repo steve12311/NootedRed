@@ -59,7 +59,7 @@ static void basic(){
  altered=layout[1];altered.path=pathA;altered.pathSize=sizeof(pathA);assert(imageSetIdentity(&altered,1,0x10000000)!=imageSetIdentity(&layout[1],1,0x10000000));
  assert(imageSetIdentity(layout,2,0x20000000)!=identity);
 
- resolutionCache.init();assert(resolutionCache.lock);
+ resolutionCache.init();assert(resolutionCache.ready);
  CachedResolution value=makeValue(key);
  assert(resolutionCache.publish(value)==PublishResult::Published);
  CachedResolution snapshot{};
