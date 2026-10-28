@@ -15,6 +15,7 @@
 #include <VPF/CapabilityState.hpp>
 #include <VPF/DependencyPlanner.hpp>
 #include <VPF/PatchManifestData.hpp>
+#include <VPF/ResolutionDiagnostics.hpp>
 #include <VPF/ResolverAdapters.hpp>
 #include <VPF/TransactionExecutor.hpp>
 #include <kern/task.h>
@@ -835,6 +836,8 @@ namespace
 void UserVideoDecode::init(KernelPatcher& patcher)
 {
     UserPatchCoordinator::clearVideo();
+    VPF::ResolutionDiagnostics::setEnabled(checkKernelArgument("-NRedFVRC"));
+    NRed::singleton().setProp32("NRedFVRCEnabled", VPF::ResolutionDiagnostics::enabled() ? 1 : 0);
     NRed::singleton().setProp32("NRedVCNSharedRegionStackRevision", 1);
     fairPlayDriverOnly = false;
     devicePatches      = nullptr;

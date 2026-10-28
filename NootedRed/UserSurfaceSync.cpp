@@ -12,6 +12,7 @@
 #include <UserSurfaceSyncResolver.hpp>
 #include <VPF/ExecutableTrampolineResource.hpp>
 #include <VPF/MetalTransactionExecutor.hpp>
+#include <VPF/ResolutionDiagnostics.hpp>
 #include <VPF/TransactionExecutor.hpp>
 #include <kern/task.h>
 #include <mach/i386/vm_param.h>
@@ -598,6 +599,8 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
 void UserSurfaceSync::init(KernelPatcher& patcher)
 {
     UserPatchCoordinator::clearDisplay();
+    VPF::ResolutionDiagnostics::setEnabled(checkKernelArgument("-NRedFVRC"));
+    NRed::singleton().setProp32("NRedFVRCEnabled", VPF::ResolutionDiagnostics::enabled() ? 1 : 0);
     NRed::singleton().setProp32("NRedSharedRegionStackRevision", 1);
     NRed::singleton().setProp32("NRedCacheSectionRevision", 1);
     sequoia         = currentKernelVersion().major() == 24;
