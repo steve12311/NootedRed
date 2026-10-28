@@ -35,6 +35,7 @@ namespace UserVideoGuardResolver
         for (UInt32 i = 0; i < overlay.plan.count; ++i) {
             const auto start = overlay.base + overlay.plan.patches[i].offset;
             const auto length = overlay.plan.patches[i].size;
+            if (start >= address ? start - address >= size : address - start >= length) { continue; }
             for (UInt32 j = 0; j < length; ++j) {
                 if (start + j >= address && start + j - address < size) {
                     static_cast<UInt8*>(bytes)[start + j - address] = overlay.plan.original[i][j];

@@ -29,12 +29,40 @@ static constexpr auto functions=sizeof(ResolverFunctions)/sizeof(ResolverFunctio
 static unsigned cases;
 static void setup(){cache(ResolverImages,ResolverFunctions,true,SectionTargets,sizeof(SectionTargets)/sizeof(SectionTargets[0]));}
 static bool resolve(UserVideoGuardResolver::Plan& plan){UserSharedCache::Input in{reader,{}};return UserVideoGuardResolver::resolve(in,base,major,plan);}
+static int overlaySource(uint64_t address,void* bytes,size_t size){
+ for(size_t i=0;i<size;i++)static_cast<uint8_t*>(bytes)[i]=uint8_t((address+i)*17);
+ return 0;
+}
+static int overlayParent(void* context,uint64_t address,void* bytes,size_t size){
+ ++*static_cast<unsigned*>(context);return overlaySource(address,bytes,size);
+}
+static int overlayFailure(void*,uint64_t,void*,size_t){return 42;}
 static void installed(UserVideoGuardResolver::Plan& plan){
  assert(resolve(plan)&&!plan.installed);assert(UserVideoGuardResolver::setPage(plan,0x40000000,major));
  blocks[plan.page].resize(4096);put(plan.page,plan.expected,plan.length);
  for(unsigned i=0;i<plan.count;i++)put(base+plan.patches[i].offset,plan.patches[i].patched,plan.patches[i].size);
 }
 int main(){
+ // 对照原逐字节语义，覆盖不相交、部分相交、交叠入口及零长度读取。
+ UserVideoGuardResolver::Plan overlayPlan;overlayPlan.count=4;
+ for(unsigned i=0;i<overlayPlan.count;i++){
+  overlayPlan.patches[i].offset=16+i*19;overlayPlan.patches[i].size=32;
+  for(unsigned j=0;j<32;j++)overlayPlan.original[i][j]=uint8_t(0x80+i*32+j);
+ }
+ unsigned parentCalls=0;
+ UserVideoGuardResolver::Overlay overlay{overlaySource,overlayParent,&parentCalls,overlayPlan,0x1000};
+ for(uint64_t address=0xfe0;address<0x1090;address++)for(size_t size=0;size<=96;size++){
+  uint8_t expected[96],actual[96];assert(overlaySource(address,expected,size)==0);
+  for(unsigned i=0;i<overlayPlan.count;i++)for(unsigned j=0;j<overlayPlan.patches[i].size;j++){
+   const auto at=overlay.base+overlayPlan.patches[i].offset+j;
+   if(at>=address&&at-address<size)expected[at-address]=overlayPlan.original[i][j];
+  }
+  assert(UserVideoGuardResolver::overlayReader(&overlay,address,actual,size)==0);
+  assert(memcmp(expected,actual,size)==0);cases++;
+ }
+ assert(parentCalls==cases);overlay.parent=overlayFailure;
+ uint8_t untouched=0x5a;assert(UserVideoGuardResolver::overlayReader(&overlay,0x1010,&untouched,1)==42&&untouched==0x5a);cases++;
+ overlay.parent=nullptr;assert(UserVideoGuardResolver::overlayReader(&overlay,0x1010,&untouched,1)==0&&untouched==0x80);cases++;
  setup();UserVideoGuardResolver::Plan plan;assert(resolve(plan));assert(plan.count==count&&!plan.installed&&writes==0);cases++;
  for(const auto& b:Bindings){
   uint64_t actual;memcpy(&actual,plan.expected+b.offset,8);auto expected=functionAddresses[b.function]+b.value;

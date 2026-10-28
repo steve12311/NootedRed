@@ -23,6 +23,7 @@ def main():
 static std::map<std::string,unsigned> properties;
 #include "user-cache-dynamic.hpp"
 namespace C=UserSurfaceConstructorData;
+namespace S=UserSequoiaSurfaceData::Submit;
 static void setup(){cache(C::ResolverImages,C::ResolverFunctions,true);}
 static bool resolve(){
  UserSharedCache::Input input{reader,{}};UserSurfaceSyncResolver::Plan plan;
@@ -32,6 +33,32 @@ static bool resolve(){
  if(ok){assert(plan.patches[0].offset+base==functionAddresses[0]+C::ResolverLocations[0].offset);
   assert(plan.patches[0].size==2&&plan.patches[0].original[0]==0x74&&plan.patches[0].patched[0]==0x90);}
  return ok;
+}
+static void submit(bool tahoe,bool buffered,unsigned kind){
+ if(tahoe)cache(C::Submit::ResolverImages,C::Submit::ResolverFunctions,true);
+ else cache(S::ResolverImages,S::ResolverFunctions);
+ const auto& fn=tahoe?C::Submit::ResolverFunctions[0]:S::ResolverFunctions[0];
+ auto expected=functionAddresses[0];
+ if(kind==1||kind==7){
+  const uint8_t jump[15]={0xff,0x25,0,0,0,0,1,2,3,4,5,6,7,8,0x90};
+  put(expected,jump,sizeof(jump));if(kind==7){uint8_t bad=0;put(expected+14,&bad,1);}
+ }
+ if(kind==2||kind==3){
+  const auto moved=imageAddresses[0]+(kind==2?0x1ff0:0x69000);
+  std::vector<uint8_t> code(fn.size);assert(reader(expected,code.data(),code.size())==0);put(moved,code.data(),code.size());
+  for(unsigned r=0;r<fn.originalCount;r++)rel(moved,fn.originalRefs[r].offset,destination(fn.originalRefs[r],&fn,1));
+  if(kind==2){uint8_t bad=0;put(expected,&bad,1);expected=moved;}
+ }
+ if(kind==4){uint8_t bad=0;put(expected,&bad,1);}
+ if(kind==5){uint8_t bad=0;put(expected+15,&bad,1);}
+ if(kind==6){auto ref=fn.originalRefs[0];rel(expected,ref.offset,destination(ref,&fn,1)+4);}
+ if(kind==8)put(imageAddresses[0]+0x69000,fn.original,15);
+ if(kind==9)failedRead=imageAddresses[0]+0x1000;
+ UserSharedCache::Input input{reader,{}};uint8_t scan[UserSharedCache::Input::ScanSize];if(buffered)input.scanBuffer=scan;
+ uint64_t offset=0;const bool ok=UserSurfaceSyncResolver::resolveSubmit(input,base,offset,tahoe);
+ assert(ok==(kind==0||kind==1||kind==2||kind==8));
+ if(ok)assert(base+offset==expected);
+ assert(writes==0&&protects==0);
 }
 int main(){
  setup();assert(resolve());unsigned cases=1;
@@ -54,6 +81,9 @@ int main(){
  setup();failedRead=imageAddresses[0]+32;assert(!resolve());cases++;
  UserCacheResolver::ImageBounds bounds{};bounds.segmentCount=1;bounds.segments[0]={base,4096};
  assert(!bounds.contains(base,(uint64_t(1)<<32)+4));cases++;
+ for(bool tahoe:{false,true})for(bool buffered:{false,true})for(unsigned kind=0;kind<10;kind++){
+  submit(tahoe,buffered,kind);cases++;
+ }
  printf("PASS %u section-layout cases: independent data sections, moved constructor, UUID variation, every relocation target and non-relocation instruction rejection\n",cases);
 }
 '''

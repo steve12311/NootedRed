@@ -255,9 +255,12 @@ namespace UserSurfaceSyncResolver
         if (!imageForCache(input, base, image)) { return false; }
         const auto& fn =
             sectionRelative ? UserSurfaceConstructorData::Submit::ResolverFunctions[0] : ResolverFunctions[0];
-        if (image.segmentCount > 8) { return false; }
+        if (image.segmentCount > 8 || fn.size < 15) { return false; }
         UserCacheResolver::ImageBounds bounds{image.address, image.text, {}, image.segmentCount};
         memcpy(bounds.segments, image.segments, image.segmentCount * sizeof(Range));
+        UInt64 nativeHead, nativeTail;
+        __builtin_memcpy(&nativeHead, fn.original, sizeof(nativeHead));
+        __builtin_memcpy(&nativeTail, fn.original + 7, sizeof(nativeTail));
         UInt64     found{0};
         const auto candidate = [&](UInt64 address)
         {
@@ -294,8 +297,14 @@ namespace UserSurfaceSyncResolver
                 input, image.text, fn.size, 15,
                 [&](const UInt8* bytes)
                 {
-                    return memcmp(bytes, fn.original, 15) == 0
-                           || (memcmp(bytes, "\xff\x25\0\0\0\0", 6) == 0 && bytes[14] == 0x90);
+                    UInt64 head;
+                    __builtin_memcpy(&head, bytes, sizeof(head));
+                    if (head == nativeHead) {
+                        UInt64 tail;
+                        __builtin_memcpy(&tail, bytes + 7, sizeof(tail));
+                        if (tail == nativeTail) { return true; }
+                    }
+                    return (head & 0x0000FFFFFFFFFFFFULL) == 0x25FF && bytes[14] == 0x90;
                 },
                 candidate, found))
         {
