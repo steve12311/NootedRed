@@ -44,8 +44,11 @@ using namespace UserSurfaceSyncData;
 using user_addr_t=uint64_t;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
 using vm_map_t=void*;using task_t=void*;using proc_t=void*;using natural_t=unsigned;
 using mach_msg_type_number_t=unsigned;using vm_prot_t=int;using kern_return_t=int;
-struct vm_region_submap_short_info_data_64_t {int protection=0,max_protection=0,is_submap=0;};using vm_region_recurse_info_t=int*;
+struct vm_region_submap_info_data_64_t {int protection=0,max_protection=0,is_submap=0;unsigned object_id=0;
+ unsigned char share_mode=0;unsigned short shadow_depth=0;};
+using vm_region_submap_short_info_data_64_t=vm_region_submap_info_data_64_t;using vm_region_recurse_info_t=int*;
 constexpr unsigned PAGE_SIZE=4096,VM_REGION_SUBMAP_SHORT_INFO_COUNT_64=12;
+constexpr unsigned VM_REGION_SUBMAP_INFO_COUNT_64=VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
 constexpr int TRUE=1,FALSE=0,KERN_SUCCESS=0,KERN_INVALID_ADDRESS=1,KERN_PROTECTION_FAILURE=2,KERN_RESOURCE_SHORTAGE=3,KERN_INVALID_ARGUMENT=4,KERN_FAILURE=5;
 constexpr int VM_FLAGS_ANYWHERE=1;
 using vm_address_t=uint64_t;
@@ -60,7 +63,9 @@ struct NRed{static NRed& singleton(){static NRed n;return n;}void setProp32(cons
  unsigned getDeviceID(){return device;}static unsigned device;};unsigned NRed::device=0x15e7;
 struct Version{unsigned major(){return 25;}unsigned minor(){return 0;}bool majorMatches(unsigned v){return v==25;}};
 constexpr unsigned MACOS_26=25;static Version currentKernelVersion(){return {};}
-static bool checkKernelArgument(const char*s){return strcmp(s,"-NRedDisplayFix")==0;}
+static bool checkKernelArgument(const char*s){
+ if(strcmp(s,"-NRedFVRC")==0)return true;
+ return strcmp(s,"-NRedDisplayFix")==0;}
 struct KernelPatcher{static constexpr int KernelID=0;struct RouteRequest{template<typename T>RouteRequest(const char*,T,uint64_t&) {}};
  uint64_t solveSymbol(int,const char*){return 1;}void clearError(){}bool routeMultipleLong(int,RouteRequest*,int){return true;}};
 namespace UserSurfaceSync{void init(KernelPatcher&);}
@@ -75,7 +80,7 @@ static kern_return_t vm_protect(vm_map_t,uint64_t a,unsigned,int setMax,int flag
  if(setMax)pageProtections[a]&=flags&7;else pageProtections[a]=flags&7;return 0;}
 BODY
 INIT
-static constexpr uint64_t unslid=0x7ff900000000ULL,slide=0x1234000ULL;
+static constexpr uint64_t unslid=0x7ff900000000ULL;static uint64_t slide=0x1234000ULL;
 static uint64_t base=unslid+slide;
 static constexpr unsigned imageOffset=0x20000,textOffset=0x21000,textSize=0x20000,constantOffset=0x42000;
 static constexpr unsigned initOffset=0x21f80,overrideOffset=0x23ff8,settingsOffset=0x26000,dumpOffset=0x27000;
@@ -98,10 +103,15 @@ static int writer(const void*p,uint64_t a,size_t n){
  if(writes==failWrite){copy(unsigned(a-base),p,unsigned(n>2?2:n));return 1;}copy(unsigned(a-base),p,unsigned(n));return 0;}
 static int original(proc_t,SharedRegionCheckArgs*,int*v){originalCalls++;*v=123;return 0;}
 static vm_map_t map(task_t){return noMap?nullptr:reinterpret_cast<void*>(2);}
+static unsigned mapShare=5;
 static kern_return_t query(vm_map_t,uint64_t*a,uint64_t*s,unsigned*,int*p,unsigned*c){
  if(regionFail)return 42;assert(*c==VM_REGION_SUBMAP_SHORT_INFO_COUNT_64);auto*i=reinterpret_cast<vm_region_submap_short_info_data_64_t*>(p);
- i->protection=pageProtections.at(*a);i->is_submap=0;*s=4096;return 0;}
+ i->protection=pageProtections.contains(*a)?pageProtections.at(*a):1;i->is_submap=0;*s=4096;
+ i->object_id=0x1234;i->share_mode=uint8_t(mapShare);i->shadow_depth=0;return 0;}
+static bool probe(void*,uint64_t address,uint32_t depth,VPF::MappingInfo&info){
+ info={address,4096,depth,0x1234,uint8_t(mapShare),0,false,false};return true;}
 static void reset(unsigned device=0x15e7){
+ base=unslid+slide;
  properties.clear();pageProtections.clear();failedProtect.clear();protects=writes=failWrite=regionFail=reads=originalCalls=0;
  failedRead=0;noMap=false;published={};seenStages=appliedCount=errorCount=windowServerCount=weatherCount=0;
  NRed::device=device;KernelPatcher patcher;UserSurfaceSync::init(patcher);assert(properties.at("NRedImmediateSyncRevision")==4);
@@ -198,7 +208,27 @@ int main(){
  assert(!UserSurfaceSyncResolver::setRelative(field,0,0x100000000ULL,0));
  assert(UserSurfaceSyncResolver::setRelative(field,0,0x100000000ULL,0x80000004ULL));
  assert(UserSurfaceSyncResolver::relativeTarget(0x100000000ULL,0,field,t)&&t==0x80000004ULL);
- printf("PASS %u actual bridge cases: all Vega IDs; unknown UUID and relocated code; full function/target gates; six-page rollback; bounded reads\n",cases);
+ // FVRC：同布局跨 slide 复用；私有映射回退完整扫描。
+ VPF::ResolutionDiagnostics::setEnabled(true);VPF::resolutionCache.init();
+ slide=0x1234000;reset();VPF::ResolutionDiagnostics::setEnabled(true);
+ UserSurfaceSyncResolver::Plan fvrcFirst{};UserSharedCache::Input fvrcFirstInput{reader,{}};
+ VPF::FastResolution fastFirst;fastFirst.begin(&memory[88],24,VPF::resolutionProfile(NRed::device,0),0,probe,nullptr);
+ assert(UserSurfaceSyncResolver::resolve(fvrcFirstInput,base,*devicePatches,true,true,fvrcFirst,false,&fastFirst));
+ assert(!fastFirst.hot);
+ slide+=0x40000000ULL;reset();VPF::ResolutionDiagnostics::setEnabled(true);
+ UserSurfaceSyncResolver::Plan fvrcSecond{};UserSharedCache::Input fvrcSecondInput{reader,{}};
+ VPF::FastResolution fastSecond;fastSecond.begin(&memory[88],24,VPF::resolutionProfile(NRed::device,0),0,probe,nullptr);
+ assert(UserSurfaceSyncResolver::resolve(fvrcSecondInput,base,*devicePatches,true,true,fvrcSecond,false,&fastSecond));
+ assert(fastSecond.hot);
+ for(unsigned i=0;i<3;i++)assert(fvrcFirst.patches[i].offset==fvrcSecond.patches[i].offset);
+ mapShare=2;slide+=0x40000000ULL;reset();VPF::ResolutionDiagnostics::setEnabled(true);
+ UserSurfaceSyncResolver::Plan fvrcDirty{};UserSharedCache::Input fvrcDirtyInput{reader,{}};
+ VPF::FastResolution fastDirty;fastDirty.begin(&memory[88],24,VPF::resolutionProfile(NRed::device,0),0,probe,nullptr);
+ assert(UserSurfaceSyncResolver::resolve(fvrcDirtyInput,base,*devicePatches,true,true,fvrcDirty,false,&fastDirty));
+ assert(!fastDirty.hot);
+ for(unsigned i=0;i<3;i++)assert(fvrcFirst.patches[i].offset==fvrcDirty.patches[i].offset);
+ mapShare=5;cases++;
+ printf("PASS %u actual bridge cases: all Vega IDs; unknown UUID and relocated code; full function/target gates; six-page rollback; bounded reads; FVRC cross-slide reuse\n",cases);
 }
 '''.replace('BODY', body).replace('INIT', init)
     # 不依赖编译器的 C99 compound literal 扩展。

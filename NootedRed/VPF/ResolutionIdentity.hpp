@@ -20,6 +20,7 @@ namespace VPF
         DisplayCore,
         DisplayConstructor,
         DisplayScratch,
+        DisplaySequoia,
         DisplaySubmit,
         Count
     };

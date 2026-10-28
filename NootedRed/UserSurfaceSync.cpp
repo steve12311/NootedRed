@@ -33,6 +33,34 @@ using RegionRecurse     = UserPatchMemory::RegionQuery;
 using CopyIn = int (*)(user_addr_t, void*, size_t);
 using CopyOut = int (*)(const void*, user_addr_t, size_t);
 
+struct MappingProbeState
+{
+    vm_map_t      map;
+    RegionRecurse query;
+};
+
+// VPF 层不包含 Mach 头；由当前调用提供完整区域信息，只读映射属性。
+bool probeMapping(void* context, UInt64 address, UInt32 depth, VPF::MappingInfo& info)
+{
+    const auto&                     state  = *static_cast<MappingProbeState*>(context);
+    mach_vm_address_t               region = address;
+    mach_vm_size_t                  regionSize{0};
+    natural_t                       regionDepth = depth;
+    vm_region_submap_info_data_64_t raw{};
+    mach_msg_type_number_t          count = VM_REGION_SUBMAP_INFO_COUNT_64;
+    if (!state.query
+        || state.query(state.map, &region, &regionSize, &regionDepth, reinterpret_cast<vm_region_recurse_info_t>(&raw),
+                       &count)
+               != KERN_SUCCESS
+        || count < VM_REGION_SUBMAP_INFO_COUNT_64)
+    {
+        return false;
+    }
+    info = {region,         regionSize,       regionDepth,        raw.object_id,
+            raw.share_mode, raw.shadow_depth, raw.is_submap != 0, (raw.protection & VM_PROT_WRITE) != 0};
+    return true;
+}
+
 mach_vm_address_t originalCheck{0};
 GetTaskMap getTaskMap{nullptr};
 RegionRecurse queryRegion{nullptr};
@@ -40,7 +68,10 @@ CopyIn readUser{nullptr};
 CopyOut writeUser{nullptr};
 UInt32 seenStages{0}, appliedCount{0}, errorCount{0}, windowServerCount{0}, weatherCount{0};
 UInt32 submitGuardCount{0};
-struct Published { UInt64 uuid[4], matched, reads, planState, planSites, planVerified; } published{};
+struct Published {
+    UInt64 uuid[4], matched, reads, planState, planSites, planVerified;
+    UInt64 fvrcDisplay, fvrcDisplayCold, fvrcSubmit, fvrcSubmitCold;
+} published{};
 bool              srdShared{false}, legacyBlend{false}, computeScratch{false}, submitGuard{false};
 bool              renderRequested{false};
 bool              sequoia{false};
@@ -278,6 +309,7 @@ struct PatchWorkspace
     VPF::VerifiedPatchPlan        requestPlan;
     SubmitGuardWorkspace          guard;
     Page                          pages[MaxPageCount];
+    VPF::FastResolution           fast, submitFast;
 };
 
 struct WorkspaceBuffer
@@ -336,6 +368,14 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     auto& input = plan.input;
     input.reader = readUser;
     input.scanBuffer = plan.scan;
+    const auto        major    = currentKernelVersion().major();
+    const auto        deviceID = NRed::singleton().getDeviceID();
+    vm_map_t          map      = getTaskMap(current_task());
+    if (!map) {
+        stage(Stage::NoMap);
+        return result;
+    }
+    MappingProbeState probeState{map, queryRegion};
     if (dynamic && renderRequested) {
         if (sequoia) {
             using namespace UserSequoiaSurfaceData;
@@ -355,15 +395,28 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     }
     // Sequoia 核验完整提交方法；旧路径继续使用已核实缓存的入口偏移。
     UInt64     submitOffset{0};
+    auto&      submitFast = workspace.value->submitFast;
+    VPF::FastResolution* submitFastPtr = nullptr;
+    if (submitGuard && (sequoia || dynamic)) {
+        const UInt32 submitFlags = sequoia ? 1U : 2U;
+        submitFast.begin(&header[88], major, VPF::resolutionProfile(deviceID, submitFlags), 0, probeMapping,
+                         &probeState);
+        submitFastPtr = &submitFast;
+    }
     const bool knownCache =
-        sequoia ? (submitGuard && UserSurfaceSyncResolver::resolveSubmit(input, base, submitOffset, false)) :
+        sequoia ? (submitGuard && UserSurfaceSyncResolver::resolveSubmit(input, base, submitOffset, false, submitFastPtr)) :
                   (legacyProfile ?
                        memcmp(header + 88, legacyProfile->uuid, 16) == 0 :
                        (!dynamic
-                        || (submitGuard && UserSurfaceSyncResolver::resolveSubmit(input, base, submitOffset, true))));
+                        || (submitGuard
+                            && UserSurfaceSyncResolver::resolveSubmit(input, base, submitOffset, true, submitFastPtr))));
+    if (submitFastPtr) {
+        publish(published.fvrcSubmit, "NRedFVRCSubmitHot", submitFast.hot ? 1 : 0);
+        publish(published.fvrcSubmitCold, "NRedFVRCSubmitCold", submitFast.hot ? 0 : 1);
+    }
     if (sequoia && submitGuard && !knownCache) { NRed::singleton().setProp32("NRedSubmitGuardDynamicRejected", 1); }
     if (knownCache && submitGuard) {
-        if (auto map = getTaskMap(current_task())) {
+        if (map) {
             bool       fresh{false};
             const auto installed = installSubmitGuard(map, base, fresh, workspace.value->guard, submitOffset);
             if (installed == KERN_SUCCESS && fresh) {
@@ -398,10 +451,18 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         return result;
     }
     if (dynamic) {
+        auto&        fast         = workspace.value->fast;
+        UInt32       displayFlags = sequoia ? 1U : 0U;
+        if (srdShared) { displayFlags |= 2U; }
+        if (legacyBlend) { displayFlags |= 4U; }
+        if (computeScratch) { displayFlags |= 8U; }
+        fast.begin(&header[88], major, VPF::resolutionProfile(deviceID, displayFlags), 0, probeMapping, &probeState);
         const bool resolved =
-            sequoia ? UserSurfaceSyncResolver::resolveSequoia(input, base, NRed::singleton().getDeviceID(), plan) :
+            sequoia ? UserSurfaceSyncResolver::resolveSequoia(input, base, deviceID, plan, &fast) :
                       UserSurfaceSyncResolver::resolve(input, base, *devicePatches, srdShared, legacyBlend, plan,
-                                                       computeScratch);
+                                                       computeScratch, &fast);
+        publish(published.fvrcDisplay, "NRedFVRCDisplayHot", fast.hot ? 1 : 0);
+        publish(published.fvrcDisplayCold, "NRedFVRCDisplayCold", fast.hot ? 0 : 1);
         if (!resolved) {
             stage(Stage::CacheMismatch);
             NRed::singleton().setProp32("NRedImmediateSyncDynamicRejected", 1);
@@ -445,8 +506,6 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
             }
         }
     }
-    vm_map_t map = getTaskMap(current_task());
-    if (map == nullptr) { stage(Stage::NoMap); return result; }
     auto& saved = workspace.value->saved;
     auto& pages = workspace.value->pages;
     const auto cache = dynamic ? input.cache : UserSharedCache::Range{base, UserSharedCache::UserLimit - base};
@@ -601,6 +660,10 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
     UserPatchCoordinator::clearDisplay();
     VPF::ResolutionDiagnostics::setEnabled(checkKernelArgument("-NRedFVRC"));
     NRed::singleton().setProp32("NRedFVRCEnabled", VPF::ResolutionDiagnostics::enabled() ? 1 : 0);
+    if (VPF::ResolutionDiagnostics::enabled()) {
+        VPF::resolutionCache.init();
+        NRed::singleton().setProp32("NRedFVRCCacheReady", VPF::resolutionCache.ready ? 1 : 0);
+    }
     NRed::singleton().setProp32("NRedSharedRegionStackRevision", 1);
     NRed::singleton().setProp32("NRedCacheSectionRevision", 1);
     sequoia         = currentKernelVersion().major() == 24;

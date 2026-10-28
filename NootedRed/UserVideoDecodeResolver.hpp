@@ -57,14 +57,12 @@ namespace UserVideoDecodeResolver
             input.failed     = savedFailed;
             fast->rejectHot();
         }
-        UserCacheResolver::KnownLocation located[Functions]{};
         if (!UserCacheResolver::resolveFunctions(input, base, imageRefs, functions, patches, locations, plan.patches,
                                                  &plan.original[0][0], &plan.patched[0][0], MaxPatchSize, plan.images,
-                                                 sectionRelative, nullptr, 0, nullptr, located))
+                                                 sectionRelative, nullptr, 0, nullptr, plan.locations))
         {
             return false;
         }
-        for (UInt32 i = 0; i < Functions; ++i) { plan.locations[i] = located[i]; }
         plan.reads = input.reads;
         if (fast) { fast->publish(VPF::FunctionGroup::VideoDecode, plan.locations, functionImages, Functions); }
         return true;

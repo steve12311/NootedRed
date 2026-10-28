@@ -64,8 +64,9 @@ static vm_map_t map(task_t){return noMap?nullptr:reinterpret_cast<void*>(2);}
 static kern_return_t query(vm_map_t,uint64_t* a,uint64_t* size,unsigned* depth,int* p,unsigned* count){
  if(regionMode==1)return 42;assert(*count==VM_REGION_SUBMAP_SHORT_INFO_COUNT_64);
  auto* info=reinterpret_cast<vm_region_submap_short_info_data_64_t*>(p);*size=4096;
- info->is_submap=*depth==0;info->protection=*depth==0?1:protections.at(*a);
- info->max_protection=*depth==0?5:maxima.at(*a);
+ info->is_submap=*depth==0;info->protection=*depth==0?1:(protections.contains(*a)?protections.at(*a):1);
+ info->max_protection=*depth==0?5:(maxima.contains(*a)?maxima.at(*a):5);
+ info->object_id=0x1234;info->share_mode=5;info->shadow_depth=0;
  if(regionMode==2)*a+=4096;if(regionMode==3)*count=1;if(regionMode==4)*size=4095;
  return 0;
 }
@@ -123,6 +124,7 @@ static void accepted(bool fair){
  cases++;
 }
 int main(int argc,char** argv){
+ fvrcEnabled=true;
  const unsigned group=argc>2?std::stoul(argv[2]):0;
  {
   TransactionBuffer transaction;assert(transaction.state);

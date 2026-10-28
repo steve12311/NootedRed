@@ -21,9 +21,11 @@ namespace VPF
         UInt64       cacheSize;
         UInt32       imageCount;
         UInt64       imageAddresses[ResolutionMaxImages];
-        // 布局保存在调用方工作区中，避免大数组占用内核栈。
+        // 布局与查发快照保存在调用方工作区中，避免大数组占用内核栈。
         ImageLayout      layouts[ResolutionMaxImages];
         UInt32           objectIds[ResolutionMaxImages];
+        CachedResolution snapshot;
+        CachedResolution staging;
         ImageSetIdentity identity;
         bool             mappingClean;
         bool             observed;
@@ -39,12 +41,18 @@ namespace VPF
             flags        = policyFlags;
             probe        = mappingProbe;
             probeContext = mappingContext;
+            enabled =
+                ResolutionDiagnostics::enabled() && resolutionCache.ready != 0 && uuid != nullptr && probe != nullptr;
+            restart();
+        }
+
+        // 同一调用内切换功能组时保留 uuid/profile/探针，只清除当前映像证据。
+        void restart()
+        {
             cacheBase = cacheSize = 0;
             imageCount            = 0;
             identity              = {0, 0};
             mappingClean = observed = hot = false;
-            enabled =
-                ResolutionDiagnostics::enabled() && resolutionCache.ready != 0 && uuid != nullptr && probe != nullptr;
             memset(imageAddresses, 0, sizeof(imageAddresses));
             memset(layouts, 0, sizeof(layouts));
             memset(objectIds, 0, sizeof(objectIds));
@@ -120,7 +128,7 @@ namespace VPF
                 return false;
             }
             memset(known, 0, sizeof(UserCacheResolver::KnownLocation) * functionCount);
-            CachedResolution cached{};
+            auto& cached = snapshot;
             if (!resolutionCache.lookup(key(group), cached)) { return false; }
             if (cached.proof != ProofClass::ReusableImmutableIdentity || cached.imageCount != imageCount
                 || cached.functionCount == 0 || cached.functionCount > functionCount || cached.cacheSize != cacheSize)
@@ -171,7 +179,8 @@ namespace VPF
             {
                 return;
             }
-            CachedResolution value{};
+            auto& value = staging;
+            memset(&value, 0, sizeof(value));
             value.key              = key(group);
             value.proof            = mappingClean ? ProofClass::ReusableImmutableIdentity : ProofClass::HintOnly;
             value.imageCount       = imageCount;

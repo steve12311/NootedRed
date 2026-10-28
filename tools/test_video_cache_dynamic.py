@@ -41,11 +41,24 @@ BODY
 static int original(proc_t,SharedRegionCheckArgs*,int* value){*value=123;return 0;}
 static int proc_pid(proc_t){return 217;}static void proc_name(int,char* name,int size){snprintf(name,size,"%s",drmClient?clientName:"VTDecoderXPC");}
 static vm_map_t map(task_t){return reinterpret_cast<void*>(2);}
+static std::map<uint64_t,std::vector<uint8_t>> cleanBlocks;
+static bool cleanPage(uint64_t a){
+ const uint64_t page=a&~uint64_t(4095);
+ auto bi=blocks.upper_bound(page);if(bi==blocks.begin())return false;--bi;
+ auto ci=cleanBlocks.upper_bound(page);if(ci==cleanBlocks.begin())return false;--ci;
+ if(bi->first!=ci->first)return false;
+ const uint64_t off=page-bi->first;
+ return off+4096<=bi->second.size()&&off+4096<=ci->second.size()
+        &&memcmp(bi->second.data()+off,ci->second.data()+off,4096)==0;
+}
 static kern_return_t query(vm_map_t,uint64_t* a,uint64_t* size,unsigned*,int* p,unsigned* count){
  assert(*count==VM_REGION_SUBMAP_SHORT_INFO_COUNT_64);auto*i=reinterpret_cast<vm_region_submap_short_info_data_64_t*>(p);
- i->protection=protections.at(*a);i->is_submap=0;*size=4096;return 0;}
+ i->protection=protections.contains(*a)?protections.at(*a):1;i->is_submap=0;*size=4096;
+ i->object_id=0x1234;i->share_mode=cleanPage(*a)?5:2;i->shadow_depth=0;return 0;}
 static void setup(unsigned id){
- using namespace UserVideoDecodeData;cache(ResolverImages,ResolverFunctions,true);devicePatches=findDevice(id);assert(devicePatches);
+ using namespace UserVideoDecodeData;cache(ResolverImages,ResolverFunctions,true);cleanBlocks=blocks;
+ devicePatches=findDevice(id);assert(devicePatches);
+ VPF::ResolutionDiagnostics::setEnabled(true);VPF::resolutionCache.init();
  drmClient=false;clientEntitlement=nullptr;drmTouchedPages.clear();
 #ifndef BASELINE
  fairPlayDriverOnly=false;
