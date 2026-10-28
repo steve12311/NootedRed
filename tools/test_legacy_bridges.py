@@ -29,8 +29,11 @@ COMMON = r'''
 #include <VPF/CapabilityState.hpp>
 #include <VPF/DependencyPlanner.hpp>
 #include <VPF/PatchManifestData.hpp>
+#include <VPF/ExecutableTrampolineResource.hpp>
+#include <VPF/MetalTransactionExecutor.hpp>
 #include <VPF/ResolverAdapters.hpp>
 #include <VPF/TransactionExecutor.hpp>
+#include <VPF/VerifiedPatchPlan.hpp>
 using user_addr_t=uint64_t;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
 using vm_map_t=void*;using task_t=void*;using proc_t=void*;using natural_t=unsigned;
 using mach_msg_type_number_t=unsigned;using vm_prot_t=int;using kern_return_t=int;using vm_address_t=uint64_t;
@@ -51,6 +54,14 @@ static int IOLockSleep(IOLock*,void*,int){assert(false);return 0;}
 static void IOLockWakeup(IOLock*,void*,bool){}
 static void* current_thread(){static thread_local char identity;return &identity;}
 #include <UserPatchMapGate.hpp>
+namespace UserPatchCoordinator {
+using PatchCallback=int(*)(void*,void*,int);
+inline bool deferModulePatches(){return false;}
+inline void clearDisplay(){}
+inline void clearVideo(){}
+inline void registerDisplay(PatchCallback){}
+inline void registerVideo(PatchCallback){}
+}
 namespace Buffer {template<class T>T* create(size_t n){return new T[n];}template<class T>void deleter(T* p){delete[] p;}}
 template<typename T,size_t N>constexpr size_t arrsize(const T(&)[N]){return N;}
 static std::map<std::string,unsigned> properties;
@@ -227,7 +238,7 @@ def main():
     args = parser.parse_args()
     stubs = WORK / 'stubs/IOKit'
     stubs.mkdir(parents=True, exist_ok=True)
-    (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
+    (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
     util = WORK / 'stubs/Headers'
     util.mkdir(parents=True, exist_ok=True)
     (util / 'kern_util.hpp').write_text('#pragma once\n#include <IOKit/IOTypes.h>\n')

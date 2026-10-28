@@ -20,6 +20,14 @@ namespace VPF
         AppleGVASelection,
         FairPlayNativeDecodeSubset,
         Vcn2HEVCMain10,
+        // DVPF 显示功能组；不改变上面视频功能的序号。
+        DisplayOpenGLHwInfo,
+        DisplayOpenGLDualQuad,
+        KernelGFX9Capabilities,
+        KernelDCNScanout,
+        KernelFramebuffer,
+        DisplayHDRResearch,
+        Count,
     };
 
     // 证据等级；离线语义证据不自动生成可安装补丁。

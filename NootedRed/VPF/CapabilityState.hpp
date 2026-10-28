@@ -19,6 +19,8 @@ namespace VPF
         CommitFailed,
         RollbackVerified,
         RollbackFailed,
+        Rejected,
+        Unsupported,
         Quarantined,
     };
 
@@ -36,6 +38,8 @@ namespace VPF
             case CapabilityState::CommitFailed: return "CommitFailed";
             case CapabilityState::RollbackVerified: return "RollbackVerified";
             case CapabilityState::RollbackFailed: return "RollbackFailed";
+            case CapabilityState::Rejected: return "Rejected";
+            case CapabilityState::Unsupported: return "Unsupported";
             case CapabilityState::Quarantined: return "Quarantined";
         }
         return "Unknown";
@@ -45,15 +49,21 @@ namespace VPF
     {
         if (from == to) { return true; }
         switch (from) {
-            case CapabilityState::Disabled: return to == CapabilityState::Eligible;
+            case CapabilityState::Disabled:
+                return to == CapabilityState::Eligible || to == CapabilityState::Rejected
+                       || to == CapabilityState::Unsupported;
             case CapabilityState::Eligible:
-                return to == CapabilityState::ImageResolved || to == CapabilityState::Disabled;
+                return to == CapabilityState::ImageResolved || to == CapabilityState::Disabled
+                       || to == CapabilityState::Rejected || to == CapabilityState::Unsupported;
             case CapabilityState::ImageResolved:
-                return to == CapabilityState::Verified || to == CapabilityState::Disabled;
+                return to == CapabilityState::Verified || to == CapabilityState::Disabled
+                       || to == CapabilityState::Rejected;
             case CapabilityState::Verified:
-                return to == CapabilityState::Prepared || to == CapabilityState::Disabled;
+                return to == CapabilityState::Prepared || to == CapabilityState::Disabled
+                       || to == CapabilityState::Rejected;
             case CapabilityState::Prepared:
-                return to == CapabilityState::Installing || to == CapabilityState::Disabled;
+                return to == CapabilityState::Installing || to == CapabilityState::Disabled
+                       || to == CapabilityState::Rejected;
             case CapabilityState::Installing:
                 return to == CapabilityState::Installed || to == CapabilityState::CommitFailed
                        || to == CapabilityState::RollbackFailed;
@@ -65,6 +75,8 @@ namespace VPF
                 return to == CapabilityState::RollbackVerified || to == CapabilityState::RollbackFailed;
             case CapabilityState::RollbackVerified: return to == CapabilityState::Disabled;
             case CapabilityState::RollbackFailed: return to == CapabilityState::Quarantined;
+            case CapabilityState::Rejected: return to == CapabilityState::Disabled;
+            case CapabilityState::Unsupported: return false;    // 本次启动不再重试
             case CapabilityState::Quarantined: return false;    // 不自动重试
         }
         return false;

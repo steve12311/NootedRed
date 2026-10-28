@@ -1,9 +1,9 @@
 # VPF 架构
 
-VPF 为用户态共享缓存补丁提供清单、核验、依赖判断和事务执行能力。Video 路径使用这些组件
-生成和安装补丁；Display 仍通过现有 Resolver 和准入策略生成补丁，并复用共享缓存事务执行器。
-兼容边界见 [兼容矩阵](vpf-compatibility-matrix.md)，验证范围见
-[验证说明](vpf-validation.md)。
+VPF 为用户态共享缓存补丁提供清单、核验、依赖判断和事务执行能力。Video 与 Display
+复用共享事务基础设施；显示域的页处理、协调器和证据边界见
+[DVPF 显示架构](dvpf-architecture.md)。
+兼容边界见 [兼容矩阵](vpf-compatibility-matrix.md)，验证范围见 [验证说明](vpf-validation.md)。
 
 ## 组件
 
@@ -25,12 +25,40 @@ VPF 为用户态共享缓存补丁提供清单、核验、依赖判断和事务�
 `VerifiedPatchPlan`，依赖规划器要求 SafetyGuard 先于 Decode，随后事务执行器按计划安装。
 FairPlay 客户端仍使用既有解码子集与掩码。
 
-事务按 `vm_map` 串行化；不同地址空间可并行。同线程重复进入同一地址空间时拒绝事务。
-回滚失败会隔离该地址空间；账本在最终 map 销毁时清理，生命周期 Hook 的目标无法核验或安装
+Video 单模块路径按 `vm_map` 串行化；启用协调器后使用协调器的租约键。同线程重复进入
+同一租约时拒绝事务。回滚失败会隔离该地址空间；账本在最终 map 销毁时清理，生命周期 Hook 的目标无法核验或安装
 失败时拒绝启用 Video。守卫页的分配、验证与保留遵循现有失败处理。
 
 `NRedVCNVPF*` 属性用于报告路径、规划和账本状态。单个地址空间的安装成功不代表所有进程
 均已安装，也不代表通过实机验收。
+
+## Display
+
+显示域复用同一套 `FeatureId`、`VerifiedPatchPlan`、`DependencyPlanner` 和 `CapabilityLedger`，
+但保留独立的执行后端和证据要求：
+
+- `DisplayManifest.hpp` / `DisplayManifestData.hpp`：OpenGL 页内块、Metal 共享缓存站点、
+  SubmitGuard 跳板和内核描述条目。Metal 站点直接引用 `PatchManifestData.hpp`，不复制字节。
+- `DisplayPlan.hpp` / `DisplayPlanAdapters.hpp`：`VerifiedPagePlan` 只接受验证值 `1`/`0xF`、
+  `tainted=0`、`nx=0`、精确 vnode 和页内完整块；`DisplayPlanView` 统一页计划与共享缓存计划。
+- `DisplayDependencyPlanner.hpp`：组闭包、依赖/冲突和拒绝原因；不读取 boot-args，不安装补丁。
+- `DisplayCapabilityState.hpp`：共享账本的组聚合视图，不另建地址空间账本。
+- `ExecutableTrampolineResource.hpp`：SubmitGuard 跳板生命周期；入口未恢复时保留页面。
+- `UserPatchCoordinator.hpp/.cpp`：在最外层 `_shared_region_check_np` Hook 中只调用原生一次，
+  再以当前 `vm_map` 为租约键，先显示后视频执行回调；映射函数不可用时退回 task 身份。
+- `MetalTransactionExecutor.hpp`：从实际显示补丁构造 `VerifiedPatchPlan`，读回判定后
+  交由共享 `SharedRegionTransaction` 完成 COW/RX/回滚。
+- `ValidatedPageBackend.hpp`：把 OpenGL 页解析拆成只读 `inspectValidatedPage()` 与
+  最小 `applyValidatedPage()`，仍复用 `UserOpenGLResolver::resolvePage()`，不申请 MapGate。
+- `GLManifestData.hpp`：从夹具确定性生成参考页/块摘要和位置证据；运行时只做交叉核验，
+  不把参考偏移当固定写入位置。
+- `KernelDisplayEvidence.hpp/.cpp`：记录 GFX9/X6000FB/DCN 只读证据；热路径只做原子计数。
+- `tools/dvpf/`、`tools/vpf/build_gl_evidence.py`、`tools/vpf/analyze_display_variants.py`：
+  显示清单/基线/页计划/协调器/事务探针，挂载卷只读证据和有界语义审计。
+
+Metal 路径使用计划执行器，显示与视频共享缓存事务由协调器串行化。OpenGL 页 Hook
+保留参考页快速路径和当前页动态完整块匹配；内核诊断只记录状态，离线语义报告不会生成
+可安装补丁。`Applied` 标记不代表 GPU 执行或显示模式已验收。
 
 ## 证据与准入
 
@@ -53,7 +81,26 @@ python3 tools/test_vpf_video_equivalence.py
 python3 tools/test_vpf_lifecycle.py
 python3 tools/test_vpf_semantic_variants.py
 python3 tools/test_vpf_patch_audit.py
+
+# Display
+python3 tools/dvpf/generate_display_manifest.py --check
+python3 tools/dvpf/freeze_display_baseline.py --check
+python3 tools/test_display_manifest.py
+python3 tools/test_display_plan_equivalence.py
+python3 tools/test_display_capability_state.py
+python3 tools/test_display_trampoline_lifecycle.py
+python3 tools/test_display_cross_module_gate.py
+python3 tools/test_display_transaction_executor.py
+python3 tools/test_display_baseline.py
+python3 tools/test_vpf_gl_page_adapter.py
+python3 tools/test_vpf_gl_dynamic_variants.py
+python3 tools/test_vpf_gl_mounted_evidence.py
+python3 tools/test_kernel_display_evidence.py
+python3 tools/test_vpf_display_semantic_variants.py
+python3 tools/vpf/build_gl_evidence.py --fixtures --check
+python3 tools/vpf/analyze_display_variants.py --fail-on-rejected
 ```
 
 生成头必须通过 `python3 tools/vpf/generate_manifest.py --write` 更新；基线记录生成头、相关工具的哈希和合成补丁计划摘要，
-可通过 `tools/vpf/freeze_baseline.py` 重新生成。
+可通过 `tools/vpf/freeze_baseline.py` 重新生成。DVPF 生成头只通过
+`python3 tools/dvpf/generate_display_manifest.py --write` 更新。

@@ -11,7 +11,7 @@ WORK = ROOT / ('build/dynamic-cache/sequoia-compute' if '--sequoia' in sys.argv 
 def main():
     stub = WORK / 'stubs/IOKit'
     stub.mkdir(parents=True, exist_ok=True)
-    (stub / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
+    (stub / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
     (stub / 'IOUserClient.h').write_text((ROOT / 'tools/fixtures/fairplay-entitlement.hpp.in').read_text())
     boolean = WORK / 'stubs/libkern/c++'
     boolean.mkdir(parents=True, exist_ok=True)
@@ -73,7 +73,7 @@ int main(){
   assert(UserSurfaceSyncResolver::resolve(reader,base,device,true,true,plan,true));
   assert(plan.patches[3].offset+base==functionAddresses[0]);
   pages(plan.patches,4);assert(protections.size()==8);auto initial=blocks;
-  call();if(!properties.contains("NRedImmediateSyncDynamicApplied")){for(auto[k,v]:properties)fprintf(stderr,"%s=%u\n",k.c_str(),v);}assert(properties.contains("NRedImmediateSyncDynamicApplied")&&properties.at("NRedComputeScratchWeatherApplied")==1);rx();assert(writes==4);
+  call();if(!properties.contains("NRedImmediateSyncDynamicApplied")){for(auto[k,v]:properties)fprintf(stderr,"%s=%u\n",k.c_str(),v);}assert(properties.contains("NRedImmediateSyncDynamicApplied")&&properties.at("NRedComputeScratchWeatherApplied")==1);assert(properties.at("NRedDisplayVPFPlanVerified")==1&&properties.at("NRedDisplayVPFPlanSites")==4);rx();assert(writes==4);
   for(unsigned i=0;i<4;i++){uint8_t b[UserSurfaceSyncData::MaxPatchSize];assert(reader(base+plan.patches[i].offset,b,plan.patches[i].size)==0);assert(memcmp(b,plan.patches[i].patched,plan.patches[i].size)==0);}
   auto before=writes;call();assert(writes==before&&properties.at("NRedImmediateSyncD07")==1);cases++;
   for(unsigned entry=1;entry<=4;entry++){

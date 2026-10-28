@@ -42,6 +42,7 @@ static void IOLockLock(IOLock* p){p->lock();}
 static void IOLockUnlock(IOLock* p){p->unlock();}
 static int IOLockSleep(IOLock* p,void* event,int){assert(!rejectUnexpectedWait&&"reentrant lease must not sleep");auto& changed=gateEvents[event];std::unique_lock held(*p,std::adopt_lock);changed.wait(held);held.release();return 0;}
 static void IOLockWakeup(IOLock*,void* event,bool){auto found=gateEvents.find(event);if(found!=gateEvents.end())found->second.notify_all();}
+namespace UserPatchCoordinator {using PatchCallback=int(*)(void*,void*,int);inline bool deferModulePatches(){return false;}inline void clearDisplay(){}inline void clearVideo(){}inline void registerDisplay(PatchCallback){}inline void registerVideo(PatchCallback){}}
 HELPER
 static IOLock lock;static IOLock* guardLock=&lock;
 REGISTRY

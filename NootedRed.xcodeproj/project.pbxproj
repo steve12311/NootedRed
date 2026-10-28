@@ -11,6 +11,8 @@
 		EF0400010000000000000005 /* UserVideoDecode.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EF0400020000000000000005 /* UserVideoDecode.cpp */; };
 		EF0400010000000000000002 /* VCN.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EF0400020000000000000002 /* VCN.cpp */; };
 		EF0400010000000000000001 /* UserSurfaceSync.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EF0400020000000000000001 /* UserSurfaceSync.cpp */; };
+		EF0400010000000000000020 /* UserPatchCoordinator.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EF0400020000000000000020 /* UserPatchCoordinator.cpp */; };
+		EF0400010000000000000021 /* KernelDisplayEvidence.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EF0400020000000000000021 /* KernelDisplayEvidence.cpp */; };
 		EF0400010000000000000010 /* UserOpenGL.cpp in Sources */ = {isa = PBXBuildFile; fileRef = EF0400020000000000000010 /* UserOpenGL.cpp */; };
 		1C748C2D1C21952C0024EED2 /* Plugin.cpp in Sources */ = {isa = PBXBuildFile; fileRef = 1C748C2C1C21952C0024EED2 /* Plugin.cpp */; };
 		4003B5C330265153006F74E8 /* SurfaceInfo.hpp in Sources */ = {isa = PBXBuildFile; fileRef = 4003B5C230265145006F74E8 /* SurfaceInfo.hpp */; };
@@ -124,6 +126,10 @@
 		EF0400020000000000000003 /* VCN.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = VCN.hpp; sourceTree = "<group>"; };
 		EF0400020000000000000002 /* VCN.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = VCN.cpp; sourceTree = "<group>"; };
 		EF0400020000000000000001 /* UserSurfaceSync.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = UserSurfaceSync.cpp; sourceTree = "<group>"; };
+		EF0400020000000000000020 /* UserPatchCoordinator.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = UserPatchCoordinator.cpp; sourceTree = "<group>"; };
+		EF0400030000000000000020 /* UserPatchCoordinator.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = UserPatchCoordinator.hpp; sourceTree = "<group>"; };
+		EF0400020000000000000021 /* KernelDisplayEvidence.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = KernelDisplayEvidence.cpp; sourceTree = "<group>"; };
+		EF0400030000000000000021 /* KernelDisplayEvidence.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = KernelDisplayEvidence.hpp; sourceTree = "<group>"; };
 		EF0400020000000000000010 /* UserOpenGL.cpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = UserOpenGL.cpp; sourceTree = "<group>"; };
 		EF0400030000000000000001 /* UserSurfaceSync.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = UserSurfaceSync.hpp; sourceTree = "<group>"; };
 		EF0400040000000000000001 /* UserSurfaceSyncData.hpp */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.h; path = UserSurfaceSyncData.hpp; sourceTree = "<group>"; };
@@ -330,6 +336,10 @@
 				407068652E966678004E0761 /* Personalities */,
 				408B3DD62CDFA41A00CAE5D2 /* Regs */,
 				EF0400020000000000000001 /* UserSurfaceSync.cpp */,
+				EF0400020000000000000020 /* UserPatchCoordinator.cpp */,
+				EF0400030000000000000020 /* UserPatchCoordinator.hpp */,
+				EF0400020000000000000021 /* KernelDisplayEvidence.cpp */,
+				EF0400030000000000000021 /* KernelDisplayEvidence.hpp */,
 				EF0400020000000000000010 /* UserOpenGL.cpp */,
 				EF0400020000000000000007 /* UserVideoDecodeData.hpp */,
 				EF0400020000000000000006 /* UserVideoDecode.hpp */,
@@ -777,6 +787,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				EF0400010000000000000001 /* UserSurfaceSync.cpp in Sources */,
+				EF0400010000000000000020 /* UserPatchCoordinator.cpp in Sources */,
+				EF0400010000000000000021 /* KernelDisplayEvidence.cpp in Sources */,
 				EF0400010000000000000010 /* UserOpenGL.cpp in Sources */,
 				EF0400010000000000000005 /* UserVideoDecode.cpp in Sources */,
 				EF0400010000000000000002 /* VCN.cpp in Sources */,

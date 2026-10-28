@@ -3,6 +3,7 @@
 #include <IOKit/IOLib.h>
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
+#include <UserPatchCoordinator.hpp>
 #include <UserPatchMemory.hpp>
 #include <UserPatchPolicy.hpp>
 #include <UserVideoDecode.hpp>
@@ -813,6 +814,10 @@ namespace
         const auto result = reinterpret_cast<SharedRegionCheck>(originalCheck)(process, args, returnValue);
         if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d original-return=%d", ticket, pid, result); }
         if (result != 0) { stage(Stage::OriginalError); return result; }
+        if (UserPatchCoordinator::deferModulePatches()) {
+            if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d coordinated", ticket, pid); }
+            return result;
+        }
         if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d patch-enter", ticket, pid); }
         if (!guardLock) { return result; }
         auto* identity = getTaskMap ? static_cast<void*>(getTaskMap(current_task())) : nullptr;
@@ -829,6 +834,7 @@ namespace
 
 void UserVideoDecode::init(KernelPatcher& patcher)
 {
+    UserPatchCoordinator::clearVideo();
     NRed::singleton().setProp32("NRedVCNSharedRegionStackRevision", 1);
     fairPlayDriverOnly = false;
     devicePatches      = nullptr;
@@ -928,4 +934,11 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         NRed::singleton().setProp32("NRedDRMVideoRevision", 4);
         NRed::singleton().setProp32("NRedDRMVideoMask", fairPlayMask());
     }
+    // 显示模块也成功注册时，协调器成为最外层 Hook；否则继续使用本模块的旧 lease。
+    UserPatchCoordinator::registerVideo(
+        [](void* process, void* args, const int result)
+        {
+            return patchSharedRegion(reinterpret_cast<proc_t>(process),
+                                     reinterpret_cast<SharedRegionCheckArgs*>(args), result);
+        });
 }

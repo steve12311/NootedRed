@@ -68,6 +68,18 @@ namespace VPF
             valid_      = false;
         }
 
+        // 显示组可把实际解析出的补丁先装入计划，再按读回结果 seal；
+        // 此时不绑定视频 FeatureManifest，站点也不得携带函数索引。
+        void reset(const UInt64 base, const UserSharedCache::Range& cache)
+        {
+            manifest_   = nullptr;
+            base_       = base;
+            cache_      = cache;
+            imageCount_ = siteCount_ = reads_ = 0;
+            state_      = PlanState::Unknown;
+            valid_      = false;
+        }
+
         bool addImage(const char* path, UInt64 address, const UserSharedCache::Range& text,
                       const UserSharedCache::Range* segments, UInt32 segmentCount)
         {
@@ -92,10 +104,10 @@ namespace VPF
                      const UInt8* original, const UInt8* replacement)
         {
             if (siteCount_ == MaxPlanSites || size == 0 || size > MaxPlanPatchSize || !original || !replacement
-                || !manifest_ || address < base_ || address - base_ != offset
+                || address < base_ || address - base_ != offset
                 || address >= UserSharedCache::UserLimit || size > UserSharedCache::UserLimit - address
                 || (functionIndex != NoFunction
-                    && (manifest_->resolver.functionCount == 0
+                    && (!manifest_ || manifest_->resolver.functionCount == 0
                         || functionIndex >= manifest_->resolver.functionCount)))
             {
                 return false;
@@ -116,7 +128,7 @@ namespace VPF
 
         bool seal(PlanState state)
         {
-            valid_ = manifest_ != nullptr && base_ != 0 && cache_.size != 0 && siteCount_ != 0;
+            valid_ = base_ != 0 && cache_.size != 0 && siteCount_ != 0;
             for (UInt32 i = 0; valid_ && i < siteCount_; ++i) {
                 if (!cache_.contains(sites_[i].address, sites_[i].size)) { valid_ = false; }
             }
@@ -130,7 +142,7 @@ namespace VPF
             return valid_ && (state_ == PlanState::AllOriginal || state_ == PlanState::AllPatched);
         }
         const FeatureManifest* manifest() const { return manifest_; }
-        FeatureId          feature() const { return manifest_ ? manifest_->feature : FeatureId::Vcn2Decode; }
+        FeatureId          feature() const { return manifest_ ? manifest_->feature : FeatureId::Count; }
         EvidenceKind       evidence() const { return manifest_ ? manifest_->evidence : EvidenceKind::ExactValidatedBuild; }
         PlanState          state() const { return state_; }
         UInt64             base() const { return base_; }

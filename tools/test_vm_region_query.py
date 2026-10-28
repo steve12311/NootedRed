@@ -11,11 +11,15 @@ WORK = ROOT / "build/vm-region-query"
 
 def main():
     WORK.mkdir(parents=True, exist_ok=True)
-    helpers = []
-    for module in ["UserSurfaceSync", "UserVideoDecode"]:
-        source = (ROOT / f"NootedRed/{module}.cpp").read_text()
-        body = function(source, "bool leafProtection(")
-        helpers.append(body.replace("leafProtection", module + "Protection", 1))
+    surface = (ROOT / "NootedRed/UserSurfaceSync.cpp").read_text()
+    video = (ROOT / "NootedRed/UserVideoDecode.cpp").read_text()
+    assert "UserPatchMemory::leafProtection" in video
+    helpers = [function(surface, "bool leafProtection(").replace("leafProtection", "UserSurfaceSyncProtection", 1)]
+    helpers.append(
+        "static bool UserVideoDecodeProtection(vm_map_t map, mach_vm_address_t page, vm_prot_t& protection) {\n"
+        "    return UserPatchMemory::leafProtection(map, page, protection, queryRegion, error);\n"
+        "}"
+    )
     harness = r'''
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
@@ -25,6 +29,8 @@ def main():
 #include <cstdio>
 #include <cstdint>
 #include <initializer_list>
+using UInt8 = uint8_t;
+using UInt16 = uint16_t;
 using UInt32 = uint32_t;
 using UInt64 = uint64_t;
 static kern_return_t lastError = 0;

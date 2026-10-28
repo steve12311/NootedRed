@@ -51,6 +51,15 @@ constexpr int THREAD_UNINT=0;
 static int IOLockSleep(IOLock*,void*,int){assert(false);return 0;}
 static void IOLockWakeup(IOLock*,void*,bool){}
 #include <UserPatchMapGate.hpp>
+static bool coordinatorActive=false;
+namespace UserPatchCoordinator {
+using PatchCallback=int(*)(void*,void*,int);
+inline bool deferModulePatches(){return coordinatorActive;}
+inline void clearDisplay(){}
+inline void clearVideo(){}
+inline void registerDisplay(PatchCallback){}
+inline void registerVideo(PatchCallback){}
+}
 static UserPatchMapGate::Registry<64> taskPatchRegistry;
 static void recordTaskGatePeak(){}
 static void recordTrace(const char* module){(std::string(module)=="UserSurfaceSync"?displayLogs:videoLogs)++;}
@@ -90,6 +99,11 @@ int main(){
   nativeResult=37;order.clear();int value=0;
   assert(outer(nullptr,&args,&value)==37&&value==123);
   assert((order==std::vector<int>{0}));
+  // 协调器接管后模块 Hook 只调用原生链；补丁由协调器回调执行。
+  coordinatorActive=true;nativeResult=0;order.clear();int coordinatedValue=0;
+  assert(outer(reinterpret_cast<void*>(1),&args,&coordinatedValue)==0&&coordinatedValue==123);
+  assert((order==std::vector<int>{0}));
+  coordinatorActive=false;
  }
  puts("PASS both production wrapper orders; native result preserved; patch work after native return; bounded tracing");
 }

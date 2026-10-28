@@ -5,7 +5,7 @@
 namespace VPF
 {
 
-    constexpr UInt32 FeatureCount = static_cast<UInt32>(FeatureId::Vcn2HEVCMain10) + 1;
+    constexpr UInt32 FeatureCount = static_cast<UInt32>(FeatureId::Count);
     static_assert(FeatureCount <= 32);
 
     constexpr UInt32 featureBit(const FeatureId feature)
@@ -20,6 +20,9 @@ namespace VPF
     constexpr UInt32 ExternalMetalBridge      = 1U << 1;
     constexpr UInt32 ExternalFairPlay         = 1U << 2;
     constexpr UInt32 ExternalSubmitResolver   = 1U << 3;
+    constexpr UInt32 ExternalOpenGLPageHook   = 1U << 4;
+    constexpr UInt32 ExternalKernelDisplay    = 1U << 5;
+    constexpr UInt32 ExternalHDRResearch      = 1U << 6;
 
     constexpr UInt32 deviceBit(const UInt32 deviceID)
     {
@@ -47,6 +50,8 @@ namespace VPF
         UInt32           requireCount;
         const FeatureId* before;
         UInt32           beforeCount;
+        // 该 OS 位上 required 不成立；用于 Darwin23 的独立 legacy gate。
+        UInt32           skipRequirementsForOs{0};
     };
 
     struct ConflictRule
@@ -83,7 +88,7 @@ namespace VPF
 
     // 运行时实际安装顺序由 required 与 before 共同表达；before 只排序，不构成硬依赖。
     inline constexpr PlannerFeature DefaultFeatures[] = {
-        {FeatureId::DisplaySubmitGuard, OsDarwin24 | OsDarwin25, DisplayDeviceMask,
+        {FeatureId::DisplaySubmitGuard, OsDarwin23 | OsDarwin24 | OsDarwin25, DisplayDeviceMask,
          ExternalMetalBridge | ExternalSubmitResolver, nullptr, 0, nullptr, 0},
         {FeatureId::DisplaySubmit, OsDarwin24 | OsDarwin25, DisplayDeviceMask,
          ExternalMetalBridge | ExternalSubmitResolver, nullptr, 0, nullptr, 0},
@@ -91,7 +96,8 @@ namespace VPF
          nullptr, 0, nullptr, 0},
         {FeatureId::DisplaySRD, OsDarwin24 | OsDarwin25, DisplayDeviceMask, ExternalMetalBridge, nullptr, 0,
          BeforeSubmitGuard, 1},
-        {FeatureId::DisplayLegacyBlend, OsDarwin25, DisplayDeviceMask, ExternalMetalBridge, RequiresSRD, 1, nullptr, 0},
+        {FeatureId::DisplayLegacyBlend, OsDarwin23 | OsDarwin25, DisplayDeviceMask, ExternalMetalBridge, RequiresSRD, 1,
+         nullptr, 0, OsDarwin23},
         {FeatureId::DisplayComputeScratch, OsDarwin24 | OsDarwin25, DisplayDeviceMask, ExternalMetalBridge,
          RequiresSRD, 1, nullptr, 0},
         {FeatureId::Vcn2SafetyGuard, OsDarwin24 | OsDarwin25, VcnDeviceMask, ExternalVcnBridge, nullptr, 0, nullptr, 0},
@@ -105,12 +111,30 @@ namespace VPF
          RequiresDecode, 1, nullptr, 0},
         {FeatureId::Vcn2HEVCMain10, OsDarwin24 | OsDarwin25, VcnDeviceMask, ExternalVcnBridge, RequiresDecode, 1,
          nullptr, 0},
+        // DVPF：OpenGL 页内组与内核显示组独立于 Metal 共享缓存事务。
+        {FeatureId::DisplayOpenGLHwInfo, OsAll, DisplayDeviceMask, ExternalOpenGLPageHook, nullptr, 0, nullptr, 0},
+        {FeatureId::DisplayOpenGLDualQuad, OsAll, DisplayDeviceMask, ExternalOpenGLPageHook, nullptr, 0, nullptr, 0},
+        {FeatureId::KernelGFX9Capabilities, OsAll, DisplayDeviceMask, ExternalKernelDisplay, nullptr, 0, nullptr, 0},
+        {FeatureId::KernelDCNScanout, OsAll, DisplayDeviceMask, ExternalKernelDisplay, nullptr, 0, nullptr, 0},
+        {FeatureId::KernelFramebuffer, OsAll, DisplayDeviceMask, ExternalKernelDisplay, nullptr, 0, nullptr, 0},
+        // 仅允许隔离诊断显式请求；默认策略不会置位 ExternalHDRResearch。
+        {FeatureId::DisplayHDRResearch, OsAll, 0, ExternalHDRResearch, nullptr, 0, nullptr, 0},
     };
 
     inline constexpr ConflictRule DefaultConflicts[] = {
         {FeatureId::Vcn2Encode, FeatureId::FairPlayNativeDecodeSubset},
         {FeatureId::AppleGVASelection, FeatureId::FairPlayNativeDecodeSubset},
     };
+
+    constexpr const PlannerFeature* findFeature(const PlannerFeature* features, const UInt32 featureCount,
+                                                const FeatureId feature)
+    {
+        if (!features) { return nullptr; }
+        for (UInt32 i = 0; i < featureCount; ++i) {
+            if (features[i].feature == feature) { return &features[i]; }
+        }
+        return nullptr;
+    }
 
     namespace Detail
     {
@@ -230,12 +254,14 @@ namespace VPF
                     Detail::set(result.conflicts, feature);
                     return false;
                 }
-                for (UInt32 i = 0; i < entry->requireCount; ++i) {
-                    if (!resolve(entry->required[i])) {
-                        state[index] = 3;
-                        Detail::set(result.rejected, feature);
-                        Detail::set(result.missing, feature);
-                        return false;
+                if ((entry->skipRequirementsForOs & input.osMask) == 0) {
+                    for (UInt32 i = 0; i < entry->requireCount; ++i) {
+                        if (!resolve(entry->required[i])) {
+                            state[index] = 3;
+                            Detail::set(result.rejected, feature);
+                            Detail::set(result.missing, feature);
+                            return false;
+                        }
                     }
                 }
                 state[index] = 2;

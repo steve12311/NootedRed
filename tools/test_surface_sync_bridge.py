@@ -20,7 +20,7 @@ def main():
     init = source[source.index("void UserSurfaceSync::init("):]
     stub = WORK / "stubs/IOKit"
     stub.mkdir(parents=True, exist_ok=True)
-    (stub / "IOTypes.h").write_text("#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n")
+    (stub / "IOTypes.h").write_text("#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;using UInt32=uint32_t;using UInt64=uint64_t;\n")
     util = WORK / "stubs/Headers"
     util.mkdir(parents=True, exist_ok=True)
     (util / "kern_util.hpp").write_text('#pragma once\n#include <IOKit/IOTypes.h>\n')
@@ -41,7 +41,11 @@ def main():
 #include <UserSubmitGuardData.hpp>
 #include <UserSurfaceSyncResolver.hpp>
 #include <UserLegacyData.hpp>
+#include <coordinator-inactive.hpp>
+#include <VPF/ExecutableTrampolineResource.hpp>
+#include <VPF/MetalTransactionExecutor.hpp>
 #include <VPF/TransactionExecutor.hpp>
+#include <VPF/VerifiedPatchPlan.hpp>
 using user_addr_t=uint64_t;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
 using vm_map_t=void*;using task_t=void*;using proc_t=void*;using natural_t=unsigned;
 using mach_msg_type_number_t=unsigned;using vm_prot_t=int;using kern_return_t=int;
@@ -177,6 +181,7 @@ scratchFlag=argc>1&&strcmp(argv[1],"--scratch")==0;candidateFlag=argc>1&&strcmp(
  NRed::device=argc>2?unsigned(strtoul(argv[2],nullptr,0)):0x1638;devicePatches=UserSurfaceSyncData::findDevice(NRed::device);assert(devicePatches);
  reset();failWorkspaceAllocation=true;call();bytes(false);rx();assert(writeCalls==0 && protectCalls==0);assert(properties.at("NRedImmediateSyncLastError")==KERN_RESOURCE_SHORTAGE);
  reset();call();bytes(true);rx();assert(writeCalls==N && properties.at("NRedImmediateSyncApplied")==1);
+ assert(properties.at("NRedDisplayVPFPlanVerified")==1 && properties.at("NRedDisplayVPFPlanSites")==N);
  int prior=writeCalls;call();assert(writeCalls==prior && properties.at("NRedImmediateSyncD07")==1);
  for(int p=1;p<=int(computeScratch?3:(legacyFlag?2:1));p++){reset();failProtect.insert(p);call();assert(writeCalls==0);bytes(false);rx();}
  for(int entry=1;entry<=int(N);entry++){reset();failWrite=entry;call();bytes(false);rx();assert(!properties.contains("NRedImmediateSyncApplied"));}
@@ -223,7 +228,7 @@ scratchFlag=argc>1&&strcmp(argv[1],"--scratch")==0;candidateFlag=argc>1&&strcmp(
     file.write_text(harness)
     exe = WORK / "test-bridge"
     subprocess.run(["clang++", "-std=c++23", "-O2", "-I", str(WORK / "stubs"), "-I", str(ROOT / "NootedRed"),
-                    str(file), "-o", str(exe)], check=True, timeout=60)
+                    "-I", str(ROOT / "tools/fixtures"), str(file), "-o", str(exe)], check=True, timeout=60)
     for device in sorted(devices):
         for mode in ["--immediate", "--candidate", "--legacy", "--scratch"]:
             subprocess.run([str(exe), mode, hex(device)], check=True, timeout=60)

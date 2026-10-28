@@ -5,6 +5,8 @@
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserOpenGL.hpp>
 #include <UserOpenGLResolver.hpp>
+#include <VPF/DisplayManifestData.hpp>
+#include <VPF/ValidatedPageBackend.hpp>
 #include <kern/thread_call.h>
 #include <sys/vnode.h>
 
@@ -18,8 +20,9 @@ namespace
 
     mach_vm_address_t             originalPage{0}, originalRange{0};
     const UserOpenGLData::Device* device{nullptr};
+    const VPF::DisplayManifest*   manifests[2]{nullptr, nullptr};
     thread_call_t                 reportCall{nullptr};
-    UInt32                        appliedMask{0}, dynamicMask{0}, errorMask{0};
+    UInt32                        appliedMask{0}, dynamicMask{0}, errorMask{0}, planMask{0}, evidenceMask{0};
     constexpr UInt32              PageSize = UserOpenGLResolver::PageSize;
 
     // 仅在命中或写入失败后排队发布诊断；初始化不启动工作线程。
@@ -28,12 +31,16 @@ namespace
         const auto applied = __atomic_load_n(&appliedMask, __ATOMIC_RELAXED);
         const auto dynamic = __atomic_load_n(&dynamicMask, __ATOMIC_RELAXED);
         const auto errors  = __atomic_load_n(&errorMask, __ATOMIC_RELAXED);
+        const auto plans   = __atomic_load_n(&planMask, __ATOMIC_RELAXED);
+        const auto proofs  = __atomic_load_n(&evidenceMask, __ATOMIC_RELAXED);
         auto&      nred    = NRed::singleton();
         nred.setProp32("NRedOpenGLSEApplied", (applied & 1) != 0);
         nred.setProp32("NRedOpenGLDualQuadApplied", (applied & 2) != 0);
         nred.setProp32("NRedOpenGLDynamicApplied", dynamic == 3);
         nred.setProp32("NRedOpenGLWriteRejected", (errors & 1) != 0);
         nred.setProp32("NRedOpenGLRestoreFailed", (errors & 2) != 0);
+        nred.setProp32("NRedOpenGLVPFPlanVerified", plans == 3);
+        nred.setProp32("NRedOpenGLVPFEvidenceMask", proofs);
     }
 
     void report(UInt32& mask, UInt32 bits)
@@ -49,25 +56,32 @@ namespace
         return MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock) == KERN_SUCCESS;
     }
 
-    __attribute__((noinline)) void patchBlock(const UInt8* bytes, UInt64 offset, UInt32 kind)
+    __attribute__((noinline)) void patchBlock(const VPF::OpenGLPageContext& context, const UInt8* bytes, UInt64 offset,
+                                              UInt32 kind)
     {
-        UserOpenGLResolver::Resolved plan;
-        if (!UserOpenGLResolver::resolvePage(*device, bytes, offset, kind, plan)) { return; }
-        if (!plan.alreadyPatched) {
-            if (MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS) {
+        if (kind >= 2 || manifests[kind] == nullptr) { return; }
+        VPF::ValidatedPageWorkspace workspace;
+        if (!VPF::inspectValidatedPage(*manifests[kind], *device, kind, bytes, offset, context, workspace)) { return; }
+        __atomic_fetch_or(&planMask, 1U << kind, __ATOMIC_RELAXED);
+        if (workspace.evidenceVerified) { __atomic_fetch_or(&evidenceMask, 1U << kind, __ATOMIC_RELAXED); }
+        const auto outcome = VPF::applyValidatedPage(
+            workspace, const_cast<UInt8*>(bytes),
+            [] { return MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) == KERN_SUCCESS; },
+            restoreWriting);
+        switch (outcome) {
+            case VPF::PagePatchOutcome::Delivered:
+            case VPF::PagePatchOutcome::AlreadyInstalled: {
+                if (workspace.plan.dynamic()) { report(dynamicMask, 1U << kind); }
+                report(appliedMask, 1U << kind);
+            } break;
+            case VPF::PagePatchOutcome::WriteFailed: {
                 report(errorMask, 1);
-                return;
-            }
-            const bool fresh = memcmp(bytes + plan.offset, plan.original, plan.size) == 0;
-            if (fresh) { memcpy(const_cast<UInt8*>(bytes) + plan.offset, plan.patched, plan.size); }
-            if (!restoreWriting()) {
+            } break;
+            case VPF::PagePatchOutcome::RestoreFailed: {
                 report(errorMask, 2);
-                return;
-            }
-            if (!fresh) { return; }
+            } break;
+            default: break;
         }
-        if (plan.dynamic) { report(dynamicMask, 1U << kind); }
-        report(appliedMask, 1U << kind);
     }
 
     bool isDriver(vnode_t vnode)
@@ -80,7 +94,8 @@ namespace
     }
 
     // 超出驱动文件上限的页不取名；范围验证整段只取一次名称。
-    __attribute__((noinline)) void patchPage(vnode_t vnode, const UInt8* data, UInt64 offset, vm_size_t size)
+    __attribute__((noinline)) void patchPage(vnode_t vnode, const UInt8* data, UInt64 offset, vm_size_t size,
+                                             UInt32 validated, UInt32 tainted, UInt32 nx)
     {
         if (!device || !reportCall || !vnode || !data || size < PageSize
             || offset > UserOpenGLResolver::MaxFileSize - PageSize || !isDriver(vnode))
@@ -88,7 +103,8 @@ namespace
             return;
         }
         for (vm_size_t position = 0; PageSize <= size - position; position += PageSize) {
-            for (UInt32 kind = 0; kind < 2; ++kind) { patchBlock(data + position, offset + position, kind); }
+            const VPF::OpenGLPageContext context{validated, tainted, nx, offset + position, true};
+            for (UInt32 kind = 0; kind < 2; ++kind) { patchBlock(context, data + position, offset + position, kind); }
         }
     }
 
@@ -100,7 +116,8 @@ namespace
         if (validated && (*validated == 1 || *validated == 0xF) && tainted && *tainted == 0 && nx && *nx == 0
             && (offset & (PageSize - 1)) == 0)
         {
-            patchPage(vnode, static_cast<const UInt8*>(data), offset, PageSize);
+            patchPage(vnode, static_cast<const UInt8*>(data), offset, PageSize, static_cast<UInt32>(*validated),
+                      static_cast<UInt32>(*tainted), static_cast<UInt32>(*nx));
         }
     }
 
@@ -114,7 +131,7 @@ namespace
         {
             return result;
         }
-        patchPage(vnode, static_cast<const UInt8*>(data), offset, size);
+        patchPage(vnode, static_cast<const UInt8*>(data), offset, size, 1U, static_cast<UInt32>(*tainted), 0U);
         return result;
     }
 
@@ -123,8 +140,11 @@ namespace
 void UserOpenGL::init(KernelPatcher& patcher)
 {
     if (!checkKernelArgument("-NRedDisplayFix")) { return; }
+    manifests[0] = manifests[1] = nullptr;
     device = UserOpenGLData::findDevice(currentKernelVersion().major(), NRed::singleton().getDeviceID());
     if (!device) { return; }
+    manifests[0] = VPF::DisplayManifestData::findOpenGL(device->major, device->deviceID, 0);
+    manifests[1] = VPF::DisplayManifestData::findOpenGL(device->major, device->deviceID, 1);
     reportCall =
         thread_call_allocate_with_options(publish, nullptr, THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE);
     if (!reportCall) {
@@ -148,4 +168,7 @@ void UserOpenGL::init(KernelPatcher& patcher)
     NRed::singleton().setProp32("NRedOpenGLPageLocal", 1);
     NRed::singleton().setProp32("NRedOpenGLEnabled", 1);
     NRed::singleton().setProp32("NRedOpenGLBackends", backends);
+    NRed::singleton().setProp32("NRedOpenGLVPFRevision", 1);
+    NRed::singleton().setProp32("NRedOpenGLVPFManifestMask",
+                                (manifests[0] != nullptr ? 1U : 0U) | (manifests[1] != nullptr ? 2U : 0U));
 }

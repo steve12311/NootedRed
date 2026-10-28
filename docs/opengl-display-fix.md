@@ -38,6 +38,12 @@ DualQuad 匹配完整的 142 字节函数。15/26 的 SE 原生函数跨页，�
 写保护恢复失败时进行一次配对重试，仍失败则报告错误，不记为应用成功。
 验证入口、目标页处理、代码块写入及解析函数以 `noinline` 隔开，限制页入链栈占用。
 
+上述流程分为 `VPF::inspectValidatedPage()` 与 `VPF::applyValidatedPage()`：
+前者只读调用现有 `resolvePage()` 并生成 `VerifiedPagePlan`，后者在写保护后再次核对当前字节
+并只写本页最小范围。计划会交叉核对 `GLManifestData` 的块大小、函数位置和
+原始/替换块摘要；动态匹配记录为 `FullPageLocalBlock`，精确参考页记录为 `ExactKnownPage`。
+`GLManifestData` 由夹具确定性生成，不提供固定写入位置，也不改变上述动态扫描。
+
 诊断只在实际命中或写入失败后通过 ONCE 回调异步发布；该回调只发布原子状态，
 不执行文件 I/O 或补丁准备。重复校验已修复页面不重复写入，不重复排队同一状态。
 非目标文件只检查 vnode 名称，不进行代码扫描；目标页每项修复最多扫描 4 KiB。
@@ -54,6 +60,9 @@ DualQuad 匹配完整的 142 字节函数。15/26 的 SE 原生函数跨页，�
 | 本机 15.8.1 | `0xDF40` | `0x8134` |
 | 本机 26.7.1 | `0xDF80` | `0x819E` |
 
+只读复核发现部分系统构建与参考数据不匹配时，工具报告 `missing`；此时保持拒绝，
+不能通过放宽运行时匹配条件安装补丁。
+
 14 只有参考页面，未声称完成本机文件或实机核验。原始页面、完整函数摘要和来源固定在
 `tools/fixtures/opengl-compat.json`；生成器及数据均不采用参考分支的页写入代码。
 参考：[weachy/NootedRed 固定提交](https://github.com/weachy/NootedRed/tree/efe90c3ee8f942a5f3b909da90bdf10f71d9d5c8)。
@@ -67,6 +76,12 @@ python3 tools/test_opengl_native.py
 python3 tools/test_opengl_dynamic.py
 python3 tools/test_opengl_bridge.py --sanitize
 python3 tools/test_opengl_bridge.py --stack
+python3 tools/test_vpf_gl_page_adapter.py
+python3 tools/test_vpf_gl_dynamic_variants.py
+python3 tools/test_vpf_gl_mounted_evidence.py
+python3 tools/vpf/build_gl_evidence.py --fixtures --check
+python3 tools/vpf/build_gl_evidence.py --system-root "$NRED_GL_SYSTEM_ROOT" \
+  --out-dir build/gl-sequoia --verify --emit
 ```
 
 实际 Release 栈预算检查使用同次构建的链接映射：设置 `LD_GENERATE_MAP_FILE=YES`
@@ -80,9 +95,10 @@ python3 tools/test_opengl_bridge.py --stack
 测试桩不提供文件 I/O 接口，避免重新引入文件准备路径。
 
 `NRedOpenGLRevision=5`、`NRedOpenGLPageLocal=1` 标记当前页内匹配修订。
-启动后核对 `NRedOpenGLEnabled`、`NRedOpenGLBackends`；加载 OpenGL 应用后核对
-`NRedOpenGLSEApplied`、`NRedOpenGLDualQuadApplied` 和两个错误属性
-`NRedOpenGLWriteRejected` / `NRedOpenGLRestoreFailed`。
+启动后核对 `NRedOpenGLEnabled`、`NRedOpenGLBackends`、`NRedOpenGLVPFRevision`、
+`NRedOpenGLVPFManifestMask`；加载 OpenGL 应用后核对 `NRedOpenGLSEApplied`、
+`NRedOpenGLDualQuadApplied`、`NRedOpenGLVPFPlanVerified`、`NRedOpenGLVPFEvidenceMask`
+和两个错误属性 `NRedOpenGLWriteRejected` / `NRedOpenGLRestoreFailed`。
 `NRedOpenGLDynamicApplied=1` 表示两项均通过页内动态路径命中；完整参考页快速路径不置该标记。
 旧的 `DynamicPending` / `DynamicReady` / `DynamicReads` 已移除。
 `Applied` 包括已识别的同设备修复页面，不代表 GPU 画面已验收；仍需启动、OpenGL 绘制、

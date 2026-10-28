@@ -17,6 +17,7 @@
 #include <IOKit/IOReturn.h>
 #include <IOKit/graphics/IOFramebuffer.h>
 #include <IOKit/graphics/IOGraphicsTypes.h>
+#include <KernelDisplayEvidence.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <PenguinWizardry/RuntimeMC.hpp>
 #include <PenguinWizardry/RuntimeVFT.hpp>
@@ -151,6 +152,12 @@ bool AMDRadeonX5000_AMDGFX9DCNDisplay::getDisplayInfo(AMDRadeonX5000_AMDHWDispla
     savedState.flipParam.dcn.surfaceFormat   = pixelFormat;
     savedState.flipParam.dcn.surfaceRotation = hwRotation;
     self->fillFlipTilingParameters(&savedState.flipParam, self->swizzleModes()[fbIndex]);
+    if (KernelDisplayEvidence::recordScanout(fbIndex, displayState.pixelInfo.bitsPerPixel,
+                                             displayState.pixelInfo.bitsPerComponent, hwPixelFormat,
+                                             self->swizzleModes()[fbIndex], static_cast<UInt32>(hwRotation)))
+    {
+        KernelDisplayEvidence::publish();
+    }
 
     return true;
 }
@@ -180,7 +187,12 @@ void AMDRadeonX5000_AMDGFX9DCNDisplay::setCurrentDisplayOffset(AMDRadeonX5000_AM
                                   (value >> 32) & expansion.regShiftsMasks.primarySurfaceHi);
     self->getHWRegisters()->write(regOffs.hubpreqPrimarySurfaceAddress, value & 0xFFFFFFFF);
     expansion.lastSubmitFlipOffset = value;
-    while (self->isFlipPending(self, fbIndex)) { IODelay(100); }
+    UInt32 waits                   = 0;
+    while (self->isFlipPending(self, fbIndex)) {
+        ++waits;
+        IODelay(100);
+    }
+    if (KernelDisplayEvidence::recordFlipWait(fbIndex, waits)) { KernelDisplayEvidence::publish(); }
 }
 
 UInt32 AMDRadeonX5000_AMDGFX9DCNDisplay::writeWaitForVLine(AMDRadeonX5000_AMDHWDisplay*, UInt32* const, const UInt32,
@@ -364,6 +376,12 @@ bool AMDRadeonX5000_AMDGFX9DCNDisplay::writeFlipParameters(
 
     if (flip != nullptr) { flip->flipParam = newFlipParam; }
     if (savedFlip != nullptr) { savedFlip->flipParam = newFlipParam; }
+    if (KernelDisplayEvidence::recordFlipParameters(fbIndex, static_cast<UInt32>(newFlipParam.dcn.surfaceFormat),
+                                                    newFlipParam.dcn.surfacePitch,
+                                                    static_cast<UInt32>(newFlipParam.dcn.surfaceRotation)))
+    {
+        KernelDisplayEvidence::publish();
+    }
 
     return true;
 }

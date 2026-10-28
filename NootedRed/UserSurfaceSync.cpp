@@ -4,11 +4,14 @@
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserLegacyData.hpp>
+#include <UserPatchCoordinator.hpp>
 #include <UserPatchMemory.hpp>
 #include <UserSubmitGuardData.hpp>
 #include <UserSurfaceSync.hpp>
 #include <UserSurfaceSyncData.hpp>
 #include <UserSurfaceSyncResolver.hpp>
+#include <VPF/ExecutableTrampolineResource.hpp>
+#include <VPF/MetalTransactionExecutor.hpp>
 #include <VPF/TransactionExecutor.hpp>
 #include <kern/task.h>
 #include <mach/i386/vm_param.h>
@@ -36,7 +39,7 @@ CopyIn readUser{nullptr};
 CopyOut writeUser{nullptr};
 UInt32 seenStages{0}, appliedCount{0}, errorCount{0}, windowServerCount{0}, weatherCount{0};
 UInt32 submitGuardCount{0};
-struct Published { UInt64 uuid[4], matched, reads; } published{};
+struct Published { UInt64 uuid[4], matched, reads, planState, planSites, planVerified; } published{};
 bool              srdShared{false}, legacyBlend{false}, computeScratch{false}, submitGuard{false};
 bool              renderRequested{false};
 bool              sequoia{false};
@@ -120,10 +123,20 @@ bool leafProtection(vm_map_t map, const mach_vm_address_t page, vm_prot_t& prote
 // 统一执行器只接收已核验补丁与已收集页面；VM 权限与回滚仍由 UserPatchMemory 完成。
 using ExecutorOps = UserPatchMemory::ExecutorOps<CopyIn, CopyOut>;
 
+// 提交守卫的计划/读回缓冲随调用工作区分配，避免在同步 Hook 栈上放完整计划。
+struct SubmitGuardWorkspace
+{
+    VPF::VerifiedPatchPlan plan;
+    UInt8                   saved[1][UserSurfaceSyncResolver::Plan::BufferSize];
+    UInt8                   observed[sizeof(UserSubmitGuardData::Payload)];
+    Page                    pages[1];
+};
+
 // 在进程内分配一页可执行守卫，并把 AMD 命令队列的提交方法入口改为绝对跳转。
 // 守卫把“已用尾..容量尾”的空闲区整段填成 PM4 filler（池复用后尾部常混有旧命令），
 // 随后执行原入口前 15 字节并跳回。
-kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, UInt64 offset = 0)
+kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, SubmitGuardWorkspace& workspace,
+                                 UInt64 offset = 0)
 {
     using namespace UserSubmitGuardData;
     fresh = false;
@@ -156,76 +169,100 @@ kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, U
                    KERN_INVALID_ARGUMENT;
     }
     if (memcmp(entry, MethodOriginal, sizeof(entry)) != 0) { return KERN_INVALID_ARGUMENT; }
-    const UInt64 methodPage = method & ~static_cast<UInt64>(PAGE_SIZE - 1);
-    vm_prot_t    protection{VM_PROT_NONE};
-    if ((method & (PAGE_SIZE - 1)) + sizeof(entry) > PAGE_SIZE || !leafProtection(map, methodPage, protection)
-        || protection != (VM_PROT_READ | VM_PROT_EXECUTE))
-    {
-        return KERN_PROTECTION_FAILURE;
-    }
 
-    vm_address_t page{0};
-    auto result = vm_allocate(map, &page, PAGE_SIZE, VM_FLAGS_ANYWHERE);
-    if (result != KERN_SUCCESS) { return result; }
-
-    UInt8 payload[sizeof(Payload)];
-    memcpy(payload, Payload, sizeof(payload));
-    const UInt64 continuation = method + MethodPatchSize;
-    memcpy(payload + PayloadJumpOffset, &continuation, sizeof(continuation));
-    if (writeUser(payload, page, sizeof(payload)) != 0) {
-        vm_deallocate(map, page, PAGE_SIZE);
-        return KERN_FAILURE;
-    }
-    result = vm_protect(map, page, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
-    if (result == KERN_SUCCESS) { result = vm_protect(map, page, PAGE_SIZE, TRUE, VM_PROT_READ | VM_PROT_EXECUTE); }
-    if (result != KERN_SUCCESS) {
-        vm_deallocate(map, page, PAGE_SIZE);
-        return result;
-    }
-
-    // FF 25 00 00 00 00 <目标地址>：RIP 相对取 8 字节绝对目标，14 字节，补 1 字节 NOP。
+    // 入口补丁由统一执行器完成 COW/读回/RX 恢复；守卫页只作为写前资源创建。
     UInt8 patch[MethodPatchSize];
     memset(patch, 0x90, sizeof(patch));
     memcpy(patch, patchedPrefix, sizeof(patchedPrefix));
-    const UInt64 target = page;
-    memcpy(patch + 6, &target, sizeof(target));
+    auto& plan = workspace.plan;
+    plan.reset(base, UserSharedCache::Range{base, UserSharedCache::UserLimit - base});
+    if (!plan.addSite(method, offset, MethodPatchSize, VPF::NoFunction, 0, MethodOriginal, patch)) {
+        return KERN_INVALID_ARGUMENT;
+    }
+    ExecutorOps ops{map, queryRegion, error, readUser, writeUser};
+    VPF::MetalTransaction<ExecutorOps, Page, UserSurfaceSyncResolver::Plan::BufferSize, 1, 1> transaction(
+        ops, plan, base, workspace.saved, workspace.pages);
+    VPF::MetalPrepareResult prepared;
+    if (!transaction.prepare(prepared) || prepared.state != VPF::MetalPrepareState::AllOriginal) {
+        return KERN_INVALID_ARGUMENT;
+    }
 
-    result = vm_protect(map, methodPage, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-    if (result != KERN_SUCCESS) {
-        vm_deallocate(map, page, PAGE_SIZE);
-        return result;
-    }
-    const auto written = writeUser(patch, method, sizeof(patch));
-    bool       rolledBack = false;
-    if (written != 0) { rolledBack = writeUser(entry, method, sizeof(entry)) == 0; }
-    auto restored = vm_protect(map, methodPage, PAGE_SIZE, FALSE, protection);
-    if (restored != KERN_SUCCESS) {
-        restored = vm_protect(map, methodPage, PAGE_SIZE, FALSE, protection);
-    }
-    if (restored == KERN_SUCCESS) {
-        const auto maximum = vm_protect(map, methodPage, PAGE_SIZE, TRUE, protection);
-        if (maximum != KERN_SUCCESS) {
-            error(maximum);
-            restored = maximum;
-        }
-    }
-    if (written != 0 || restored != KERN_SUCCESS) {
-        if (!rolledBack
-            && vm_protect(map, methodPage, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY)
-                   == KERN_SUCCESS)
+    struct GuardOwner
+    {
+        vm_map_t      map;
+        vm_address_t  page{0};
+        bool          retained{false};
+        ~GuardOwner()
         {
-            rolledBack = writeUser(entry, method, sizeof(entry)) == 0;
+            if (page && !retained) { vm_deallocate(map, page, PAGE_SIZE); }
         }
-        auto recovered = vm_protect(map, methodPage, PAGE_SIZE, FALSE, protection);
-        if (recovered != KERN_SUCCESS) { recovered = vm_protect(map, methodPage, PAGE_SIZE, FALSE, protection); }
-        if (recovered == KERN_SUCCESS) { recovered = vm_protect(map, methodPage, PAGE_SIZE, TRUE, protection); }
-        if (rolledBack) { vm_deallocate(map, page, PAGE_SIZE); }
-        // 无法确认入口恢复时保留目标页，避免残留跳转指向已释放内存。
-        if (!rolledBack || recovered != KERN_SUCCESS) {
+    } owner{map};
+    VPF::ExecutableTrampolineResource resource;
+    UInt8             payload[sizeof(Payload)];
+    kern_return_t     guardFailure{KERN_FAILURE};
+    const auto        committed = transaction.commit(
+        [&]
+        {
+            auto status = vm_allocate(map, &owner.page, PAGE_SIZE, VM_FLAGS_ANYWHERE);
+            if (status != KERN_SUCCESS) {
+                guardFailure = status;
+                return false;
+            }
+            if (!resource.allocate(owner.page)) { return false; }
+            memcpy(payload, Payload, sizeof(payload));
+            const UInt64 continuation = method + MethodPatchSize;
+            memcpy(payload + PayloadJumpOffset, &continuation, sizeof(continuation));
+            if (writeUser(payload, owner.page, sizeof(payload)) != 0) { return false; }
+            // 入口链接前读回守卫载荷，避免把只写成功但内容错误的页设为可执行入口。
+            if (readUser(owner.page, workspace.observed, sizeof(workspace.observed)) != 0
+                || memcmp(workspace.observed, payload, sizeof(payload)) != 0)
+            {
+                return false;
+            }
+            if (!resource.fill(sizeof(payload))) { return false; }
+            status = vm_protect(map, owner.page, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
+            if (status == KERN_SUCCESS) {
+                status = vm_protect(map, owner.page, PAGE_SIZE, TRUE, VM_PROT_READ | VM_PROT_EXECUTE);
+            }
+            if (status != KERN_SUCCESS || !resource.makeExecutable()) {
+                if (status != KERN_SUCCESS) {
+                    guardFailure = status;
+                    error(status);
+                }
+                return false;
+            }
+            // FF 25 00 00 00 00 <目标地址>：RIP 相对取 8 字节绝对目标，14 字节，补 1 字节 NOP。
+            const UInt64 target = owner.page;
+            memcpy(patch + 6, &target, sizeof(target));
+            return resource.linkEntry(method);
+        });
+
+    if (committed.status != VPF::TransactionStatus::Installed) {
+        // 只有未写入或已确认回滚的入口才能释放守卫页；否则保留页等待后续核验。
+        const bool entryRestored =
+            committed.status == VPF::TransactionStatus::CheckFailed
+            || committed.status == VPF::TransactionStatus::BeforeWriteFailed
+            || committed.status == VPF::TransactionStatus::ProtectionFailed
+            || (committed.status == VPF::TransactionStatus::WriteFailed && committed.rollbackOk)
+            || (committed.status == VPF::TransactionStatus::ReadbackFailed && committed.rollbackOk)
+            || (committed.status == VPF::TransactionStatus::RestoreFailed && committed.rollbackOk);
+        if (resource.linked()) { resource.restoreEntry(entryRestored); }
+        if (!entryRestored || resource.pageRetained()) {
+            owner.retained = true;
             NRed::singleton().setProp32("NRedSubmitGuardRollbackFailed", 1);
         }
+        if (committed.status == VPF::TransactionStatus::BeforeWriteFailed) { return guardFailure; }
+        return committed.status == VPF::TransactionStatus::CheckFailed
+                       || committed.status == VPF::TransactionStatus::ProtectionFailed ?
+                   KERN_PROTECTION_FAILURE :
+                   KERN_FAILURE;
+    }
+    if (!resource.verify(true)) {
+        owner.retained = true;
+        NRed::singleton().setProp32("NRedSubmitGuardRollbackFailed", 1);
         return KERN_FAILURE;
     }
+    owner.retained = true;
     fresh = true;
     return KERN_SUCCESS;
 }
@@ -237,7 +274,9 @@ struct PatchWorkspace
     UserSurfaceSyncResolver::Plan plan;
     UInt8                         saved[PatchCount][UserSurfaceSyncResolver::Plan::BufferSize];
     UInt8                         context[UserSurfaceSyncResolver::Plan::BufferSize];
-    Page pages[MaxPageCount];
+    VPF::VerifiedPatchPlan        requestPlan;
+    SubmitGuardWorkspace          guard;
+    Page                          pages[MaxPageCount];
 };
 
 struct WorkspaceBuffer
@@ -325,7 +364,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     if (knownCache && submitGuard) {
         if (auto map = getTaskMap(current_task())) {
             bool       fresh{false};
-            const auto installed = installSubmitGuard(map, base, fresh, submitOffset);
+            const auto installed = installSubmitGuard(map, base, fresh, workspace.value->guard, submitOffset);
             if (installed == KERN_SUCCESS && fresh) {
                 const auto pid = process != nullptr ? proc_pid(process) : -1;
                 char       name[32]{};
@@ -405,46 +444,40 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
             }
         }
     }
-    auto& saved = workspace.value->saved;
-    auto& pages = workspace.value->pages;
-    UInt32 pageCount{0}, originals{0}, patched{0};
-    for (UInt32 i = 0; i < patchCount; ++i) {
-        if (patches[i].size == 0 || patches[i].size > UserSurfaceSyncResolver::Plan::BufferSize
-            || patches[i].offset >= UserSurfaceSyncResolver::UserLimit - base
-            || patches[i].size >= UserSurfaceSyncResolver::UserLimit - base - patches[i].offset)
-        {
-            stage(Stage::CodeRead);
-            return result;
-        }
-        const auto address = base + patches[i].offset;
-        if (readUser(address, saved[i], patches[i].size) != 0) {
-            stage(Stage::CodeRead);
-            return result;
-        }
-        if (memcmp(saved[i], patches[i].original, patches[i].size) == 0) { ++originals; }
-        else if (memcmp(saved[i], patches[i].patched, patches[i].size) == 0) {
-            ++patched;
-        }
-        else {
-            stage(Stage::CodeMismatch);
-            error(KERN_INVALID_ARGUMENT);
-            return result;
-        }
-        if (!UserPatchMemory::collectPages(pages, pageCount, address, patches[i].size)) {
-            stage(Stage::CodeMismatch);
-            return result;
-        }
-    }
-    if (patched == patchCount) { stage(Stage::Already); return result; }
-    if (originals != patchCount) { stage(Stage::Mixed); return result; }
     vm_map_t map = getTaskMap(current_task());
     if (map == nullptr) { stage(Stage::NoMap); return result; }
-    // 所有匹配和保护检查完成后才进入写入；各页均先 COW、去掉 EXECUTE，失败按相反顺序回滚。
+    auto& saved = workspace.value->saved;
+    auto& pages = workspace.value->pages;
+    const auto cache = dynamic ? input.cache : UserSharedCache::Range{base, UserSharedCache::UserLimit - base};
+    auto& requestPlan = workspace.value->requestPlan;
+    if (!VPF::adaptDisplayPatches(requestPlan, base, cache, patches, patchCount)) {
+        stage(Stage::CodeMismatch);
+        error(KERN_INVALID_ARGUMENT);
+        return result;
+    }
+    // 所有匹配和保护检查由统一执行器在读阶段完成；任何 Mixed/Unknown 都不进入写入。
     ExecutorOps ops{map, queryRegion, error, readUser, writeUser};
-    using Executor = VPF::SharedRegionTransaction<ExecutorOps, UserSurfaceSyncData::Patch, Page,
-                                                  UserSurfaceSyncResolver::Plan::BufferSize>;
-    Executor   executor(ops, base, patches, patchCount, saved, pages, pageCount, 0);
-    const auto committed = executor.commit([] { return true; });
+    VPF::MetalTransaction<ExecutorOps, Page, UserSurfaceSyncResolver::Plan::BufferSize, MaxPageCount> transaction(
+        ops, requestPlan, base, saved, pages);
+    VPF::MetalPrepareResult prepared;
+    if (!transaction.prepare(prepared)) {
+        stage(prepared.fault == VPF::MetalPrepareFault::ReadFailed ? Stage::CodeRead : Stage::CodeMismatch);
+        if (prepared.fault == VPF::MetalPrepareFault::Mismatch) { error(KERN_INVALID_ARGUMENT); }
+        return result;
+    }
+    publish(published.planState, "NRedDisplayVPFPlanState", static_cast<UInt32>(prepared.state));
+    publish(published.planSites, "NRedDisplayVPFPlanSites", transaction.siteCount());
+    if (prepared.state == VPF::MetalPrepareState::AllPatched) {
+        publish(published.planVerified, "NRedDisplayVPFPlanVerified", 1);
+        stage(Stage::Already);
+        return result;
+    }
+    if (prepared.state != VPF::MetalPrepareState::AllOriginal) {
+        stage(Stage::Mixed);
+        return result;
+    }
+    publish(published.planVerified, "NRedDisplayVPFPlanVerified", 1);
+    const auto committed = transaction.commit([] { return true; });
     switch (committed.status) {
         case VPF::TransactionStatus::CheckFailed:
             stage(Stage::Region);
@@ -550,6 +583,10 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
     const auto result = reinterpret_cast<SharedRegionCheck>(originalCheck)(process, args, returnValue);
     if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d original-return=%d", ticket, pid, result); }
     if (result != 0) { stage(Stage::OriginalError); return result; }
+    if (UserPatchCoordinator::deferModulePatches()) {
+        if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d coordinated", ticket, pid); }
+        return result;
+    }
     if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d patch-enter", ticket, pid); }
     const auto patchedResult = patchSharedRegion(process, args, result);
     if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d patch-return=%d", ticket, pid, patchedResult); }
@@ -560,6 +597,7 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
 
 void UserSurfaceSync::init(KernelPatcher& patcher)
 {
+    UserPatchCoordinator::clearDisplay();
     NRed::singleton().setProp32("NRedSharedRegionStackRevision", 1);
     NRed::singleton().setProp32("NRedCacheSectionRevision", 1);
     sequoia         = currentKernelVersion().major() == 24;
@@ -632,4 +670,11 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
     }
     SYSLOG("UserSurfaceSync", "Metal hooks enabled: Darwin %u, device 0x%X, render=%u submit=%u",
            currentKernelVersion().major(), deviceID, renderRequested, submitGuard);
+    // 另一个共享缓存模块也成功安装时，由最外层协调器持有唯一 map lease 后回调。
+    UserPatchCoordinator::registerDisplay(
+        [](void* process, void* args, const int result)
+        {
+            return patchSharedRegion(reinterpret_cast<proc_t>(process),
+                                     reinterpret_cast<SharedRegionCheckArgs*>(args), result);
+        });
 }

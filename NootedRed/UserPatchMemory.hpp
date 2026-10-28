@@ -158,6 +158,11 @@ namespace UserPatchMemory
             return writeUser(bytes, address, size);
         }
         int read(const UInt64 address, UInt8* bytes, const UInt32 size) { return readUser(address, bytes, size); }
+        template<size_t Capacity>
+        bool collectPages(Page (&pages)[Capacity], UInt32& count, const UInt64 address, const UInt32 size)
+        {
+            return UserPatchMemory::collectPages(pages, count, address, size);
+        }
     };
 
 }    // namespace UserPatchMemory

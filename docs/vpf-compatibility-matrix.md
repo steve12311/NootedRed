@@ -23,7 +23,19 @@
 | Immediate / SRD / LegacyBlend | OS23Metal 精确配置 | `UserSequoiaSurfaceData` 动态完整函数 | `UserSurfaceSyncData` 静态表 + 完整函数核验 | 动态：`RelocationAwareFullFunction`；静态：`ExactValidatedBuild` |
 | ComputeScratch | 不启用 | `ScratchResolverData` 动态；六设备 | 同左 | `RelocationAwareFullFunction` + 设备表 |
 | SubmitGuard | 不进入动态路径 | `Submit` 完整函数动态定位 | `Submit` 完整函数动态定位 | `RelocationAwareFullFunction` |
+| OpenGL SE/CU + DualQuad | 页内完整块；参考页快速路径 | 同左；15.8.1 参考页已核验 | 同左；当前 26.7.2 驱动不匹配夹具 25 | 精确：`ExactKnownPage`；动态：`FullPageLocalBlock` |
 | 守卫页 | 无 | `vm_allocate` 私有页 + 载荷核验 | 同左 | 运行时生成，无静态站点 |
+
+`UserPatchCoordinator` 在显示与视频模块均成功安装时调用原生入口一次，再以 `vm_map`
+为租约键执行显示和视频回调；映射函数不可用时退回 task 身份，映射结果为空时跳过。
+单模块安装仍走已有路径。Metal 主渲染组与 SubmitGuard 使用
+核验后的计划和共享事务执行器，SubmitGuard 先于 RenderCore，入口未恢复时保留跳板页。
+OpenGL 使用已验证页内的完整块匹配，参考页证据用于交叉核验而非固定写入偏移。
+内核证据和离线语义报告不改变运行时准入。
+
+Darwin 23 的 Metal 精确 profile 由显示清单单独记录 LegacyBlend gate；组规划器保留
+LegacyBlend 与 SubmitGuard，拒绝不支持的 SRD/Scratch。已知部分 Darwin 25 构建与参考
+OpenGL 数据不匹配时会拒绝安装，不能通过放宽运行时条件解决。
 
 关键拒绝/诊断键：
 
@@ -32,6 +44,14 @@
 - `NRedLegacyBlendRejected`：OS23 精确 profile UUID/字节不匹配。
 - `NRedSubmitGuardRejected` / `NRedSubmitGuardDynamicRejected`：提交入口或载荷不匹配。
 - `NRedSubmitGuardRollbackFailed`：入口无法恢复；保留目标页，不自动重试。
+- `NRedPatchCoordinatorEnabled/Skipped/Rejected/Peak`：两个模块协调、单模块回退、Hook 安装失败或
+  活动 map lease 峰值。
+- `NRedDisplayVPFPlanState/Sites/Verified`：本进程 Metal 计划读回状态，仅诊断用。
+- `NRedOpenGLVPFRevision/PlanVerified/ManifestMask/EvidenceMask`：OpenGL 页计划与参考证据
+  交叉核验状态；不代表 GPU 已执行。
+- `NRedKernelDisplayEvidenceRevision`、`NRedKernelGFX9*`、`NRedKernelKext*`、
+  `NRedKernelFramebuffer*`、`NRedKernelScanout*`、`NRedKernelFlip*`：只读证据；
+  不表示 HDR/Flip/GFXOFF 已修复。
 
 ## 3. 视频组
 
@@ -68,8 +88,15 @@ Manifest 覆盖和合成测试不能证明各设备已通过实机验收。
 | `DisplayPipelineConstructor` | 24 / 25 | 0 | 1 | `UserSurfaceConstructorData` |
 | `DisplaySubmit` | 24 / 25 | 0 | 0 | Submit 完整函数；偏移运行时返回 |
 | `DisplaySubmitGuard` | — | — | — | 跳转/守卫载荷运行时生成，无静态站点 |
+| `DisplayOpenGLHwInfo` | 23 / 24 / 25 | 6 | 1/实例 | DVPF：完整页块，页内 256 B |
+| `DisplayOpenGLDualQuad` | 23 / 24 / 25 | 6 | 1/实例 | DVPF：页内 142 B |
+| `DisplaySubmitGuard`（DVPF） | 23 / 24 / 25 | 0（共用） | 1/实例 | 入口跳转模板；目标地址运行时填写 |
+| `KernelGFX9Capabilities` / `KernelDCNScanout` / `KernelFramebuffer` | 23 / 24 / 25 | 0（共用） | 0 | 仅符号/ABI 描述，不进入用户态事务 |
 | `Vcn2Encode` | — | — | — | 未拆独立 Manifest；编码站点在视频表中 |
 | `AppleGVASelection` / `FairPlayNativeDecodeSubset` | — | — | — | 由现有 FairPlay 策略与掩码控制 |
+
+DVPF 的 `DisplayManifestData.hpp` 由 `tools/dvpf/generate_display_manifest.py` 生成；
+上表 DVPF 行只描述只读清单，不改变运行时准入。
 
 ## 5. 证据边界
 

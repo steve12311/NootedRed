@@ -15,7 +15,7 @@ def main():
     init = source[source.index('void UserSurfaceSync::init('):]
     stubs = WORK / 'stubs/IOKit'
     stubs.mkdir(parents=True, exist_ok=True)
-    (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
+    (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
     harness = r'''
 #include <cassert>
 #include <cstring>
@@ -31,7 +31,11 @@ namespace Patch {} // 模拟 Lilu 的同名命名空间，防止独立测试遗�
 #include <UserSurfaceSyncResolver.hpp>
 #include <UserLegacyData.hpp>
 #include <UserSubmitGuardData.hpp>
+#include <coordinator-inactive.hpp>
+#include <VPF/ExecutableTrampolineResource.hpp>
+#include <VPF/MetalTransactionExecutor.hpp>
 #include <VPF/TransactionExecutor.hpp>
+#include <VPF/VerifiedPatchPlan.hpp>
 namespace Buffer {
 template<class T>T* create(size_t count){return new T[count];}
 template<class T>void deleter(T* pointer){delete[] pointer;}
@@ -137,6 +141,7 @@ int main(){
   auto* links=mode?SharedInitLinks:ImmediateInitLinks;
   for(unsigned j=0;j<3;j++){uint64_t target=0;assert(UserSurfaceSyncResolver::relativeTarget(base+initOffset,links[j].offset,p.patched[0],target));assert(target==targets[links[j].target]);}
   call();rx();assert(properties.at("NRedImmediateSyncDynamicApplied")==1&&properties.at("NRedImmediateSyncCacheUUID0")==0xa7a7a7a7);
+  assert(properties.at("NRedDisplayVPFPlanVerified")==1&&properties.at("NRedDisplayVPFPlanSites")==(mode==2?3:2));
   assert(writes==(mode==2?3U:2U)&&originalCalls==1);
   for(unsigned j=0;j<(mode==2?3U:2U);j++)assert(memcmp(memory.data()+p.patches[j].offset,p.patched[j],p.patches[j].size)==0);
   unsigned before=writes;call();assert(writes==before&&properties.at("NRedImmediateSyncD07")==1);cases++;
@@ -204,8 +209,8 @@ int main(){
     exe = WORK / 'test-dynamic'
     flags = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if '--sanitize' in sys.argv else []
     subprocess.run(['clang++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-Wshadow', '-Werror', *flags,
-                    '-I', str(WORK / 'stubs'), '-I', str(ROOT / 'NootedRed'), str(file), '-o', str(exe)],
-                   check=True, timeout=60)
+                    '-I', str(WORK / 'stubs'), '-I', str(ROOT / 'NootedRed'), '-I', str(ROOT / 'tools/fixtures'),
+                    str(file), '-o', str(exe)], check=True, timeout=60)
     subprocess.run([str(exe)], check=True, timeout=60)
 
 

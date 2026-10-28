@@ -17,7 +17,7 @@ def main():
     init = source[source.index('void UserOpenGL::init('):]
     stubs = WORK / 'stubs/IOKit'
     stubs.mkdir(parents=True, exist_ok=True)
-    (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
+    (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
     harness = r'''
 #include <array>
 #include <cassert>
@@ -31,6 +31,8 @@ def main():
 #include <vector>
 #include <UserOpenGLData.hpp>
 #include <UserOpenGLResolver.hpp>
+#include <VPF/DisplayManifestData.hpp>
+#include <VPF/ValidatedPageBackend.hpp>
 using vnode_t=void*;using memory_object_t=void*;using memory_object_offset_t=uint64_t;using vm_size_t=uint64_t;
 using boolean_t=int;using mach_vm_address_t=uint64_t;using thread_call_param_t=void*;using thread_call_t=void*;
 using thread_call_func_t=void(*)(void*,void*);
@@ -97,7 +99,8 @@ INIT
 
 static void reset(unsigned os=25,unsigned id=0x1638){
  if(Actual::reportCall)thread_call_free(Actual::reportCall);
- Actual::reportCall=nullptr;Actual::device=nullptr;Actual::appliedMask=Actual::dynamicMask=Actual::errorMask=0;
+ Actual::reportCall=nullptr;Actual::device=nullptr;Actual::manifests[0]=Actual::manifests[1]=nullptr;
+ Actual::appliedMask=Actual::dynamicMask=Actual::errorMask=Actual::planMask=Actual::evidenceMask=0;
  properties.clear();failedWrites.clear();onEnable=nullptr;pending=locked=inHook=false;
  flag=allocateOK=true;major=os;pci=id;allocated=freed=writeAccess=queued=validCalls=0;
  validValue=rangeResult=1;taintValue=nxValue=0;vnodeName="AMDRadeonX5000GLDriver";names=putnames=0;
@@ -106,6 +109,7 @@ static void reset(unsigned os=25,unsigned id=0x1638){
 static void init(){KernelPatcher patcher;UserOpenGL::init(patcher);
  assert(patcher.routes==2&&properties.at("NRedOpenGLBackends")==3);
  assert(!pending&&queued==0&&properties.at("NRedOpenGLRevision")==5&&properties.at("NRedOpenGLPageLocal")==1);
+ assert(properties.at("NRedOpenGLVPFRevision")==1&&properties.at("NRedOpenGLVPFManifestMask")==3);
  assert(!properties.contains("NRedOpenGLDynamicPending"));}
 static void page(void* data,bool validPointer=true){
  int valid=99,taint=99,nx=99;expectedData=data;inHook=true;
@@ -126,6 +130,7 @@ int main(){
   setup();page(bytes.data());assert(bytes==expected&&writeAccess==2&&names==putnames&&Actual::appliedMask==(1U<<index));
   assert(!properties.contains("NRedOpenGLSEApplied"));flush();
   assert(properties.at(index?"NRedOpenGLDualQuadApplied":"NRedOpenGLSEApplied")==1);
+  assert(properties.at("NRedOpenGLVPFPlanVerified")==0);assert(Actual::evidenceMask==(1U<<index));
   auto before=writeAccess,queueBefore=queued;page(bytes.data());assert(writeAccess==before&&queued==queueBefore);cases++;
   // XNU 整页验证返回四位全真位图，不能仅接受旧布尔值 1。
   setup();validValue=0xf;page(bytes.data());flush();assert(bytes==expected&&Actual::appliedMask==(1U<<index));cases++;
@@ -180,6 +185,8 @@ int main(){
   }
   auto original=bytes;page(bytes.data());flush();
   assert(Actual::appliedMask==3&&Actual::dynamicMask==3&&properties.at("NRedOpenGLDynamicApplied")==1&&writeAccess==4);
+  assert(Actual::planMask==3&&Actual::evidenceMask==3&&properties.at("NRedOpenGLVPFPlanVerified")==1);
+  assert(properties.at("NRedOpenGLVPFEvidenceMask")==3);
   for(unsigned i=0;i<4096;i++)if(!(i>=300&&i<556)&&!(i>=2000&&i<2142))assert(bytes[i]==original[i]);cases++;
   // 重复校验不写入、不重复排队；另一个 CPU 已写入的页面也能识别。
   auto before=queued;page(bytes.data());assert(writeAccess==4&&queued==before);cases++;

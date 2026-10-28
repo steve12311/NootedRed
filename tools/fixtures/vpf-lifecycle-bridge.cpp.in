@@ -61,6 +61,14 @@ static CopyOut writeUser = nullptr;
 static mach_vm_address_t originalCheck = 0;
 static void wrappedSharedRegionCheck() { }
 #define SYSLOG(...) ((void)0)
+namespace UserPatchCoordinator
+{
+    using PatchCallback = int (*)(void*, void*, int);
+    inline void clearVideo() {}
+    inline void registerVideo(const PatchCallback) {}
+}
+struct SharedRegionCheckArgs { UInt64 startAddress; };
+static int patchSharedRegion(proc_t, SharedRegionCheckArgs*, int result) { return result; }
 
 static std::array<UInt8, 64> destroyEntry{};
 static unsigned destroyCalls = 0;
