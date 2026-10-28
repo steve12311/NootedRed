@@ -16,6 +16,7 @@ def main():
     parser.add_argument('--major',type=int,choices=[24,25],default=25)
     parser.add_argument('--repeat', type=int, default=1, choices=range(1, 21))
     parser.add_argument('--label', default='result')
+    parser.add_argument('--kernel-memchr', action='store_true')
     parser.add_argument('--baseline-ref', help='从指定本地提交读取解析器源码，供相同缓存的 CPU 对照测量')
     args = parser.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -49,6 +50,15 @@ def main():
 #include <fcntl.h>
 #include <unistd.h>
 #include <ctime>
+#if TEST_KERNEL_MEMCHR
+// 与本机内核 _memchr 的有符号字节提升行为一致。
+static void* kernelMemchr(const void* source,int value,size_t count){
+ const auto* bytes=static_cast<const signed char*>(source);
+ for(size_t i=0;i<count;i++)if(bytes[i]==value)return const_cast<signed char*>(bytes+i);
+ return nullptr;
+}
+#define memchr kernelMemchr
+#endif
 #include <UserSurfaceSyncResolver.hpp>
 #include <UserVideoDecodeResolver.hpp>
 #include <UserVideoGuardResolver.hpp>
@@ -132,7 +142,8 @@ int main(){
                                            cwd=ROOT, text=True, timeout=10)
             (baseline / name).write_text(text)
         baseline_flags = ['-DOPTIMIZED=0', '-I' + str(baseline)]
-    subprocess.run(['clang++', '-std=c++23', '-O2', *baseline_flags, '-I' + str(WORK / 'stubs'),
+    subprocess.run(['clang++', '-std=c++23', '-O2', '-DTEST_KERNEL_MEMCHR=' + str(int(args.kernel_memchr)),
+                    *baseline_flags, '-I' + str(WORK / 'stubs'),
                     '-I' + str(ROOT / 'NootedRed'), str(file), '-o', str(executable)], check=True, timeout=60)
     result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=60)
     if Path(args.label).name != args.label:

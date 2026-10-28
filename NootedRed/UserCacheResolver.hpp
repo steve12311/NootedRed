@@ -30,6 +30,26 @@ namespace UserCacheResolver
         UInt8  value;
     };
 
+    // 由 tools/analyze_anchor_frequency.py 从生成函数数据统计的字节稀有度秩：
+    // 0 最少见。仅决定 memchr 过滤字节的选择，不参与候选匹配语义。
+    inline constexpr UInt8 AnchorRarity[256] = {
+        0xFF, 0xF6, 0xEE, 0xEC, 0xF0, 0xDB, 0xB6, 0xE0, 0xE8, 0xD0, 0x97, 0x98, 0xCC, 0xAF, 0x67, 0xF9, 0xE3, 0xBD,
+        0x5B, 0x55, 0xA5, 0x79, 0x3F, 0x24, 0xBC, 0x40, 0x25, 0x2F, 0x68, 0x4C, 0x26, 0x9B, 0xDC, 0x93, 0x83, 0x64,
+        0xE5, 0x9F, 0x22, 0x35, 0xC1, 0x8C, 0x76, 0x0C, 0xB4, 0x0F, 0x62, 0x5D, 0xBE, 0xEB, 0x66, 0x50, 0xA0, 0xA2,
+        0x05, 0x46, 0xB2, 0xA8, 0x60, 0x70, 0x72, 0x89, 0x17, 0x3B, 0xE1, 0xFA, 0x9C, 0x95, 0xE6, 0xEA, 0xA3, 0x84,
+        0xFD, 0xF1, 0x57, 0x19, 0xF3, 0xCE, 0x8A, 0x41, 0xCB, 0x29, 0x43, 0x78, 0x7E, 0xA4, 0x6B, 0x85, 0xC3, 0x1E,
+        0x44, 0x6E, 0x5F, 0x8D, 0x6D, 0x47, 0xAA, 0x1F, 0x32, 0x30, 0x20, 0x12, 0xAE, 0x10, 0xA7, 0x0D, 0x58, 0x09,
+        0x3C, 0x23, 0x2A, 0x2B, 0x96, 0x1A, 0x77, 0x6C, 0xE7, 0xE2, 0x33, 0x71, 0xBF, 0x42, 0x3D, 0x53, 0x52, 0x81,
+        0x7A, 0x88, 0xE4, 0xCF, 0x7D, 0xF7, 0xE9, 0xF8, 0x8E, 0x56, 0xD9, 0xFB, 0x7F, 0xFC, 0x73, 0xF4, 0x4E, 0x38,
+        0xC5, 0x27, 0x2E, 0x61, 0xAC, 0xDF, 0x39, 0x49, 0x7B, 0x11, 0x0A, 0x21, 0x1B, 0x90, 0x0B, 0x14, 0x9A, 0x0E,
+        0x03, 0x45, 0x36, 0x74, 0x00, 0x08, 0x99, 0x4F, 0x02, 0x01, 0x3A, 0x5E, 0x06, 0x54, 0x9D, 0x04, 0x15, 0x80,
+        0x4A, 0xD2, 0x8F, 0x48, 0xC6, 0xB1, 0xB5, 0xA9, 0x4D, 0xDD, 0xAD, 0xA1, 0xF2, 0xED, 0xBA, 0xC4, 0xC7, 0xAB,
+        0xD5, 0xDE, 0xD4, 0xCA, 0x9E, 0x2C, 0x31, 0x37, 0x7C, 0x75, 0xC2, 0x91, 0xB3, 0x1C, 0xA6, 0x18, 0x82, 0x63,
+        0x86, 0x2D, 0x28, 0x87, 0x07, 0x16, 0x4B, 0xB0, 0xD6, 0xC9, 0xB7, 0x34, 0x69, 0x6A, 0x8B, 0x6F, 0xEF, 0xD1,
+        0x59, 0xD8, 0x5A, 0x3E, 0x51, 0x65, 0xBB, 0x5C, 0x92, 0x94, 0x13, 0x1D, 0xDA, 0xD3, 0xD7, 0xB9, 0xB8, 0xC0,
+        0xC8, 0xCD, 0xF5, 0xFE,
+    };
+
     template<typename PrefixMatches, typename CandidateMatches>
     __attribute__((noinline)) inline bool scanBuffered(Input& input, const Range& text, UInt32 size, UInt32 prefixSize,
                                                        const PrefixMatches&    prefixMatches,
@@ -43,10 +63,11 @@ namespace UserCacheResolver
             const auto positions = length - prefixSize + 1;
             for (UInt32 j = 0; j < positions && offset + j <= text.size - size; ++j) {
                 if (anchor) {
-                    const auto  remaining = text.size - size - offset - j + 1;
-                    const auto  count     = remaining < positions - j ? UInt32(remaining) : positions - j;
-                    const auto* next =
-                        static_cast<const UInt8*>(memchr(scan + j + anchor->offset, anchor->value, count));
+                    const auto remaining = text.size - size - offset - j + 1;
+                    const auto count     = remaining < positions - j ? UInt32(remaining) : positions - j;
+                    // 兼容内核按 signed char 比较的实现；libc 会把负的 int 转换回 unsigned char。
+                    const auto* next = static_cast<const UInt8*>(
+                        memchr(scan + j + anchor->offset, static_cast<signed char>(anchor->value), count));
                     if (!next) { break; }
                     j = UInt32(next - scan) - anchor->offset;
                 }
@@ -109,16 +130,24 @@ namespace UserCacheResolver
         }
         bool commonAnchor(const Prefix& other, ScanAnchor& anchor) const
         {
+            // 在所有共同固定字节中选择生成数据里最少见的一个；相同稀有度保留最早位置。
+            UInt32 bestOffset = 32;
+            UInt32 bestCost   = 0x100;
             for (UInt32 i = 0; i < 32; ++i) {
                 const auto shift = (i % 8) * 8;
                 if (((masks[i / 8] >> shift) & (other.masks[i / 8] >> shift) & 0xFF) == 0xFF
                     && ((values[i / 8] >> shift) & 0xFF) == ((other.values[i / 8] >> shift) & 0xFF))
                 {
-                    anchor = {i, UInt8(values[i / 8] >> shift)};
-                    return true;
+                    const auto cost = AnchorRarity[UInt8(values[i / 8] >> shift)];
+                    if (cost < bestCost) {
+                        bestCost   = cost;
+                        bestOffset = i;
+                    }
                 }
             }
-            return false;
+            if (bestOffset == 32) { return false; }
+            anchor = {bestOffset, UInt8(values[bestOffset / 8] >> (bestOffset % 8) * 8)};
+            return true;
         }
         bool matches(const UInt8* bytes) const
         {
@@ -188,15 +217,21 @@ namespace UserCacheResolver
         return function.original[index];
     }
 
+    inline bool referencesOrdered(const Reference* refs, UInt32 count)
+    {
+        for (UInt32 i = 1; i < count; ++i) {
+            if (refs[i - 1].offset > refs[i].offset) { return false; }
+        }
+        return true;
+    }
+
     template<typename Patch>
     inline bool matches(Input& input, UInt64 address, const Function& function, UInt32 f, bool patched,
-                        const Patch* patches, const Location* locations, UInt32 count)
+                        const Patch* patches, const Location* locations, UInt32 count, bool ordered)
     {
         const auto* refs     = patched ? function.patchedRefs : function.originalRefs;
         const auto  refCount = patched ? function.patchedCount : function.originalCount;
-        bool        ordered  = true;
-        for (UInt32 i = 1; i < refCount; ++i) { ordered &= refs[i - 1].offset <= refs[i].offset; }
-        UInt32 cursor{0};
+        UInt32      cursor{0};
         return matchBytes(input, address, function.size,
                           [&](UInt32 index, UInt8 value)
                           {
@@ -213,13 +248,24 @@ namespace UserCacheResolver
                           });
     }
 
+    template<typename Patch>
+    inline bool matches(Input& input, UInt64 address, const Function& function, UInt32 f, bool patched,
+                        const Patch* patches, const Location* locations, UInt32 count)
+    {
+        const auto* refs     = patched ? function.patchedRefs : function.originalRefs;
+        const auto  refCount = patched ? function.patchedCount : function.originalCount;
+        return matches(input, address, function, f, patched, patches, locations, count,
+                       referencesOrdered(refs, refCount));
+    }
+
     template<typename Patch, typename CandidateFilter>
     inline bool find(Input& input, const Range& text, const Function& function, UInt32 f, const Patch* patches,
                      const Location* locations, UInt32 count, UInt64& address, bool& patched, CandidateFilter filter)
     {
         if (function.size < 32) { return false; }
         Prefix prefixes[2];
-        // 扫描热点只比较已准备的前缀，避免对每个文本字节重新遍历整份补丁表。
+        bool   ordered[2]{};
+        // 扫描热点只比较已准备的前缀与引用顺序，避免对每个候选重新遍历补丁表。
         for (UInt32 variant = 0; variant < 2; ++variant) {
             const auto* refs      = variant ? function.patchedRefs : function.originalRefs;
             const auto  countRefs = variant ? function.patchedCount : function.originalCount;
@@ -227,6 +273,7 @@ namespace UserCacheResolver
                 prefixes[variant].set(i, expected(function, i, f, variant != 0, patches, locations, count),
                                       skipped(i, refs, countRefs));
             }
+            ordered[variant] = referencesOrdered(refs, countRefs);
         }
         const bool samePrefix    = memcmp(prefixes, prefixes + 1, sizeof(Prefix)) == 0;
         const auto prefixMatches = [&](const UInt8* bytes)
@@ -234,8 +281,9 @@ namespace UserCacheResolver
         const auto candidateMatches = [&](UInt64 candidate)
         {
             for (UInt32 variant = 0; variant < 2; ++variant) {
-                if (matches(input, candidate, function, f, variant != 0, patches, locations, count)
-                    && filter(candidate, variant != 0)) {
+                if (matches(input, candidate, function, f, variant != 0, patches, locations, count, ordered[variant])
+                    && filter(candidate, variant != 0))
+                {
                     patched = variant != 0;
                     return true;
                 }
@@ -397,17 +445,17 @@ namespace UserCacheResolver
     }
 
     template<typename Patch, size_t ImageCount, size_t FunctionCount, size_t PatchCount>
-    __attribute__((noinline))
-    inline bool resolveWithImages(Input& input, UInt64 base, const ImageReference (&imageRefs)[ImageCount],
-                        const Function (&functions)[FunctionCount], const Patch* patches,
-                        const Location (&locations)[PatchCount], Patch* output, UInt8* originals, UInt8* replacements,
-                        UInt32 stride, ImageBounds (&images)[ImageCount], bool sectionRelative = false,
-                        const UserCacheSectionData::Target* scopedTargets = nullptr, UInt32 scopedTargetCount = 0)
+    __attribute__((noinline)) inline bool
+        resolveWithImages(Input& input, UInt64 base, const ImageReference (&imageRefs)[ImageCount],
+                          const Function (&functions)[FunctionCount], const Patch* patches,
+                          const Location (&locations)[PatchCount], Patch* output, UInt8* originals, UInt8* replacements,
+                          UInt32 stride, ImageBounds (&images)[ImageCount], bool sectionRelative = false,
+                          const UserCacheSectionData::Target* scopedTargets = nullptr, UInt32 scopedTargetCount = 0)
     {
         static_assert(ImageCount > 0 && ImageCount <= 16 && FunctionCount > 0 && FunctionCount <= 32);
         if (scopedTargetCount > 128 || (scopedTargets == nullptr) != (scopedTargetCount == 0)) { return false; }
-        UInt64      addresses[FunctionCount]{};
-        bool        variants[FunctionCount]{};
+        UInt64 addresses[FunctionCount]{};
+        bool   variants[FunctionCount]{};
         input.selectImages(base, imageRefs, ImageCount);
         for (UInt32 i = 0; i < ImageCount; ++i) {
             Image image;
@@ -423,9 +471,9 @@ namespace UserCacheResolver
             if (functions[i].image >= ImageCount) { return false; }
             const auto dataTargetsMatch = [&](UInt64 candidate, bool variant)
             {
-                const auto& fn = functions[i];
-                const auto* refs = variant ? fn.patchedRefs : fn.originalRefs;
-                const auto count = variant ? fn.patchedCount : fn.originalCount;
+                const auto& fn    = functions[i];
+                const auto* refs  = variant ? fn.patchedRefs : fn.originalRefs;
+                const auto  count = variant ? fn.patchedCount : fn.originalCount;
                 for (UInt32 r = 0; r < count; ++r) {
                     if (refs[r].image >= ImageCount) { return false; }
                     bool scoped = false;
@@ -437,14 +485,16 @@ namespace UserCacheResolver
                         }
                     }
                     if (!scoped) { continue; }
-                    UInt8 field[4];
+                    UInt8  field[4];
                     UInt64 actual, destination;
                     if (refs[r].offset > fn.size || fn.size - refs[r].offset < sizeof(field)
                         || !input.read(candidate + refs[r].offset, field, sizeof(field))
                         || !relativeTarget(candidate + refs[r].offset, 0, field, actual)
-                        || !target(input, refs[r], images, ImageCount, imageRefs, functions, addresses, 0,
-                                   destination, true, scopedTargets, scopedTargetCount)
-                        || (refs[r].indirect ? !binding(input, actual, refs[r].indirect, destination) : actual != destination)) {
+                        || !target(input, refs[r], images, ImageCount, imageRefs, functions, addresses, 0, destination,
+                                   true, scopedTargets, scopedTargetCount)
+                        || (refs[r].indirect ? !binding(input, actual, refs[r].indirect, destination) :
+                                               actual != destination))
+                    {
                         return false;
                     }
                 }
@@ -502,10 +552,11 @@ namespace UserCacheResolver
                     }
                     UInt64 destination;
                     if (refs[r].offset < loc.offset || refs[r].offset + 4 > loc.offset + patches[p].size
-                        || (refs[r].indirect ? !observedTarget(input, refs, r, loc.function, functions, addresses,
-                                                               variants, destination) :
-                                               !target(input, refs[r], images, ImageCount, imageRefs, functions,
-                                                       addresses, FunctionCount, destination, sectionRelative, scopedTargets, scopedTargetCount))
+                        || (refs[r].indirect ?
+                                !observedTarget(input, refs, r, loc.function, functions, addresses, variants,
+                                                destination) :
+                                !target(input, refs[r], images, ImageCount, imageRefs, functions, addresses,
+                                        FunctionCount, destination, sectionRelative, scopedTargets, scopedTargetCount))
                         || !setRelative(variant ? replacement : original, refs[r].offset - loc.offset, address,
                                         destination))
                     {
