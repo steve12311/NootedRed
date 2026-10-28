@@ -3,7 +3,6 @@
 #include <IOKit/IOLib.h>
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
-#include <UserLegacyData.hpp>
 #include <UserPatchMemory.hpp>
 #include <UserPatchPolicy.hpp>
 #include <UserVideoDecode.hpp>
@@ -12,6 +11,11 @@
 #include <UserVideoGuardResolver.hpp>
 #include <VCN.hpp>
 #include <VCNCapabilities.hpp>
+#include <VPF/CapabilityState.hpp>
+#include <VPF/DependencyPlanner.hpp>
+#include <VPF/PatchManifestData.hpp>
+#include <VPF/ResolverAdapters.hpp>
+#include <VPF/TransactionExecutor.hpp>
 #include <kern/task.h>
 #include <mach/i386/vm_param.h>
 #include <mach/vm_map.h>
@@ -32,8 +36,10 @@ namespace
     using RegionRecurse     = UserPatchMemory::RegionQuery;
     using CopyIn            = int                  (*)(user_addr_t, void*, size_t);
     using CopyOut           = int                 (*)(const void*, user_addr_t, size_t);
+    using MapDestroy        = void                (*)(vm_map_t);
 
     mach_vm_address_t                 originalCheck{0};
+    MapDestroy                        originalMapDestroy{nullptr};
     GetTaskMap                        getTaskMap{nullptr};
     RegionRecurse                     queryRegion{nullptr};
     CopyIn                            readUser{nullptr};
@@ -42,11 +48,11 @@ namespace
     UserPatchMapGate::Registry<64>     taskPatchRegistry;
     UInt32                            taskGatePeakReported{0};
     UInt32                            seenStages{0}, appliedCount{0}, errorCount{0};
-    struct Published { UInt64 uuid[4], matched, reads, guardReads; } published{};
+    struct Published { UInt64 uuid[4], matched, reads, guardReads, path, planState, ledgerState, planner; } published{};
+    VPF::CapabilityLedger              videoLedger;
     bool                              fairPlayDriverOnly{false};
     bool                              sequoia{false};
     const UserVideoDecodeData::Patch* devicePatches{nullptr};
-    const UserLegacyCompat::Profile*  legacyProfile{nullptr};
     constexpr auto                    PatchCount   = arrsize(UserVideoDecodeData::Patches);
     constexpr UInt32                  Capacity = PatchCount + UserVideoGuardData::MaxEntries;
     constexpr UInt32                  MaxPageCount = Capacity * 2;
@@ -56,7 +62,6 @@ namespace
 
     UInt32 fairPlayMask()
     {
-        if (legacyProfile) { return legacyProfile->fairPlayMask; }
         return sequoia ? UserSequoiaVideoData::FairPlayDecodeMask : UserVideoDecodeData::FairPlayDecodeMask;
     }
 
@@ -129,23 +134,201 @@ namespace
         }
     }
 
-    bool leafProtection(vm_map_t map, const mach_vm_address_t page, vm_prot_t& protection)
+    constexpr UInt32 darwinMask(const UInt32 major)
     {
-        return UserPatchMemory::leafProtection(map, page, protection, queryRegion, error);
+        return major == 24 ? VPF::OsDarwin24 : (major == 25 ? VPF::OsDarwin25 : 0);
     }
 
-    bool restorePages(vm_map_t map, Page* pages, const UInt32 count)
+    bool addPlanImages(VPF::VerifiedPatchPlan& out, const VPF::VerifiedPatchPlan& source)
     {
-        return UserPatchMemory::restorePages(map, pages, count, error);
+        for (UInt32 i = 0; i < source.imageCount(); ++i) {
+            const auto& image = source.image(i);
+            if (!out.addImage(image.path, image.address, image.text, image.segments, image.segmentCount)) {
+                return false;
+            }
+        }
+        return true;
     }
+
+    bool appendPlanSites(VPF::VerifiedPatchPlan& out, const VPF::VerifiedPatchPlan& source)
+    {
+        if (out.siteCount() + source.siteCount() > VPF::MaxPlanSites) { return false; }
+        for (UInt32 i = 0; i < source.siteCount(); ++i) {
+            const auto& site = source.site(i);
+            if (!out.addSite(site.address, site.offset, site.size, site.functionIndex, site.instructionOffset,
+                             site.original, site.replacement)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // 规划器只判断功能组前提；补丁选择仍由现有策略和 FairPlay 掩码给出。
+    bool planVideoFeatures(const UInt32 osMask, const UInt32 deviceID, const bool fairPlay, const bool decodeVerified,
+                           const bool guardVerified, VPF::PlannerResult& result)
+    {
+        VPF::PlannerInput input{};
+        input.osMask   = osMask;
+        input.deviceID = deviceID;
+        input.requested =
+            VPF::featureBit(VPF::FeatureId::Vcn2SafetyGuard) | VPF::featureBit(VPF::FeatureId::Vcn2Decode)
+            | (fairPlay ? VPF::featureBit(VPF::FeatureId::FairPlayNativeDecodeSubset) :
+                          (VPF::featureBit(VPF::FeatureId::Vcn2Encode)
+                           | VPF::featureBit(VPF::FeatureId::AppleGVASelection)));
+        input.verified = (guardVerified ? VPF::featureBit(VPF::FeatureId::Vcn2SafetyGuard) : 0)
+                         | (decodeVerified ? (VPF::featureBit(VPF::FeatureId::Vcn2Decode)
+                                              | VPF::featureBit(VPF::FeatureId::Vcn2Encode)
+                                              | VPF::featureBit(VPF::FeatureId::AppleGVASelection)
+                                              | VPF::featureBit(VPF::FeatureId::FairPlayNativeDecodeSubset)) : 0);
+        input.external = VPF::ExternalVcnBridge | (fairPlay ? VPF::ExternalFairPlay : 0);
+        result         = VPF::plan(input);
+        return !result.cycle && (result.enabled & input.requested) == input.requested
+               && VPF::orderedBefore(result, VPF::FeatureId::Vcn2SafetyGuard, VPF::FeatureId::Vcn2Decode);
+    }
+
+    VPF::CapabilityState ledgerState(const UInt64 map)
+    {
+        if (!guardLock || map == 0) { return VPF::CapabilityState::Disabled; }
+        IOLockLock(guardLock);
+        const auto state = videoLedger.state(map, VPF::FeatureId::Vcn2Decode);
+        IOLockUnlock(guardLock);
+        return state;
+    }
+
+    void publishLedger(const UInt64 map)
+    {
+        publish(published.ledgerState, "NRedVCNVPFLedgerState", static_cast<UInt32>(ledgerState(map)));
+    }
+
+    // 返回 false 时不得再读取或写入目标页面：Quarantined/账本容量耗尽均 fail closed。
+    bool prepareLedger(const UInt64 map)
+    {
+        if (!guardLock || map == 0) { return false; }
+        constexpr auto feature = VPF::FeatureId::Vcn2Decode;
+        IOLockLock(guardLock);
+        auto state = videoLedger.state(map, feature);
+        if (state == VPF::CapabilityState::Quarantined) {
+            IOLockUnlock(guardLock);
+            publishLedger(map);
+            return false;
+        }
+        // 同一 map 可能因缓存重建再次进入安装阶段；已安装/上次中断的状态先回到 Disabled。
+        if ((state == VPF::CapabilityState::Installed || state == VPF::CapabilityState::RuntimeObserved)
+            && videoLedger.set(map, feature, VPF::CapabilityState::Disabled))
+        {
+            state = VPF::CapabilityState::Disabled;
+        }
+        if (state == VPF::CapabilityState::Installing
+            && videoLedger.set(map, feature, VPF::CapabilityState::CommitFailed))
+        {
+            state = VPF::CapabilityState::CommitFailed;
+        }
+        if (state == VPF::CapabilityState::CommitFailed
+            && videoLedger.set(map, feature, VPF::CapabilityState::RollbackVerified))
+        {
+            state = VPF::CapabilityState::RollbackVerified;
+        }
+        if (state == VPF::CapabilityState::RollbackVerified
+            && videoLedger.set(map, feature, VPF::CapabilityState::Disabled))
+        {
+            state = VPF::CapabilityState::Disabled;
+        }
+        if (state == VPF::CapabilityState::Disabled && videoLedger.set(map, feature, VPF::CapabilityState::Eligible)) {
+            state = VPF::CapabilityState::Eligible;
+        }
+        if (state == VPF::CapabilityState::Eligible
+            && videoLedger.set(map, feature, VPF::CapabilityState::ImageResolved))
+        {
+            state = VPF::CapabilityState::ImageResolved;
+        }
+        if (state == VPF::CapabilityState::ImageResolved
+            && videoLedger.set(map, feature, VPF::CapabilityState::Verified))
+        {
+            state = VPF::CapabilityState::Verified;
+        }
+        if (state == VPF::CapabilityState::Verified && videoLedger.set(map, feature, VPF::CapabilityState::Prepared)) {
+            state = VPF::CapabilityState::Prepared;
+        }
+        if (state == VPF::CapabilityState::RollbackFailed) {
+            videoLedger.set(map, feature, VPF::CapabilityState::Quarantined);
+            state = VPF::CapabilityState::Quarantined;
+        }
+        const bool ready = state == VPF::CapabilityState::Prepared || state == VPF::CapabilityState::Installing
+                           || state == VPF::CapabilityState::Installed
+                           || state == VPF::CapabilityState::RuntimeObserved;
+        IOLockUnlock(guardLock);
+        publishLedger(map);
+        return ready;
+    }
+
+    bool markLedger(const UInt64 map, const VPF::CapabilityState target)
+    {
+        if (!guardLock || map == 0) { return false; }
+        IOLockLock(guardLock);
+        const bool changed = videoLedger.set(map, VPF::FeatureId::Vcn2Decode, target);
+        IOLockUnlock(guardLock);
+        publishLedger(map);
+        return changed;
+    }
+
+    void markFailure(const UInt64 map, const bool rollbackOk)
+    {
+        if (!guardLock || map == 0) { return; }
+        constexpr auto feature = VPF::FeatureId::Vcn2Decode;
+        bool           quarantined{false};
+        IOLockLock(guardLock);
+        auto state = videoLedger.state(map, feature);
+        if (state == VPF::CapabilityState::Installing
+            && videoLedger.set(map, feature, VPF::CapabilityState::CommitFailed))
+        {
+            state = VPF::CapabilityState::CommitFailed;
+        }
+        if (state == VPF::CapabilityState::CommitFailed) {
+            if (rollbackOk) { videoLedger.set(map, feature, VPF::CapabilityState::RollbackVerified); }
+            else if (videoLedger.set(map, feature, VPF::CapabilityState::RollbackFailed)) {
+                videoLedger.set(map, feature, VPF::CapabilityState::Quarantined);
+                quarantined = true;
+            }
+        }
+        IOLockUnlock(guardLock);
+        if (quarantined) { NRed::singleton().setProp32("NRedVCNVPFQuarantined", 1); }
+        publishLedger(map);
+    }
+
+    void observeLedger(const UInt64 map)
+    {
+        markLedger(map, VPF::CapabilityState::Installing);
+        markLedger(map, VPF::CapabilityState::Installed);
+        markLedger(map, VPF::CapabilityState::RuntimeObserved);
+    }
+
+    void installedLedger(const UInt64 map)
+    {
+        markLedger(map, VPF::CapabilityState::Installing);
+        markLedger(map, VPF::CapabilityState::Installed);
+    }
+
+    void removeLedgerMap(vm_map_t map)
+    {
+        if (!guardLock || !map) { return; }
+        IOLockLock(guardLock);
+        videoLedger.removeMap(reinterpret_cast<UInt64>(map));
+        IOLockUnlock(guardLock);
+    }
+
+    // 统一执行器只接收已核验补丁与已收集页面；VM 权限与回滚仍由 UserPatchMemory 完成。
+    using ExecutorOps = UserPatchMemory::ExecutorOps<CopyIn, CopyOut>;
 
     struct SavedRow
     {
         UInt8 bytes[UserVideoDecodeData::MaxPatchSize];
     };
+    static_assert(sizeof(SavedRow) == UserVideoDecodeData::MaxPatchSize);
     struct TransactionState
     {
-        UserVideoDecodeData::Patch legacy[PatchCount]{}, combined[Capacity]{};
+        UserVideoDecodeData::Patch selected[PatchCount]{}, install[Capacity]{};
+        VPF::VerifiedPatchPlan decodePlan{}, guardPlan{}, installPlan{};
+        VPF::PlannerResult planner{};
         Page pages[MaxPageCount]{};
         UserSharedCache::Input input{nullptr, {}};
         UInt8 scan[UserSharedCache::Input::ScanSize];
@@ -153,7 +336,11 @@ namespace
     struct TransactionBuffer
     {
         TransactionState* state{nullptr};
-        TransactionBuffer() { state = IONew(TransactionState, 1); }
+        TransactionBuffer()
+        {
+            state = IONew(TransactionState, 1);
+            if (state) { memset(state, 0, sizeof(*state)); }
+        }
         ~TransactionBuffer() { if (state) { IODelete(state, TransactionState, 1); } }
     };
     struct SavedBuffer
@@ -166,35 +353,14 @@ namespace
         }
     };
 
-    bool rollback(vm_map_t map, Page* pages, const UInt32 pageCount, const UInt64 base,
-                  const UserVideoDecodeData::Patch* patches, const SavedRow* saved, const UInt32 touched,
-                  const UInt32 guardCount)
-    {
-        using namespace UserVideoDecodeData;
-        bool ok = true;
-        for (UInt32 remaining = touched; remaining > 0; --remaining) {
-            const UInt32 i = remaining - 1;
-            if (!ok && i < guardCount) { continue; }
-            const auto address = base + patches[i].offset;
-            const bool ready = UserPatchMemory::prepareRollback(map, pages, pageCount, address, patches[i].size, error);
-            if (!ready) {
-                ok = false;
-                continue;
-            }
-            if (writeUser(saved[i].bytes, address, patches[i].size) != 0) { ok = false; }
-        }
-        if (!restorePages(map, pages, pageCount)) { ok = false; }
-        if (!ok) {
-            stage(Stage::Rollback);
-            error(KERN_FAILURE);
-        }
-        return ok;
-    }
-
     struct GuardBuffer
     {
         UserVideoGuardResolver::Plan* plan{nullptr};
-        GuardBuffer() { plan = IONew(UserVideoGuardResolver::Plan, 1); }
+        GuardBuffer()
+        {
+            plan = IONew(UserVideoGuardResolver::Plan, 1);
+            if (plan) { memset(plan, 0, sizeof(*plan)); }
+        }
         ~GuardBuffer() { if (plan) { IODelete(plan, UserVideoGuardResolver::Plan, 1); } }
     };
 
@@ -256,7 +422,10 @@ namespace
         UserVideoDecodeResolver::Plan* plan{nullptr};
         explicit DynamicBuffer(bool enabled)
         {
-            if (enabled) { plan = IONew(UserVideoDecodeResolver::Plan, 1); }
+            if (enabled) {
+                plan = IONew(UserVideoDecodeResolver::Plan, 1);
+                if (plan) { memset(plan, 0, sizeof(*plan)); }
+            }
         }
         ~DynamicBuffer()
         {
@@ -320,17 +489,9 @@ namespace
         TransactionBuffer transaction;
         if (!transaction.state) { error(KERN_RESOURCE_SHORTAGE); return result; }
         const auto* patches    = devicePatches;
-        UInt32      patchCount = legacyProfile ? legacyProfile->patchCount : static_cast<UInt32>(PatchCount);
-        auto* legacyPatches = transaction.state->legacy;
-        if (legacyProfile) {
-            if (patchCount > PatchCount) { return result; }
-            for (UInt32 i = 0; i < patchCount; ++i) {
-                const auto& patch = legacyProfile->patches[i];
-                legacyPatches[i]  = {patch.offset, patch.original, patch.patched, patch.size};
-            }
-            patches = legacyPatches;
-        }
-        UInt64 base{0};
+        UInt32      patchCount = static_cast<UInt32>(PatchCount);
+        auto*       selectedPatches = transaction.state->selected;
+        UInt64      base{0};
         UInt8  header[104];
         if (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0
             || base >= UserSharedCache::UserLimit - sizeof(header) || (base & (PAGE_SIZE - 1)) != 0
@@ -356,12 +517,7 @@ namespace
             memcpy(&value, header + 88 + i * 4, sizeof(value));
             publish(published.uuid[i], uuidKeys[i], value);
         }
-        if (legacyProfile && !UserLegacyCompat::matches(readUser, base, header + 88, *legacyProfile)) {
-            stage(Stage::CacheMismatch, fairPlayPID);
-            NRed::singleton().setProp32("NRedVCNUserLegacyRejected", 1);
-            return result;
-        }
-        const bool    dynamic = sequoia || (!legacyProfile && memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0);
+        const bool    dynamic = sequoia || memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0;
         DynamicBuffer dynamicBuffer(dynamic);
         auto& input = transaction.state->input;
         input.reader = readUser;
@@ -382,11 +538,11 @@ namespace
         }
 
         if (fairPlayDecode) {
-            if (!selectFairPlayDecode(base, patches, patchCount, legacyPatches, fairPlayMask())) {
+            if (!selectFairPlayDecode(base, patches, patchCount, selectedPatches, fairPlayMask())) {
                 stage(Stage::CodeMismatch, fairPlayPID);
                 return result;
             }
-            patches = legacyPatches;
+            patches = selectedPatches;
             NRed::singleton().setProp32("NRedDRMVideoPatchCount", patchCount);
         }
 
@@ -398,26 +554,84 @@ namespace
         publish(published.guardReads, "NRedVCNUserGuardReads", guard.plan->reads);
         vm_map_t map = getTaskMap(current_task());
         if (!map) { stage(Stage::NoMap, fairPlayPID); return result; }
+        const auto mapKey   = reinterpret_cast<UInt64>(map);
+
+        const auto major = currentKernelVersion().major();
+        const auto mask  = darwinMask(major);
+        const auto deviceID = NRed::singleton().getDeviceID();
+        const auto* decodeManifest = VPF::ManifestData::find(VPF::FeatureId::Vcn2Decode, mask, deviceID);
+        const auto* guardManifest  = VPF::ManifestData::find(VPF::FeatureId::Vcn2SafetyGuard, mask, 0);
+        if (!decodeManifest || !guardManifest) {
+            stage(Stage::CodeMismatch, fairPlayPID);
+            error(KERN_INVALID_ARGUMENT);
+            return result;
+        }
+        const auto cache = dynamic ? input.cache : UserSharedCache::Range{base, UserSharedCache::UserLimit - base};
+        auto&      workspace = *transaction.state;
+        // FairPlay 只选择解码子集，站点顺序不再与 Manifest 一一对应。
+        const bool aligned = !fairPlayDecode;
+        if (!VPF::adaptPatches(workspace.decodePlan, *decodeManifest, base, cache, patches, patchCount,
+                               dynamic ? dynamicBuffer.plan->images : nullptr,
+                               dynamic ? UserVideoDecodeResolver::ImageCount : 0,
+                               dynamic ? dynamicBuffer.plan->reads : 0, VPF::PlanState::AllOriginal, aligned)
+            || !VPF::adaptGuard(workspace.guardPlan, *guardManifest, base, cache, *guard.plan)
+            || !planVideoFeatures(mask, deviceID, fairPlayDecode, workspace.decodePlan.valid(),
+                                  workspace.guardPlan.valid(), workspace.planner))
+        {
+            NRed::singleton().setProp32("NRedVCNVPFPlannerRejected", 1);
+            stage(Stage::CodeMismatch, fairPlayPID);
+            error(KERN_INVALID_ARGUMENT);
+            return result;
+        }
+        publish(published.path, "NRedVCNVPFPath", 1);
+        publish(published.planner, "NRedVCNVPFPlannerEnabled", workspace.planner.enabled);
+
+        auto& installPlan = workspace.installPlan;
+        installPlan.reset(*decodeManifest, base, cache);
+        if (!addPlanImages(installPlan, workspace.decodePlan) || !appendPlanSites(installPlan, workspace.guardPlan)
+            || !appendPlanSites(installPlan, workspace.decodePlan) || installPlan.siteCount() == 0
+            || installPlan.siteCount() > Capacity || !installPlan.seal(VPF::PlanState::AllOriginal))
+        {
+            stage(Stage::CodeMismatch, fairPlayPID);
+            error(KERN_INVALID_ARGUMENT);
+            return result;
+        }
+        const auto installCount = installPlan.siteCount();
+        for (UInt32 i = 0; i < installCount; ++i) {
+            const auto& site = installPlan.site(i);
+            if (site.size == 0 || site.size > MaxPatchSize || site.address < base
+                || site.address >= UserSharedCache::UserLimit)
+            {
+                stage(Stage::CodeMismatch, fairPlayPID);
+                return result;
+            }
+            workspace.install[i] = {site.offset, site.original, site.replacement, site.size};
+        }
+        if (!prepareLedger(mapKey)) {
+            NRed::singleton().setProp32("NRedVCNVPFLedgerRejected", 1);
+            if (ledgerState(mapKey) == VPF::CapabilityState::Quarantined) {
+                NRed::singleton().setProp32("NRedVCNVPFQuarantined", 1);
+            }
+            stage(Stage::Mixed, fairPlayPID);
+            return result;
+        }
+
         SavedBuffer buffer;
         if (!buffer.rows) {
             error(KERN_RESOURCE_SHORTAGE);
             return result;
         }
         auto*  saved = buffer.rows;
-        auto&  pages = transaction.state->pages;
+        auto&  pages = workspace.pages;
         UInt32 pageCount{0}, originals{0}, patched{0};
-        for (UInt32 i = 0; i < patchCount; ++i) {
-            const auto address = base + patches[i].offset;
-            if (patches[i].size == 0 || patches[i].size > MaxPatchSize
-                || patches[i].offset >= UserSharedCache::UserLimit - base
-                || patches[i].size >= UserSharedCache::UserLimit - base - patches[i].offset
-                || readUser(address, saved[i].bytes, patches[i].size) != 0)
-            {
+        for (UInt32 i = 0; i < installCount; ++i) {
+            const auto& site = installPlan.site(i);
+            if (readUser(site.address, saved[i].bytes, site.size) != 0) {
                 stage(Stage::CodeRead, fairPlayPID);
                 return result;
             }
-            if (memcmp(saved[i].bytes, patches[i].original, patches[i].size) == 0) { ++originals; }
-            else if (memcmp(saved[i].bytes, patches[i].patched, patches[i].size) == 0) {
+            if (memcmp(saved[i].bytes, site.original, site.size) == 0) { ++originals; }
+            else if (memcmp(saved[i].bytes, site.replacement, site.size) == 0) {
                 ++patched;
             }
             else {
@@ -425,93 +639,101 @@ namespace
                 error(KERN_INVALID_ARGUMENT);
                 return result;
             }
-            if (!UserPatchMemory::collectPages(pages, pageCount, address, patches[i].size)) {
+            if (!UserPatchMemory::collectPages(pages, pageCount, site.address, site.size)) {
                 stage(Stage::CodeMismatch, fairPlayPID);
                 return result;
             }
         }
-        if (patched == patchCount && guard.plan->installed) {
-            if (!executableGuard(map, guard.plan->page)) { stage(Stage::Region, fairPlayPID); return result; }
-            for (UInt32 i = 0; i < guard.plan->count; ++i) {
-                const auto& entry = guard.plan->patches[i];
-                if (!UserPatchMemory::collectPages(pages, pageCount, base + entry.offset, entry.size)) { return result; }
+        const auto planState = originals == installCount ?
+                                   VPF::PlanState::AllOriginal :
+                                   (patched == installCount ? VPF::PlanState::AllPatched : VPF::PlanState::Mixed);
+        if (!installPlan.seal(planState)) {
+            stage(Stage::CodeMismatch, fairPlayPID);
+            return result;
+        }
+        publish(published.planState, "NRedVCNVPFPlanState", static_cast<UInt32>(planState));
+        if (planState == VPF::PlanState::AllPatched) {
+            if (!guard.plan->installed) {
+                stage(Stage::Mixed, fairPlayPID);
+                return result;
+            }
+            if (!executableGuard(map, guard.plan->page)) {
+                stage(Stage::Region, fairPlayPID);
+                return result;
             }
             for (UInt32 p = 0; p < pageCount; ++p) {
-                if (!executableGuard(map, pages[p].address)) { stage(Stage::Region, fairPlayPID); return result; }
+                if (!executableGuard(map, pages[p].address)) {
+                    stage(Stage::Region, fairPlayPID);
+                    return result;
+                }
             }
             stage(Stage::Already, fairPlayPID);
+            observeLedger(mapKey);
             recordSafety(process);
             if (fairPlayDecode) { NRed::singleton().setProp32("NRedDRMVideoState", 3); }
             return result;
         }
-        if (originals != patchCount || guard.plan->installed) {
+        if (planState != VPF::PlanState::AllOriginal) {
             stage(Stage::Mixed, fairPlayPID);
             return result;
         }
-        auto* combined = transaction.state->combined;
-        if (patchCount + guard.plan->count > Capacity) { return result; }
-        memcpy(combined, patches, patchCount * sizeof(combined[0]));
-        for (UInt32 i = 0; i < guard.plan->count; ++i) {
-            const auto& entry = guard.plan->patches[i];
-            if (readUser(base + entry.offset, saved[patchCount + i].bytes, entry.size) != 0
-                || memcmp(saved[patchCount + i].bytes, entry.original, entry.size) != 0
-                || !UserPatchMemory::collectPages(pages, pageCount, base + entry.offset, entry.size)) { return result; }
-        }
-        for (UInt32 p = 0; p < pageCount; ++p) {
-            if (!leafProtection(map, pages[p].address, pages[p].protection)
-                || pages[p].protection != (VM_PROT_READ | VM_PROT_EXECUTE))
+
+        GuardPage   owner{map};
+        ExecutorOps ops{map, queryRegion, error, readUser, writeUser};
+        using Executor = VPF::SharedRegionTransaction<ExecutorOps, UserVideoDecodeData::Patch, Page,
+                                                      UserVideoDecodeData::MaxPatchSize>;
+        Executor executor(ops, base, workspace.install, installCount,
+                          reinterpret_cast<UInt8 (*)[UserVideoDecodeData::MaxPatchSize]>(saved), pages, pageCount,
+                          guard.plan->count);
+        markLedger(mapKey, VPF::CapabilityState::Installing);
+        const auto committed = executor.commit(
+            [&]
             {
+                if (!createGuard(owner, *guard.plan)) {
+                    NRed::singleton().setProp32("NRedVCNUserGuardAllocationRejected", 1);
+                    return false;
+                }
+                return true;
+            });
+        switch (committed.status) {
+            case VPF::TransactionStatus::CheckFailed:
                 stage(Stage::Region, fairPlayPID);
                 return result;
-            }
-        }
-        GuardPage owner{map};
-        if (!createGuard(owner, *guard.plan)) {
-            NRed::singleton().setProp32("NRedVCNUserGuardAllocationRejected", 1);
-            return result;
-        }
-        // 先安装守卫，再启用设备适配；回滚按相反顺序撤销，避免适配先于安全检查生效。
-        memmove(combined + guard.plan->count, combined, patchCount * sizeof(combined[0]));
-        memmove(saved + guard.plan->count, saved, patchCount * sizeof(saved[0]));
-        for (UInt32 i = 0; i < guard.plan->count; ++i) {
-            combined[i] = guard.plan->patches[i];
-            memcpy(saved[i].bytes, guard.plan->original[i], combined[i].size);
-        }
-        patchCount += guard.plan->count;
-        patches = combined;
-        // 所有匹配和保护检查完成后才进入写入；各页均先 COW、去掉 EXECUTE。
-        for (UInt32 p = 0; p < pageCount; ++p) {
-            const auto protection =
-                vm_protect(map, pages[p].address, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-            if (protection != KERN_SUCCESS) {
-                stage(Stage::Protection, fairPlayPID);
-                error(protection);
-                if (!restorePages(map, pages, pageCount)) { stage(Stage::Rollback, fairPlayPID); }
+            case VPF::TransactionStatus::BeforeWriteFailed:
                 return result;
-            }
-            pages[p].writable = true;
-        }
-        for (UInt32 i = 0; i < patchCount; ++i) {
-            if (writeUser(patches[i].patched, base + patches[i].offset, patches[i].size) != 0) {
+            case VPF::TransactionStatus::ProtectionFailed:
+                stage(Stage::Protection, fairPlayPID);
+                markFailure(mapKey, committed.restoreOk);
+                if (!committed.restoreOk) { stage(Stage::Rollback, fairPlayPID); }
+                return result;
+            case VPF::TransactionStatus::WriteFailed:
+            case VPF::TransactionStatus::ReadbackFailed:
                 stage(Stage::Write, fairPlayPID);
                 error(KERN_FAILURE);
-                if (!rollback(map, pages, pageCount, base, patches, saved, i + 1, guard.plan->count)) {
+                markFailure(mapKey, committed.rollbackOk);
+                if (!committed.rollbackOk) {
+                    stage(Stage::Rollback, fairPlayPID);
+                    error(KERN_FAILURE);
                     owner.retained = true;
                     NRed::singleton().setProp32("NRedVCNGuardRollbackRetainedPage", 1);
                 }
                 return result;
-            }
-        }
-        if (!restorePages(map, pages, pageCount)) {
-            stage(Stage::Restore, fairPlayPID);
-            if (!rollback(map, pages, pageCount, base, patches, saved, patchCount, guard.plan->count)) {
-                owner.retained = true;
-                NRed::singleton().setProp32("NRedVCNGuardRollbackRetainedPage", 1);
-            }
-            return result;
+            case VPF::TransactionStatus::RestoreFailed:
+                stage(Stage::Restore, fairPlayPID);
+                markFailure(mapKey, committed.rollbackOk);
+                if (!committed.rollbackOk) {
+                    stage(Stage::Rollback, fairPlayPID);
+                    error(KERN_FAILURE);
+                    owner.retained = true;
+                    NRed::singleton().setProp32("NRedVCNGuardRollbackRetainedPage", 1);
+                }
+                return result;
+            case VPF::TransactionStatus::Installed:
+                break;
         }
         owner.retained = true;
         recordSafety(process);
+        installedLedger(mapKey);
         stage(Stage::Applied, fairPlayPID);
         if (fairPlayDecode) { NRed::singleton().setProp32("NRedDRMVideoState", 2); }
         if (dynamic) { NRed::singleton().setProp32("NRedVCNUserDynamicApplied", 1); }
@@ -549,6 +771,26 @@ namespace
                 break;
             }
         }
+    }
+
+    // 最后一个 map 引用释放后、对象地址可复用前清理；不依赖 proc 指针或退出原因。
+    void wrappedMapDestroy(vm_map_t map)
+    {
+        removeLedgerMap(map);
+        originalMapDestroy(map);
+    }
+
+    mach_vm_address_t mapDestroyTarget(const mach_vm_address_t address)
+    {
+        if (!address) { return 0; }
+        // 部分内核将公开入口编成尾跳 thunk；deallocate 可直接调用实际销毁函数。
+        static constexpr UInt8 thunk[] = {0x55, 0x48, 0x89, 0xE5, 0x5D, 0xE9};
+        const auto*            entry   = reinterpret_cast<const UInt8*>(address);
+        if (memcmp(entry, thunk, sizeof(thunk)) != 0) { return address; }
+        int displacement;
+        memcpy(&displacement, entry + sizeof(thunk), sizeof(displacement));
+        return address + sizeof(thunk) + sizeof(displacement)
+               + static_cast<UInt64>(static_cast<long long>(displacement));
     }
 
     // Only the first eight calls are traced, even in RELEASE; no per-call IORegistry writes.
@@ -589,9 +831,11 @@ void UserVideoDecode::init(KernelPatcher& patcher)
 {
     NRed::singleton().setProp32("NRedVCNSharedRegionStackRevision", 1);
     fairPlayDriverOnly = false;
-    devicePatches = nullptr;
-    legacyProfile = nullptr;
+    devicePatches      = nullptr;
     if (!checkKernelArgument("-NRedVideoFix")) { return; }
+    NRed::singleton().setProp32("NRedVCNUserEnabled", 0);
+    NRed::singleton().setProp32("NRedDRMVideoEnabled", 0);
+    NRed::singleton().setProp32("NRedVCNVPFLifecycle", 0);
     const auto  deviceID   = NRed::singleton().getDeviceID();
     const auto* capability = VCNCapabilities::findDevice(deviceID);
     const auto  rejected   = VCNCapabilities::rejection(deviceID, currentKernelVersion());
@@ -610,10 +854,10 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         NRed::singleton().setProp32("NRedVCNUserRejected", 6);
         return;
     }
-    sequoia       = currentKernelVersion().major() == 24;
-    devicePatches = sequoia ? UserSequoiaVideoData::findDevice(deviceID) : UserVideoDecodeData::findDevice(deviceID);
-    legacyProfile = sequoia ? nullptr : UserLegacyData::video(currentKernelVersion().major(), deviceID);
-    if (!devicePatches) {
+    sequoia = currentKernelVersion().major() == 24;
+    const auto* candidates =
+        sequoia ? UserSequoiaVideoData::findDevice(deviceID) : UserVideoDecodeData::findDevice(deviceID);
+    if (!candidates) {
         NRed::singleton().setProp32("NRedVCNUserRejected", 3);
         return;
     }
@@ -632,6 +876,23 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         NRed::singleton().setProp32("NRedVCNUserRejected", 1);
         return;
     }
+    const auto destroyEntry = patcher.solveSymbol(KernelPatcher::KernelID, "_vm_map_destroy");
+    patcher.clearError();
+    const auto  destroy       = mapDestroyTarget(destroyEntry);
+    const char* destroySymbol = "_vm_map_destroy";
+    if (destroy && destroy != destroyEntry) {
+        const auto options = patcher.solveSymbol(KernelPatcher::KernelID, "_vm_map_destroy_options");
+        patcher.clearError();
+        if (options != destroy) {
+            NRed::singleton().setProp32("NRedVCNUserRejected", 8);
+            return;
+        }
+        destroySymbol = "_vm_map_destroy_options";
+    }
+    if (!destroy) {
+        NRed::singleton().setProp32("NRedVCNUserRejected", 8);
+        return;
+    }
     const bool allocatedLock = guardLock == nullptr;
     if (allocatedLock) { guardLock = IOLockAlloc(); }
     if (!guardLock) {
@@ -639,14 +900,26 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         NRed::singleton().setProp32("NRedVCNUserRejected", 7);
         return;
     }
+    KernelPatcher::RouteRequest lifecycleRequest{destroySymbol, wrappedMapDestroy, originalMapDestroy};
+    if (!patcher.routeMultipleLong(KernelPatcher::KernelID, &lifecycleRequest, 1)) {
+        patcher.clearError();
+        if (allocatedLock) {
+            IOLockFree(guardLock);
+            guardLock = nullptr;
+        }
+        NRed::singleton().setProp32("NRedVCNUserRejected", 8);
+        return;
+    }
+    NRed::singleton().setProp32("NRedVCNVPFLifecycle", 1);
+    NRed::singleton().setProp32("NRedVCNVPFLifecycleRevision", 2);
     KernelPatcher::RouteRequest request{"_shared_region_check_np", wrappedSharedRegionCheck, originalCheck};
     if (!patcher.routeMultipleLong(KernelPatcher::KernelID, &request, 1)) {
         patcher.clearError();
         devicePatches = nullptr;
-        if (allocatedLock) { IOLockFree(guardLock); guardLock = nullptr; }
         NRed::singleton().setProp32("NRedVCNUserRejected", 2);
         return;
     }
+    devicePatches = candidates;
     NRed::singleton().setProp32("NRedVCNUserEnabled", 1);
     NRed::singleton().setProp32("NRedVCNUserMapGateRevision", 1);
     NRed::singleton().setProp32("NRedVCNRegionQueryVersion", 1);

@@ -33,6 +33,7 @@ def main():
 #include <vector>
 using UInt32=uint32_t;using proc_t=void*;using task_t=void*;
 static task_t current_task(){return reinterpret_cast<void*>(1);}
+static void* current_thread(){static thread_local char identity;return &identity;}
 static void* mapForTask(task_t task){return task;}
 static auto getTaskMap=mapForTask;
 struct SharedRegionCheckArgs {uint64_t startAddress;};

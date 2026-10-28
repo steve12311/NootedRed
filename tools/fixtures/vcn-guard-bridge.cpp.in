@@ -2,11 +2,18 @@
 #include <condition_variable>
 #include <vector>
 #include <algorithm>
+#include <cstdlib>
 #include <UserVideoGuardResolver.hpp>
 static unsigned failNewAt=0,newCalls=0;
 template<class T> static T* allocateObjects(size_t count){
- return ++newCalls==failNewAt?nullptr:new T[count];
+ if(++newCalls==failNewAt)return nullptr;
+ // IONew 不调用构造函数；非零填充使测试不依赖分配器碰巧返回零页。
+ auto* value=static_cast<T*>(std::malloc(sizeof(T)*count));
+ if(value)memset(value,0x01,sizeof(T)*count);
+ return value;
 }
+#undef IODelete
+#define IODelete(P,T,N) std::free(P)
 #undef IONew
 #define IONew(T,N) allocateObjects<T>(N)
 using vm_address_t=uint64_t;
@@ -41,6 +48,7 @@ static kern_return_t vm_allocate(vm_map_t,uint64_t* a,unsigned size,int){
 }
 static kern_return_t vm_deallocate(vm_map_t,uint64_t a,unsigned){deallocations++;assert(blocks.erase(a)==1);protections.erase(a);maxima.erase(a);return 0;}
 static std::set<uint64_t> touchedPages;
+static std::vector<uint64_t> writeOrder;
 static kern_return_t vm_protect(vm_map_t,uint64_t a,unsigned,int maximum,int flags){
  protects++;if(protects==failedProtect||failedProtectCalls.contains(protects))return 42;
  assert(protections.contains(a));touchedPages.insert(a);int value=flags&7;
@@ -63,6 +71,7 @@ static kern_return_t query(vm_map_t,uint64_t* a,uint64_t* size,unsigned* depth,i
 }
 static int copyout(const void* p,uint64_t a,size_t n){
  if(a==0x40000000)payloadWrites++;
+ else writeOrder.push_back(a);
  if(failWrites.contains(writes+1)){writes++;put(a,p,std::min(n,size_t(2)));return 1;}
  return writer(p,a,n);
 }
@@ -77,9 +86,9 @@ static void setup(unsigned id=0x1638){
  }
  cache(D::ResolverImages,merged,true,G::SectionTargets,std::size(G::SectionTargets));
  // 模拟所有函数跨页和数据节独立迁移；代码匹配仍使用各自来源版本的完整证据。
- NRed::device=id;Version::majorValue=major;devicePatches=D::findDevice(id);sequoia=major==24;legacyProfile=nullptr;
+ NRed::device=id;Version::majorValue=major;devicePatches=D::findDevice(id);sequoia=major==24;
  fairPlayDriverOnly=true;maxima.clear();failWrites.clear();failAllocation=noMap=false;originalResult=regionMode=0;
- allocations=deallocations=payloadWrites=0;touchedPages.clear();published={};seenStages=appliedCount=errorCount=0;
+ allocations=deallocations=payloadWrites=0;touchedPages.clear();writeOrder.clear();published={};seenStages=appliedCount=errorCount=0;
  failNewAt=newCalls=0;
  clientEntitlement=nullptr;processName="Other";entitlementQueries=0;trueEntitlement.releases=falseEntitlement.releases=0;
  originalCheck=reinterpret_cast<uint64_t>(original);getTaskMap=map;queryRegion=query;readUser=reader;writeUser=copyout;
@@ -98,7 +107,11 @@ static void noApplied(){assert(!properties.contains("NRedVCNUserApplied")&&!prop
 static unsigned cases;
 static void accepted(bool fair){
  call();assert(properties.at("NRedVCNEncodeGuardRevision")==1&&properties.at("NRedVCNDecodeGuardRevision")==1);
+ assert(properties.at("NRedVCNVPFPath")==1&&properties.contains("NRedVCNVPFPlannerEnabled"));
+ assert(properties.contains("NRedVCNVPFPlanState")&&properties.contains("NRedVCNVPFLedgerState"));
  assert(writes==(fair?18:D::PatchCount)+safetyPlan.count+1);assert(allocations==1&&deallocations==0&&payloadWrites==1);rx();
+ assert(writeOrder.size()==(fair?18U:unsigned(D::PatchCount))+safetyPlan.count);
+ for(unsigned i=0;i<safetyPlan.count;i++)assert(writeOrder[i]==base+safetyPlan.patches[i].offset);
  for(auto[a,p]:protections)assert(maxima.at(a)==5);
  for(unsigned i=0;i<D::PatchCount;i++){
   const auto& p=nativePlan.patches[i];uint8_t bytes[D::MaxPatchSize];assert(reader(base+p.offset,bytes,p.size)==0);
@@ -111,13 +124,23 @@ static void accepted(bool fair){
 }
 int main(int argc,char** argv){
  const unsigned group=argc>2?std::stoul(argv[2]):0;
+ {
+  TransactionBuffer transaction;assert(transaction.state);
+  const auto& input=transaction.state->input;
+  assert(input.reads==0&&input.bytes==0&&input.candidates==0&&!input.failed&&!input.tableRead);
+  assert(input.cache.address==0&&input.cache.size==0&&!input.contextReader&&!input.readerContext);
+  for(const auto& page:transaction.state->pages)assert(!page.writable&&!page.maximumPending);
+  GuardBuffer guard;assert(guard.plan&&guard.plan->count==0&&guard.plan->page==0&&!guard.plan->installed);
+  DynamicBuffer dynamic(true);assert(dynamic.plan&&dynamic.plan->reads==0);
+  for(const auto& image:dynamic.plan->images)assert(image.address==0&&image.segmentCount==0);
+ }
  for(unsigned id=0;id<=0xffff;id++){
   bool supported=id==0x15e7||id==0x1636||id==0x1638||id==0x164c;
   assert((D::findDevice(id)!=nullptr)==supported);assert((VCNCapabilities::rejection(id,MACOS_26)==0)==supported);
  }
  for(unsigned os:{22U,23U,24U,25U,26U})for(unsigned minor:{0U,6U,7U}){
   Version::majorValue=os;Version::minorValue=minor;properties.clear();KernelPatcher p;UserVideoDecode::init(p);
-  assert(p.routes==int(os==24||os==25));if(os==23)assert(properties.at("NRedVCNUserSafetyProfileMissing")==1);cases++;
+  assert(p.routes==2*int(os==24||os==25));if(os==24||os==25)assert(properties.at("NRedVCNVPFLifecycle")==1);if(os==23)assert(properties.at("NRedVCNUserSafetyProfileMissing")==1);cases++;
  }
  for(unsigned id:{0x15d8U,0x15ddU,0x6863U,0U,0xffff1638U}){
   Version::majorValue=major;NRed::device=id;KernelPatcher p;UserVideoDecode::init(p);assert(p.solves==0&&p.routes==0);cases++;
@@ -208,9 +231,17 @@ int main(int argc,char** argv){
   if(kind==4)put(base+safetyPlan.patches[0].offset,safetyPlan.original[0],safetyPlan.patches[0].size);
   auto oldWrites=writes,oldProtects=protects;call();assert(writes==oldWrites&&protects==oldProtects);noApplied();cases++;
  }
+ setup();call();assert(properties.contains("NRedVCNUserApplied"));
+ auto ledgerMap=reinterpret_cast<uint64_t>(map(nullptr));
+ assert(videoLedger.state(ledgerMap,VPF::FeatureId::Vcn2Decode)==VPF::CapabilityState::Installed);
+ wrappedMapDestroy(map(nullptr));
+ assert(videoLedger.state(ledgerMap,VPF::FeatureId::Vcn2Decode)==VPF::CapabilityState::Disabled);cases++;
  setup();const unsigned entryCount=D::PatchCount+safetyPlan.count;
  failWrites={entryCount+1,entryCount+2};call();assert(properties.at("NRedVCNGuardRollbackRetainedPage")==1);
  assert(deallocations==0&&blocks.contains(0x40000000));noApplied();cases++;
+ auto quarantineBlocks=blocks;auto quarantineWrites=writes;auto quarantineProtects=protects;
+ call();assert(blocks==quarantineBlocks&&writes==quarantineWrites&&protects==quarantineProtects);
+ assert(properties.at("NRedVCNVPFQuarantined")==1&&properties.at("NRedVCNVPFLedgerRejected")==1);cases++;
  UserSharedCache::Input retained{reader,{}};UserVideoGuardResolver::Plan intact;
  assert(UserVideoGuardResolver::resolve(retained,base,major,intact)&&intact.installed);rx();cases++;
  }

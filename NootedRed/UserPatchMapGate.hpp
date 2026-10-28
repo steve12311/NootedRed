@@ -3,11 +3,13 @@
 
 namespace UserPatchMapGate
 {
+
     template<unsigned Capacity>
     struct Registry
     {
         static_assert(Capacity > 0);
-        void* keys[Capacity]{};
+        void*    keys[Capacity]{};
+        void*    owners[Capacity]{};
         unsigned active{0}, peak{0};
     };
 
@@ -20,19 +22,33 @@ namespace UserPatchMapGate
         unsigned            slot{Capacity};
 
     public:
-        Lease(Registry<Capacity>& registry, IOLock* lock, void* key) : registry(registry), lock(lock), key(key)
+        Lease(Registry<Capacity>& registry, IOLock* lock, void* key, void* owner = current_thread()) :
+            registry(registry),
+            lock(lock),
+            key(key)
         {
-            if (!lock || !key) { return; }
+            if (!lock || !key || !owner) { return; }
             IOLockLock(lock);
             for (;;) {
                 unsigned free = Capacity;
-                bool busy = false;
+                bool     busy = false;
+                // 同线程的嵌套事务不能等待外层释放，也不能跨 map 形成循环等待。
                 for (unsigned i = 0; i < Capacity; ++i) {
-                    if (registry.keys[i] == key) { busy = true; break; }
+                    if (registry.owners[i] == owner) {
+                        IOLockUnlock(lock);
+                        return;
+                    }
+                }
+                for (unsigned i = 0; i < Capacity; ++i) {
+                    if (registry.keys[i] == key) {
+                        busy = true;
+                        break;
+                    }
                     if (!registry.keys[i] && free == Capacity) { free = i; }
                 }
                 if (!busy && free != Capacity) {
-                    registry.keys[free] = key;
+                    registry.keys[free]   = key;
+                    registry.owners[free] = owner;
                     // peak 供锁外无锁读取诊断，写入仍在锁内。
                     if (++registry.active > registry.peak) {
                         __atomic_store_n(&registry.peak, registry.active, __ATOMIC_RELAXED);
@@ -49,7 +65,8 @@ namespace UserPatchMapGate
         {
             if (slot == Capacity) { return; }
             IOLockLock(lock);
-            registry.keys[slot] = nullptr;
+            registry.keys[slot]   = nullptr;
+            registry.owners[slot] = nullptr;
             --registry.active;
             IOLockWakeup(lock, key, false);
             IOLockWakeup(lock, &registry, false);
@@ -57,7 +74,8 @@ namespace UserPatchMapGate
         }
 
         explicit operator bool() const { return slot != Capacity; }
-        Lease(const Lease&) = delete;
+        Lease(const Lease&)            = delete;
         Lease& operator=(const Lease&) = delete;
     };
-}
+
+}    // namespace UserPatchMapGate

@@ -1,5 +1,6 @@
 """执行真实共享缓存钩子，验证独立进程不被另一进程的扫描阻塞。"""
 import argparse
+import re
 from pathlib import Path
 import subprocess
 
@@ -16,7 +17,7 @@ def main():
     text = subprocess.check_output(['git', 'show', args.baseline_ref + ':NootedRed/UserVideoDecode.cpp'],
                                    cwd=ROOT, text=True, timeout=10) if args.baseline_ref else (
                                        ROOT / 'NootedRed/UserVideoDecode.cpp').read_text()
-    start = text.index('    UInt32 hookTraceCount{0};')
+    start = re.search(r'^\s*UInt32\s+hookTraceCount\{0\};', text, re.MULTILINE).start()
     wrapper = text[start:text.index('}    // namespace', start)]
     helper = ROOT / 'NootedRed/UserPatchMapGate.hpp'
     use_helper = helper.exists() and not args.baseline_ref
@@ -35,9 +36,11 @@ def main():
 using UInt32=uint32_t;using task_t=void*;using proc_t=void*;using IOLock=std::mutex;
 constexpr int THREAD_UNINT=0;
 static std::map<void*,std::condition_variable_any> gateEvents;
+static void* current_thread(){static thread_local char identity;return &identity;}
+static thread_local bool rejectUnexpectedWait=false;
 static void IOLockLock(IOLock* p){p->lock();}
 static void IOLockUnlock(IOLock* p){p->unlock();}
-static int IOLockSleep(IOLock* p,void* event,int){auto& changed=gateEvents[event];std::unique_lock held(*p,std::adopt_lock);changed.wait(held);held.release();return 0;}
+static int IOLockSleep(IOLock* p,void* event,int){assert(!rejectUnexpectedWait&&"reentrant lease must not sleep");auto& changed=gateEvents[event];std::unique_lock held(*p,std::adopt_lock);changed.wait(held);held.release();return 0;}
 static void IOLockWakeup(IOLock*,void* event,bool){auto found=gateEvents.find(event);if(found!=gateEvents.end())found->second.notify_all();}
 HELPER
 static IOLock lock;static IOLock* guardLock=&lock;
@@ -86,8 +89,16 @@ int main(){
     stress = r'''
  UserPatchMapGate::Registry<4> registry;
  using Lease=UserPatchMapGate::Lease<4>;
+ {
+  UserPatchMapGate::Registry<4> nested;
+  Lease outer(nested,&lock,reinterpret_cast<void*>(1));assert(outer);
+  rejectUnexpectedWait=true;
+  {Lease same(nested,&lock,reinterpret_cast<void*>(1));assert(!same);}
+  {Lease other(nested,&lock,reinterpret_cast<void*>(2));assert(!other);}
+  rejectUnexpectedWait=false;assert(nested.active==1);
+ }
  std::vector<std::unique_ptr<Lease>> leases;
- for(unsigned i=0;i<4;i++)leases.emplace_back(new Lease(registry,&lock,reinterpret_cast<void*>(uintptr_t(i+10))));
+ for(unsigned i=0;i<4;i++)leases.emplace_back(new Lease(registry,&lock,reinterpret_cast<void*>(uintptr_t(i+10)),reinterpret_cast<void*>(uintptr_t(i+10))));
  std::atomic<bool> waiting{false},entered{false};
  std::thread fifth([&]{waiting=true;Lease lease(registry,&lock,reinterpret_cast<void*>(20));assert(lease);entered=true;});
  while(!waiting)std::this_thread::yield();
@@ -100,7 +111,18 @@ int main(){
  }});
  for(auto& t:threads)t.join();
  for(auto key:registry.keys)assert(key==nullptr);
+ for(auto owner:registry.owners)assert(owner==nullptr);
  assert(registry.active==0&&registry.peak==4);
+ UserPatchMapGate::Registry<64> wide;
+ using WideLease=UserPatchMapGate::Lease<64>;
+ std::vector<std::unique_ptr<WideLease>> wideHeld;
+ for(unsigned i=0;i<64;i++)wideHeld.emplace_back(new WideLease(wide,&lock,reinterpret_cast<void*>(uintptr_t(1000+i)),reinterpret_cast<void*>(uintptr_t(1000+i))));
+ std::atomic<bool> wideWaiting{false},wideEntered{false};
+ std::thread wide65([&]{wideWaiting=true;WideLease lease(wide,&lock,reinterpret_cast<void*>(uintptr_t(2000)));assert(lease);wideEntered=true;});
+ while(!wideWaiting)std::this_thread::yield();
+ {std::lock_guard held(lock);assert(!wideEntered);}
+ wideHeld[0].reset();wide65.join();assert(wideEntered);wideHeld.clear();
+ assert(wide.active==0&&wide.peak==64);
 '''
     source = source.replace('WRAPPER', wrapper).replace('EXPECT_STALL', str(int(args.expect_global_stall)))
     source = source.replace('HELPER', '#include <UserPatchMapGate.hpp>' if use_helper else '')

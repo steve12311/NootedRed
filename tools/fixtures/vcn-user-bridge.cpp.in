@@ -11,6 +11,11 @@
 #include "UserVideoDecodeData.hpp"
 #include "UserVideoDecodeResolver.hpp"
 #include <UserLegacyData.hpp>
+#include <VPF/CapabilityState.hpp>
+#include <VPF/DependencyPlanner.hpp>
+#include <VPF/PatchManifestData.hpp>
+#include <VPF/ResolverAdapters.hpp>
+#include <VPF/TransactionExecutor.hpp>
 #include "VCNCapabilities.hpp"
 using user_addr_t=uint64_t;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
 using vm_map_t=void*;using task_t=void*;using proc_t=void*;using natural_t=unsigned;
@@ -33,11 +38,14 @@ namespace VCN { static bool active=true; bool allocated(){return active;} }
 constexpr int KERN_RESOURCE_SHORTAGE=3;
 struct KernelPatcher{
  static constexpr int KernelID=0;int solves=0,routes=0;bool missing=false,routeOK=true;
- struct RouteRequest{template<typename T>RouteRequest(const char*,T,uint64_t&) {}};
- uint64_t solveSymbol(int,const char*){solves++;return missing?0:1;}void clearError(){}
- bool routeMultipleLong(int,RouteRequest*,int count){assert(count==1);routes++;return routeOK;}
+ static inline UInt8 destroyCode[16]{};
+ static void destroy(vm_map_t){}
+ struct RouteRequest{const char* symbol;uint64_t from=0,*org;template<typename T,typename O>RouteRequest(const char* s,T,O& o):symbol(s),org(reinterpret_cast<uint64_t*>(&o)) {}};
+ uint64_t solveSymbol(int,const char* s){solves++;return missing?0:(strcmp(s,"_vm_map_destroy")==0?reinterpret_cast<uint64_t>(destroyCode):1);}void clearError(){}
+ bool routeMultipleLong(int,RouteRequest* request,int count){assert(count==1);routes++;if(routeOK&&strcmp(request->symbol,"_vm_map_destroy")==0)*request->org=reinterpret_cast<uint64_t>(destroy);return routeOK;}
 };namespace UserVideoDecode{void init(KernelPatcher&);}
 static task_t current_task(){return reinterpret_cast<void*>(1);}
+static void* current_thread(){static thread_local char identity;return &identity;}
 #include <UserPatchPolicy.hpp>
 static bool isWindowServer=false;
 static const char* processName="Other";
@@ -97,7 +105,7 @@ static void call(proc_t process=nullptr){SharedRegionCheckArgs args{0x1000};int 
 static void bytes(bool patched){for(size_t i=0;i<N;i++){auto& p=active()[i];assert(memcmp(code[i].data(),patched?p.patched:p.original,p.size)==0);}}
 static void rx(){for(auto [a,p]:protection){assert(p==5);assert(maxProtection.at(a)==5);}}
 int main(){
- for(bool enabled:{false,true}){flag=enabled;KernelPatcher p;UserVideoDecode::init(p);assert(p.routes==int(enabled));}
+ for(bool enabled:{false,true}){flag=enabled;KernelPatcher p;UserVideoDecode::init(p);assert(p.routes==2*int(enabled));}
  flag=true;
  for(unsigned id=0;id<=0xffff;id++){
   const bool accepted=id==0x15E7||id==0x1636||id==0x1638||id==0x164C;
@@ -112,7 +120,7 @@ int main(){
  NRed::device=0x1638;
  for(unsigned major:{22U,23U,24U,25U,26U})for(unsigned minor:{0U,6U,7U}){
   Version::majorValue=major;Version::minorValue=minor;KernelPatcher checked;UserVideoDecode::init(checked);
-  assert(checked.routes==int(major>=23 && major<=25));
+  assert(checked.routes==2*int(major>=23 && major<=25));
   if(major>=23&&major<=25){
    assert(fairPlayDriverOnly&&properties.at("NRedDRMVideoEnabled")==1&&properties.at("NRedDRMVideoRevision")==4);
    assert(properties.at("NRedDRMVideoMask")==unsigned(major==25?0x7F87FE:(major==24?0x7FE1FE:0x1FFF)));
@@ -120,7 +128,7 @@ int main(){
  }
  Version::majorValue=25;Version::minorValue=6;
  for(unsigned host:{0x15E7U,0x1636U,0x1638U,0x164CU}){
-  NRed::device=host;KernelPatcher enabled;UserVideoDecode::init(enabled);assert(enabled.routes==1);
+  NRed::device=host;KernelPatcher enabled;UserVideoDecode::init(enabled);assert(enabled.routes==2);
   assert(devicePatches==UserVideoDecodeData::findDevice(host));
   assert(properties.at("NRedVCNGeneration")==0x0202 && properties.at("NRedVCNDeviceID")==host);
  reset();call();bytes(true);rx();assert(writeCalls==N&&properties.at("NRedVCNUserApplied")==1);

@@ -41,6 +41,7 @@ def main():
 #include <UserSubmitGuardData.hpp>
 #include <UserSurfaceSyncResolver.hpp>
 #include <UserLegacyData.hpp>
+#include <VPF/TransactionExecutor.hpp>
 using user_addr_t=uint64_t;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
 using vm_map_t=void*;using task_t=void*;using proc_t=void*;using natural_t=unsigned;
 using mach_msg_type_number_t=unsigned;using vm_prot_t=int;using kern_return_t=int;
@@ -116,7 +117,8 @@ static int reader(uint64_t address,void* p,size_t size){
  if(address==0x1000){memcpy(p,&base,8);return 0;}
  if(address==base){memset(p,0,size);memcpy(p,UserSurfaceSyncData::CacheMagic,16);memcpy(static_cast<uint8_t*>(p)+88,UserSurfaceSyncData::CacheUUID,16);
   if(invalidCache)static_cast<uint8_t*>(p)[88]^=1;return 0;}
- for(size_t i=0;i<MaxN;i++){auto record=fixture(i);if(address==base+record.offset && size==record.size){memcpy(p,code[i].data(),size);return 0;}}
+ for(size_t i=0;i<MaxN;i++){auto record=fixture(i);const auto start=base+record.offset;
+  if(address>=start && address-start<record.size && size<=record.size-(address-start)){memcpy(p,code[i].data()+(address-start),size);return 0;}}
  for(auto& entry:UserSurfaceSyncData::WithdrawnTransferGuards){
   if(address==base+entry.offset){assert(size==entry.size);memcpy(p,entry.original,size);if(withdrawnCode)static_cast<uint8_t*>(p)[0]^=1;return 0;}}
  return 1;

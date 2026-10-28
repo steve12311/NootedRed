@@ -26,6 +26,11 @@ COMMON = r'''
 #include <UserSubmitGuardData.hpp>
 #include <UserLegacyData.hpp>
 #include <VCNCapabilities.hpp>
+#include <VPF/CapabilityState.hpp>
+#include <VPF/DependencyPlanner.hpp>
+#include <VPF/PatchManifestData.hpp>
+#include <VPF/ResolverAdapters.hpp>
+#include <VPF/TransactionExecutor.hpp>
 using user_addr_t=uint64_t;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
 using vm_map_t=void*;using task_t=void*;using proc_t=void*;using natural_t=unsigned;
 using mach_msg_type_number_t=unsigned;using vm_prot_t=int;using kern_return_t=int;using vm_address_t=uint64_t;
@@ -44,6 +49,7 @@ static void IOLockUnlock(IOLock* p){assert(p->locked);p->locked=false;}
 constexpr int THREAD_UNINT=0;
 static int IOLockSleep(IOLock*,void*,int){assert(false);return 0;}
 static void IOLockWakeup(IOLock*,void*,bool){}
+static void* current_thread(){static thread_local char identity;return &identity;}
 #include <UserPatchMapGate.hpp>
 namespace Buffer {template<class T>T* create(size_t n){return new T[n];}template<class T>void deleter(T* p){delete[] p;}}
 template<typename T,size_t N>constexpr size_t arrsize(const T(&)[N]){return N;}
@@ -60,7 +66,7 @@ namespace VCN {static bool allocated(){return true;}}
 namespace UserSurfaceSync {void init(struct KernelPatcher&);}
 struct KernelPatcher{
  static constexpr int KernelID=0;unsigned routes=0;
- struct RouteRequest{template<typename T>RouteRequest(const char*,T,uint64_t&) {}};
+ struct RouteRequest{template<typename T,typename O>RouteRequest(const char*,T,O&) {}};
  uint64_t solveSymbol(int,const char*){return 1;}void clearError(){}bool routeMultipleLong(int,RouteRequest*,int){routes++;return true;}
 };
 static task_t current_task(){return reinterpret_cast<void*>(1);}

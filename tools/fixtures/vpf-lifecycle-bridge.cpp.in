@@ -1,0 +1,195 @@
+// 只执行生产 Ledger、生命周期回调和 init，不解析缓存或访问 GPU。
+#include <array>
+#include <cassert>
+#include <cstdio>
+#include <cstring>
+#include <map>
+#include <mutex>
+#include <string>
+#include <VPF/CapabilityState.hpp>
+
+using vm_map_t = void*;
+using task_t = void*;
+using proc_t = void*;
+using mach_vm_address_t = UInt64;
+using IOLock = std::mutex;
+static unsigned lockAllocations = 0, lockFrees = 0;
+static IOLock* IOLockAlloc() { ++lockAllocations; return new IOLock; }
+static void IOLockFree(IOLock* value) { ++lockFrees; delete value; }
+static void IOLockLock(IOLock* value) { value->lock(); }
+static void IOLockUnlock(IOLock* value) { value->unlock(); }
+static IOLock* guardLock = nullptr;
+static VPF::CapabilityLedger videoLedger;
+static struct { UInt64 ledgerState; } published{};
+struct NRed
+{
+    std::map<std::string, UInt32> properties;
+    static NRed& singleton() { static NRed value; return value; }
+    void setProp32(const char* key, UInt32 value) { properties[key] = value; }
+    UInt32 getDeviceID() { return 0x1638; }
+};
+static void publish(UInt64&, const char* key, UInt32 value) { NRed::singleton().setProp32(key, value); }
+LEDGER
+
+using MapDestroy = void (*)(vm_map_t);
+static MapDestroy originalMapDestroy = nullptr;
+MAP_DESTROY
+MAP_TARGET
+
+static bool fairPlayDriverOnly = false, sequoia = false;
+static const int* devicePatches = nullptr;
+namespace UserVideoDecodeData { static const int* findDevice(UInt32) { static int value; return &value; } }
+namespace UserSequoiaVideoData { static const int* findDevice(UInt32 id) { return UserVideoDecodeData::findDevice(id); } }
+struct Version { UInt32 major() const { return 25; } };
+static Version currentKernelVersion() { return {}; }
+namespace VCNCapabilities
+{
+    struct Capability { unsigned generation = 0x0202; };
+    static const Capability* findDevice(UInt32) { static Capability value; return &value; }
+    static unsigned rejection(UInt32, Version) { return 0; }
+}
+static bool checkKernelArgument(const char*) { return true; }
+static UInt32 fairPlayMask() { return 0x7F87FE; }
+using GetTaskMap = vm_map_t (*)(task_t);
+using RegionRecurse = void (*)();
+using CopyIn = int (*)(UInt64, void*, size_t);
+using CopyOut = int (*)(const void*, UInt64, size_t);
+static GetTaskMap getTaskMap = nullptr;
+static RegionRecurse queryRegion = nullptr;
+static CopyIn readUser = nullptr;
+static CopyOut writeUser = nullptr;
+static mach_vm_address_t originalCheck = 0;
+static void wrappedSharedRegionCheck() { }
+#define SYSLOG(...) ((void)0)
+
+static std::array<UInt8, 64> destroyEntry{};
+static unsigned destroyCalls = 0;
+static void nativeMapDestroy(vm_map_t map)
+{
+    assert(videoLedger.state(reinterpret_cast<UInt64>(map), VPF::FeatureId::Vcn2Decode)
+           == VPF::CapabilityState::Disabled);
+    ++destroyCalls;
+}
+struct KernelPatcher
+{
+    static constexpr int KernelID = 0;
+    bool missingDestroy = false, failDestroy = false, failShared = false, missingOptions = false;
+    unsigned destroyRoutes = 0, sharedRoutes = 0;
+    UInt64 destroyTarget = 0;
+    struct RouteRequest
+    {
+        const char* symbol;
+        UInt64 from = 0;
+        UInt64* org;
+        template<class T, class O>
+        RouteRequest(const char* name, T, O& original)
+            : symbol(name), org(reinterpret_cast<UInt64*>(&original)) { }
+    };
+    UInt64 solveSymbol(int, const char* symbol)
+    {
+        if (std::strcmp(symbol, "_vm_map_destroy") == 0) {
+            return missingDestroy ? 0 : reinterpret_cast<UInt64>(destroyEntry.data());
+        }
+        if (std::strcmp(symbol, "_vm_map_destroy_options") == 0) {
+            return missingOptions ? 0 : reinterpret_cast<UInt64>(destroyEntry.data() + 32);
+        }
+        return 1;
+    }
+    void clearError() { }
+    bool routeMultipleLong(int, RouteRequest* request, int count)
+    {
+        assert(count == 1);
+        request->from = solveSymbol(KernelID, request->symbol);
+        if (std::strcmp(request->symbol, "_vm_map_destroy") == 0
+            || std::strcmp(request->symbol, "_vm_map_destroy_options") == 0) {
+            ++destroyRoutes;
+            destroyTarget = request->from;
+            if (failDestroy) { return false; }
+            *request->org = reinterpret_cast<UInt64>(nativeMapDestroy);
+            return true;
+        }
+        assert(std::strcmp(request->symbol, "_shared_region_check_np") == 0);
+        ++sharedRoutes;
+        return !failShared;
+    }
+};
+namespace UserVideoDecode { void init(KernelPatcher&); }
+INIT
+
+static void reset()
+{
+    if (guardLock) { IOLockFree(guardLock); guardLock = nullptr; }
+    NRed::singleton().properties.clear();
+    videoLedger.clear();
+    originalMapDestroy = nullptr;
+    destroyEntry.fill(0x90);
+    destroyCalls = lockAllocations = lockFrees = 0;
+}
+
+int main()
+{
+    assert(mapDestroyTarget(0) == 0);
+    for (unsigned failure = 0; failure < 3; ++failure) {
+        reset();
+        KernelPatcher patcher;
+        patcher.missingDestroy = failure == 0;
+        patcher.failDestroy = failure == 1;
+        patcher.failShared = failure == 2;
+        UserVideoDecode::init(patcher);
+        const auto& props = NRed::singleton().properties;
+        assert(!devicePatches && props.at("NRedVCNUserEnabled") == 0 && props.at("NRedDRMVideoEnabled") == 0);
+        if (failure < 2) {
+            assert(patcher.sharedRoutes == 0 && !guardLock && props.at("NRedVCNVPFLifecycle") == 0);
+            assert(lockAllocations == lockFrees);
+        }
+        else {
+            assert(guardLock && lockFrees == 0 && props.at("NRedVCNVPFLifecycle") == 1);
+            wrappedMapDestroy(reinterpret_cast<void*>(0x1000));
+            assert(destroyCalls == 1);
+        }
+    }
+    reset();
+    const UInt8 thunk[] = {0x55, 0x48, 0x89, 0xE5, 0x5D, 0xE9};
+    std::memcpy(destroyEntry.data(), thunk, sizeof(thunk));
+    const int displacement = 22;
+    std::memcpy(destroyEntry.data() + sizeof(thunk), &displacement, sizeof(displacement));
+    {
+        KernelPatcher missing;
+        missing.missingOptions = true;
+        UserVideoDecode::init(missing);
+        assert(!devicePatches && !guardLock && missing.destroyRoutes == 0 && missing.sharedRoutes == 0);
+        assert(NRed::singleton().properties.at("NRedVCNUserRejected") == 8);
+    }
+    KernelPatcher patcher;
+    UserVideoDecode::init(patcher);
+    assert(devicePatches && patcher.destroyRoutes == 1 && patcher.sharedRoutes == 1);
+    assert(patcher.destroyTarget == reinterpret_cast<UInt64>(destroyEntry.data() + 32));
+    assert(NRed::singleton().properties.at("NRedVCNVPFLifecycleRevision") == 2);
+    std::memcpy(destroyEntry.data() + 32, thunk, sizeof(thunk));
+    const int backward = -26;
+    std::memcpy(destroyEntry.data() + 32 + sizeof(thunk), &backward, sizeof(backward));
+    assert(mapDestroyTarget(reinterpret_cast<UInt64>(destroyEntry.data() + 32))
+           == reinterpret_cast<UInt64>(destroyEntry.data() + 16));
+
+    constexpr UInt64 map = 0x1000;
+    assert(prepareLedger(map));
+    assert(markLedger(map, VPF::CapabilityState::Installing));
+    markFailure(map, false);
+    assert(!prepareLedger(map) && ledgerState(map) == VPF::CapabilityState::Quarantined);
+    wrappedMapDestroy(reinterpret_cast<void*>(map));
+    assert(prepareLedger(map));
+    wrappedMapDestroy(reinterpret_cast<void*>(map));
+
+    // 模拟 exec/非退出路径的最终 map 释放，地址重用和反复换 map 都不消耗历史槽位。
+    for (UInt64 i = 0; i < 3 * VPF::CapabilityLedger::Capacity; ++i) {
+        const auto key = 0x10000 + i * 0x1000;
+        assert(prepareLedger(key));
+        wrappedMapDestroy(reinterpret_cast<void*>(key));
+    }
+    for (UInt64 i = 0; i < VPF::CapabilityLedger::Capacity; ++i) { assert(prepareLedger(0x10000 + i)); }
+    assert(!prepareLedger(0x20000));
+    wrappedMapDestroy(reinterpret_cast<void*>(0x10000));
+    assert(prepareLedger(0x20000));
+    reset();
+    std::puts("PASS production lifecycle: mandatory hook, failure lock lifetime, destroy-before-reuse, quarantine, exec-like map churn, capacity and thunk target");
+}

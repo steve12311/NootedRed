@@ -9,6 +9,7 @@
 #include <UserSurfaceSync.hpp>
 #include <UserSurfaceSyncData.hpp>
 #include <UserSurfaceSyncResolver.hpp>
+#include <VPF/TransactionExecutor.hpp>
 #include <kern/task.h>
 #include <mach/i386/vm_param.h>
 #include <mach/vm_map.h>
@@ -116,10 +117,8 @@ bool leafProtection(vm_map_t map, const mach_vm_address_t page, vm_prot_t& prote
     return UserPatchMemory::leafProtection(map, page, protection, queryRegion, error);
 }
 
-bool restorePages(vm_map_t map, Page* pages, const UInt32 count)
-{
-    return UserPatchMemory::restorePages(map, pages, count, error);
-}
+// 统一执行器只接收已核验补丁与已收集页面；VM 权限与回滚仍由 UserPatchMemory 完成。
+using ExecutorOps = UserPatchMemory::ExecutorOps<CopyIn, CopyOut>;
 
 // 在进程内分配一页可执行守卫，并把 AMD 命令队列的提交方法入口改为绝对跳转。
 // 守卫把“已用尾..容量尾”的空闲区整段填成 PM4 filler（池复用后尾部常混有旧命令），
@@ -229,31 +228,6 @@ kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, U
     }
     fresh = true;
     return KERN_SUCCESS;
-}
-
-bool rollback(vm_map_t map, Page* pages, const UInt32 pageCount, const UInt64 base,
-              const UserSurfaceSyncData::Patch* patches,
-              const UInt8 saved[PatchCount][UserSurfaceSyncResolver::Plan::BufferSize], const UInt32 touched)
-{
-    using namespace UserSurfaceSyncData;
-    bool ok = true;
-    // 最后安装的调用跳转先恢复，再撤回其目标代码。
-    for (UInt32 remaining = touched; remaining > 0; --remaining) {
-        const auto i = remaining - 1;
-        const auto address = base + patches[i].offset;
-        const bool ready   = UserPatchMemory::prepareRollback(map, pages, pageCount, address, patches[i].size, error);
-        if (!ready) {
-            ok = false;
-            continue;
-        }
-        if (writeUser(saved[i], address, patches[i].size) != 0) { ok = false; }
-    }
-    if (!restorePages(map, pages, pageCount)) { ok = false; }
-    if (!ok) {
-        stage(Stage::Rollback);
-        error(KERN_FAILURE);
-    }
-    return ok;
 }
 
 // Per-call storage: never shared between concurrent processes or held across the native syscall.
@@ -465,32 +439,40 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     if (originals != patchCount) { stage(Stage::Mixed); return result; }
     vm_map_t map = getTaskMap(current_task());
     if (map == nullptr) { stage(Stage::NoMap); return result; }
-    for (UInt32 p = 0; p < pageCount; ++p) {
-        if (!leafProtection(map, pages[p].address, pages[p].protection)
-            || pages[p].protection != (VM_PROT_READ | VM_PROT_EXECUTE)) { stage(Stage::Region); return result; }
-    }
-    // 所有匹配和保护检查完成后才进入写入；各页均先 COW、去掉 EXECUTE。
-    for (UInt32 p = 0; p < pageCount; ++p) {
-        const auto protection = vm_protect(map, pages[p].address, PAGE_SIZE, FALSE,
-                                          VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY);
-        if (protection != KERN_SUCCESS) {
-            stage(Stage::Protection); error(protection);
-            if (!restorePages(map, pages, pageCount)) { stage(Stage::Rollback); }
+    // 所有匹配和保护检查完成后才进入写入；各页均先 COW、去掉 EXECUTE，失败按相反顺序回滚。
+    ExecutorOps ops{map, queryRegion, error, readUser, writeUser};
+    using Executor = VPF::SharedRegionTransaction<ExecutorOps, UserSurfaceSyncData::Patch, Page,
+                                                  UserSurfaceSyncResolver::Plan::BufferSize>;
+    Executor   executor(ops, base, patches, patchCount, saved, pages, pageCount, 0);
+    const auto committed = executor.commit([] { return true; });
+    switch (committed.status) {
+        case VPF::TransactionStatus::CheckFailed:
+            stage(Stage::Region);
             return result;
-        }
-        pages[p].writable = true;
-    }
-    for (UInt32 i = 0; i < patchCount; ++i) {
-        if (writeUser(patches[i].patched, base + patches[i].offset, patches[i].size) != 0) {
-            stage(Stage::Write); error(KERN_FAILURE);
-            rollback(map, pages, pageCount, base, patches, saved, i + 1);
+        case VPF::TransactionStatus::BeforeWriteFailed:
             return result;
-        }
-    }
-    if (!restorePages(map, pages, pageCount)) {
-        stage(Stage::Restore);
-        rollback(map, pages, pageCount, base, patches, saved, patchCount);
-        return result;
+        case VPF::TransactionStatus::ProtectionFailed:
+            stage(Stage::Protection);
+            if (!committed.restoreOk) { stage(Stage::Rollback); }
+            return result;
+        case VPF::TransactionStatus::WriteFailed:
+        case VPF::TransactionStatus::ReadbackFailed:
+            stage(Stage::Write);
+            error(KERN_FAILURE);
+            if (!committed.rollbackOk) {
+                stage(Stage::Rollback);
+                error(KERN_FAILURE);
+            }
+            return result;
+        case VPF::TransactionStatus::RestoreFailed:
+            stage(Stage::Restore);
+            if (!committed.rollbackOk) {
+                stage(Stage::Rollback);
+                error(KERN_FAILURE);
+            }
+            return result;
+        case VPF::TransactionStatus::Installed:
+            break;
     }
     stage(Stage::Applied);
     if (dynamic) { NRed::singleton().setProp32("NRedImmediateSyncDynamicApplied", 1); }

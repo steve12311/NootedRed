@@ -16,7 +16,7 @@ def main():
 #include <cstdio>
 #include <map>
 #include <set>
-using UInt32=uint32_t;using UInt64=uint64_t;
+using UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;
 using vm_map_t=void*;using mach_vm_address_t=uint64_t;using mach_vm_size_t=uint64_t;
 using natural_t=unsigned;using mach_msg_type_number_t=unsigned;
 using vm_prot_t=int;using kern_return_t=int;using vm_region_recurse_info_t=int*;

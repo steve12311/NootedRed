@@ -31,6 +31,7 @@ namespace Patch {} // 模拟 Lilu 的同名命名空间，防止独立测试遗�
 #include <UserSurfaceSyncResolver.hpp>
 #include <UserLegacyData.hpp>
 #include <UserSubmitGuardData.hpp>
+#include <VPF/TransactionExecutor.hpp>
 namespace Buffer {
 template<class T>T* create(size_t count){return new T[count];}
 template<class T>void deleter(T* pointer){delete[] pointer;}

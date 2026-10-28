@@ -129,4 +129,35 @@ namespace UserPatchMemory
         return restored;
     }
 
+    // 共享缓存执行器适配器：检查、COW、回滚与权限恢复只保留一份实现。
+    template<typename Read, typename Write>
+    struct ExecutorOps
+    {
+        vm_map_t    map;
+        RegionQuery query;
+        ReportError report;
+        Read        readUser;
+        Write       writeUser;
+
+        bool check(Page& page)
+        {
+            return leafProtection(map, page.address, page.protection, query, report)
+                   && page.protection == (VM_PROT_READ | VM_PROT_EXECUTE);
+        }
+        bool makeWritable(Page& page) { return UserPatchMemory::makeWritable(map, page, report); }
+        bool prepareRollback(Page* pages, const UInt32 count, const UInt64 address, const UInt32 size)
+        {
+            return UserPatchMemory::prepareRollback(map, pages, count, address, size, report);
+        }
+        bool restore(Page* pages, const UInt32 count)
+        {
+            return UserPatchMemory::restorePages(map, pages, count, report);
+        }
+        int write(const UInt8* bytes, const UInt64 address, const UInt32 size)
+        {
+            return writeUser(bytes, address, size);
+        }
+        int read(const UInt64 address, UInt8* bytes, const UInt32 size) { return readUser(address, bytes, size); }
+    };
+
 }    // namespace UserPatchMemory

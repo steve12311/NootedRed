@@ -27,8 +27,9 @@ def graph(text):
 
 
 def measure(configuration,work):
-    directory=ROOT/'Build/Intermediates.noindex/NootedRed.build'/configuration/'NootedRed.build/Objects-normal/x86_64'
-    responses=[p for p in directory.glob('*-common-args.resp')
+    directories=[ROOT/path/configuration/'NootedRed.build/Objects-normal/x86_64'
+                 for path in ['Build/Intermediates.noindex/NootedRed.build','build/NootedRed.build']]
+    responses=[p for directory in directories for p in directory.glob('*-common-args.resp')
                if '-mkernel' in p.read_text() and '-std=c++23' in p.read_text()
                and '__clang_analyzer__' not in p.read_text()]
     if not responses:raise RuntimeError(f'请先构建 {configuration}，以获得生产编译选项')
@@ -58,13 +59,22 @@ def measure(configuration,work):
         for name in local:
             if 'UserSharedCache5Input4read' in name:
                 edges.setdefault(module+'::'+name,set()).update(module+'::'+child for child in overlays)
+    # Planner 的访问状态限制递归深度：最多 32 个特性，再加一次环检测调用。
+    # 只折叠该函数的自调用；任何其他递归仍报错，单帧与路径阈值不变。
+    planner=(ROOT/'NootedRed/VPF/DependencyPlanner.hpp').read_text()
+    assert 'static_assert(FeatureCount <= 32);' in planner
+    bounded={name:33 for name in nodes
+             if name.split('::',1)[1].startswith('_ZZN3VPF8evaluate')
+             and 'EEN8Resolver7resolveENS_9FeatureIdE' in name
+             and name in edges.get(name,set())}
     memo={}
     def longest(name,parents=frozenset()):
         if name in parents:raise AssertionError('检测到递归内部调用链：'+name)
         if name in memo:return memo[name]
-        candidates=[longest(child,parents|{name}) for child in edges.get(name,[]) if child in nodes]
+        candidates=[longest(child,parents|{name}) for child in edges.get(name,[])
+                    if child in nodes and not (child==name and name in bounded)]
         best=max(candidates,key=lambda value:value[0],default=(0,[]))
-        value=(nodes[name]+best[0],[name]+best[1]);memo[name]=value;return value
+        value=(nodes[name]*bounded.get(name,1)+best[0],[name]+best[1]);memo[name]=value;return value
     roots=[name for name in nodes if 'wrappedSharedRegionCheck' in name]
     if len(roots)!=2:raise AssertionError(f'钩子数量异常：{roots}')
     paths=[]
@@ -74,11 +84,12 @@ def measure(configuration,work):
         # 因而仅额外叠加外层 wrapper，不能把两个补丁助手同时相加。
         outer=max(nodes[other] for other in roots if other!=root)
         paths.append({'root':root,'bytes':total+outer,'outerWrapperBytes':outer,
-                      'chain':[{'symbol':name,'bytes':nodes[name]} for name in path]})
+                      'chain':[{'symbol':name,'bytes':nodes[name], 'maxDepth':bounded.get(name,1)} for name in path]})
     report={'configuration':configuration,'frameLimit':FRAME_LIMIT,'pathLimit':PATH_LIMIT,
             'wrapperLimit':WRAPPER_LIMIT,'maxFrame':max(nodes.values()),
             'largeFrames':[{'symbol':n,'bytes':s} for n,s in nodes.items() if s>FRAME_LIMIT],
             'wrappers':{n:nodes[n] for n in roots},'paths':paths,'commands':commands,
+            'boundedRecursion':bounded,
             'scope':'生产 x86_64 kext 的静态栈帧及可见内部调用；内核系统调用、copyin/copyout、VM/IOKit 和锁实现的栈不计入，另留至少 8 KiB 余量。'}
     (work/'report.json').write_text(json.dumps(report,indent=2,ensure_ascii=False)+'\n')
     if report['largeFrames']:raise AssertionError(report['largeFrames'])

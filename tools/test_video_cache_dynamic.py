@@ -150,7 +150,7 @@ int main(){
         harness = harness.replace('using namespace UserVideoDecodeData;', 'using namespace UserSequoiaVideoData;')
         harness = harness.replace('devicePatches,plan)', 'devicePatches,plan,true)')
         harness = harness.replace('0x7F87FE', '0x7FE1FE')
-        harness = harness.replace('drmClient=false;clientEntitlement', 'sequoia=true;legacyProfile=nullptr;drmClient=false;clientEntitlement')
+        harness = harness.replace('drmClient=false;clientEntitlement', 'sequoia=true;drmClient=false;clientEntitlement')
     # 从实际源文件中提取的桥接引用进程诊断函数。
     harness = harness.replace('BODY', body)
     harness = harness.replace('static kern_return_t vm_protect', 'static int proc_pid(proc_t);static void proc_name(int,char*,int);\nstatic kern_return_t vm_protect', 1)
