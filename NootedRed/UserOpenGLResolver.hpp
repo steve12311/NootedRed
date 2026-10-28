@@ -71,7 +71,14 @@ namespace UserOpenGLResolver
             alreadyPatched = memcmp(bytes + found, page.patched, page.size) == 0;
         }
         else {
+            // 先用内联 8 字节比较筛掉不可能的位置；-fno-builtin 下 memcmp 是外部调用。
+            UInt64 nativeHead, patchedHead;
+            __builtin_memcpy(&nativeHead, patch.original, sizeof(nativeHead));
+            __builtin_memcpy(&patchedHead, patch.patched, sizeof(patchedHead));
             for (UInt32 offset = 0; offset <= PageSize - patch.size; ++offset) {
+                UInt64 head;
+                __builtin_memcpy(&head, bytes + offset, sizeof(head));
+                if (head != nativeHead && head != patchedHead) { continue; }
                 const auto address = fileOffset + offset;
                 const bool native  = matches(device, kind, bytes + offset, address, false);
                 const bool patched = !native && matches(device, kind, bytes + offset, address, true);

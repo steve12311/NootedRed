@@ -79,7 +79,7 @@ static void setup(unsigned id=0x1638){
  // 模拟所有函数跨页和数据节独立迁移；代码匹配仍使用各自来源版本的完整证据。
  NRed::device=id;Version::majorValue=major;devicePatches=D::findDevice(id);sequoia=major==24;legacyProfile=nullptr;
  fairPlayDriverOnly=true;maxima.clear();failWrites.clear();failAllocation=noMap=false;originalResult=regionMode=0;
- allocations=deallocations=payloadWrites=0;touchedPages.clear();seenStages=appliedCount=errorCount=0;
+ allocations=deallocations=payloadWrites=0;touchedPages.clear();published={};seenStages=appliedCount=errorCount=0;
  failNewAt=newCalls=0;
  clientEntitlement=nullptr;processName="Other";entitlementQueries=0;trueEntitlement.releases=falseEntitlement.releases=0;
  originalCheck=reinterpret_cast<uint64_t>(original);getTaskMap=map;queryRegion=query;readUser=reader;writeUser=copyout;

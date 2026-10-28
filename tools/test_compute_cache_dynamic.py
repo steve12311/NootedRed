@@ -62,7 +62,7 @@ static void setup(unsigned id){
  put(dumpAddress,NativeDump,sizeof(NativeDump));word32(image+0x71064,0x40400000);
  uint64_t targets[]={image+0x71064,settingsAddress,dumpAddress};
  for(auto link:OriginalInitLinks)rel(initAddress,link.offset,targets[link.target]);rel(overrideAddress,6,settingsAddress);
- seenStages=appliedCount=errorCount=windowServerCount=weatherCount=0;
+ published={};seenStages=appliedCount=errorCount=windowServerCount=weatherCount=0;
  originalCheck=reinterpret_cast<uint64_t>(original);readUser=reader;writeUser=writer;getTaskMap=map;queryRegion=query;
 }
 static void call(){SharedRegionCheckArgs args{0x1000};int value=0;assert(wrappedSharedRegionCheck(reinterpret_cast<void*>(217),&args,&value)==0&&value==123);}

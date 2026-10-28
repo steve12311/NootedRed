@@ -13,6 +13,7 @@ static void setup(unsigned id)
     submitGuard                                                          = false;
     devicePatches                                                        = UserSurfaceSyncData::findDevice(id);
     assert(devicePatches);
+    published = {};
     seenStages = appliedCount = errorCount = windowServerCount = weatherCount = 0;
     originalCheck                                                             = reinterpret_cast<uint64_t>(original);
     readUser                                                                  = reader;

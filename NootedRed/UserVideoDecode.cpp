@@ -42,6 +42,7 @@ namespace
     UserPatchMapGate::Registry<64>     taskPatchRegistry;
     UInt32                            taskGatePeakReported{0};
     UInt32                            seenStages{0}, appliedCount{0}, errorCount{0};
+    struct Published { UInt64 uuid[4], matched, reads, guardReads; } published{};
     bool                              fairPlayDriverOnly{false};
     bool                              sequoia{false};
     const UserVideoDecodeData::Patch* devicePatches{nullptr};
@@ -90,6 +91,8 @@ namespace
             NRed::singleton().setProp32("NRedDRMVideoLastPID", fairPlayPID);
             NRed::singleton().setProp32("NRedDRMVideoLastStage", index);
         }
+        // 已记录阶段只读检查，避免每次系统调用都对共享缓存行做原子写。
+        if ((__atomic_load_n(&seenStages, __ATOMIC_RELAXED) & (1U << index)) != 0) { return; }
         if ((__atomic_fetch_or(&seenStages, 1U << index, __ATOMIC_RELAXED) & (1U << index)) == 0) {
             NRed::singleton().setProp32(keys[index], 1);
             if (value == Stage::Applied) { NRed::singleton().setProp32("NRedVCNGVASelectionFix", 1); }
@@ -111,6 +114,20 @@ namespace
     }
 
     using UserPatchMemory::Page;
+
+    // 值不变时跳过 IORegistry 写入；并发写入后复查，保证最终发布的是槽位中的最新值。
+    void publish(UInt64& last, const char* key, const UInt32 value)
+    {
+        // 高位标记已发布，使首次的 0 值也会写入。
+        UInt64 tagged = (1ULL << 32) | value;
+        if (__atomic_exchange_n(&last, tagged, __ATOMIC_RELAXED) == tagged) { return; }
+        for (;;) {
+            NRed::singleton().setProp32(key, static_cast<UInt32>(tagged));
+            const auto latest = __atomic_load_n(&last, __ATOMIC_RELAXED);
+            if (latest == tagged) { return; }
+            tagged = latest;
+        }
+    }
 
     bool leafProtection(vm_map_t map, const mach_vm_address_t page, vm_prot_t& protection)
     {
@@ -337,7 +354,7 @@ namespace
         for (UInt32 i = 0; i < 4; ++i) {
             UInt32 value;
             memcpy(&value, header + 88 + i * 4, sizeof(value));
-            NRed::singleton().setProp32(uuidKeys[i], value);
+            publish(published.uuid[i], uuidKeys[i], value);
         }
         if (legacyProfile && !UserLegacyCompat::matches(readUser, base, header + 88, *legacyProfile)) {
             stage(Stage::CacheMismatch, fairPlayPID);
@@ -360,8 +377,8 @@ namespace
                 return result;
             }
             patches = dynamicBuffer.plan->patches;
-            NRed::singleton().setProp32("NRedVCNUserDynamicMatched", 1);
-            NRed::singleton().setProp32("NRedVCNUserDynamicReads", dynamicBuffer.plan->reads);
+            publish(published.matched, "NRedVCNUserDynamicMatched", 1);
+            publish(published.reads, "NRedVCNUserDynamicReads", dynamicBuffer.plan->reads);
         }
 
         if (fairPlayDecode) {
@@ -378,7 +395,7 @@ namespace
             NRed::singleton().setProp32("NRedVCNUserGuardRejected", 1);
             return result;
         }
-        NRed::singleton().setProp32("NRedVCNUserGuardReads", guard.plan->reads);
+        publish(published.guardReads, "NRedVCNUserGuardReads", guard.plan->reads);
         vm_map_t map = getTaskMap(current_task());
         if (!map) { stage(Stage::NoMap, fairPlayPID); return result; }
         SavedBuffer buffer;
@@ -513,14 +530,25 @@ namespace
         return result;
     }
 
+    // 峰值只增不减；无锁读取，仅抢到更大值的调用发布，常态路径只有一次原子读。
     void recordTaskGatePeak()
     {
-        IOLockLock(guardLock);
-        if (taskPatchRegistry.peak > taskGatePeakReported) {
-            taskGatePeakReported = taskPatchRegistry.peak;
-            NRed::singleton().setProp32("NRedVCNUserMapGatePeak", taskGatePeakReported);
+        const auto peak     = __atomic_load_n(&taskPatchRegistry.peak, __ATOMIC_RELAXED);
+        auto       reported = __atomic_load_n(&taskGatePeakReported, __ATOMIC_RELAXED);
+        while (peak > reported) {
+            if (__atomic_compare_exchange_n(&taskGatePeakReported, &reported, peak, false, __ATOMIC_RELAXED,
+                                            __ATOMIC_RELAXED))
+            {
+                // 较小值可能晚于较大值写入，写完复查直到发布值不再落后。
+                for (auto value = peak;;) {
+                    NRed::singleton().setProp32("NRedVCNUserMapGatePeak", value);
+                    const auto latest = __atomic_load_n(&taskGatePeakReported, __ATOMIC_RELAXED);
+                    if (latest == value) { break; }
+                    value = latest;
+                }
+                break;
+            }
         }
-        IOLockUnlock(guardLock);
     }
 
     // Only the first eight calls are traced, even in RELEASE; no per-call IORegistry writes.

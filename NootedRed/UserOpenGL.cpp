@@ -70,15 +70,26 @@ namespace
         report(appliedMask, 1U << kind);
     }
 
-    __attribute__((noinline)) void patchPage(vnode_t vnode, const void* data, UInt64 offset)
+    bool isDriver(vnode_t vnode)
     {
-        if (!device || !reportCall || !vnode || !data) { return; }
         const auto* name = vnode_getname(vnode);
-        if (!name) { return; }
+        if (!name) { return false; }
         const bool driver = strcmp(name, "AMDRadeonX5000GLDriver") == 0;
         vnode_putname(name);
-        if (!driver) { return; }
-        for (UInt32 kind = 0; kind < 2; ++kind) { patchBlock(static_cast<const UInt8*>(data), offset, kind); }
+        return driver;
+    }
+
+    // 超出驱动文件上限的页不取名；范围验证整段只取一次名称。
+    __attribute__((noinline)) void patchPage(vnode_t vnode, const UInt8* data, UInt64 offset, vm_size_t size)
+    {
+        if (!device || !reportCall || !vnode || !data || size < PageSize
+            || offset > UserOpenGLResolver::MaxFileSize - PageSize || !isDriver(vnode))
+        {
+            return;
+        }
+        for (vm_size_t position = 0; PageSize <= size - position; position += PageSize) {
+            for (UInt32 kind = 0; kind < 2; ++kind) { patchBlock(data + position, offset + position, kind); }
+        }
     }
 
     __attribute__((noinline)) void validatePage(vnode_t vnode, memory_object_t pager, memory_object_offset_t offset,
@@ -89,7 +100,7 @@ namespace
         if (validated && (*validated == 1 || *validated == 0xF) && tainted && *tainted == 0 && nx && *nx == 0
             && (offset & (PageSize - 1)) == 0)
         {
-            patchPage(vnode, data, offset);
+            patchPage(vnode, static_cast<const UInt8*>(data), offset, PageSize);
         }
     }
 
@@ -103,9 +114,7 @@ namespace
         {
             return result;
         }
-        for (vm_size_t position = 0; position < size && PageSize <= size - position; position += PageSize) {
-            patchPage(vnode, static_cast<const UInt8*>(data) + position, offset + position);
-        }
+        patchPage(vnode, static_cast<const UInt8*>(data), offset, size);
         return result;
     }
 

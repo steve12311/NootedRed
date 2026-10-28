@@ -88,7 +88,7 @@ static int writer(const void* p,uint64_t address,size_t size){
 }
 static void reset(){
  protection.clear();maxProtection.clear();properties.clear();failProtect.clear();touchedPages.clear();protectCalls=writeCalls=failWrite=originalResult=regionMode=0;
- invalidCache=noMap=false;seenStages=appliedCount=errorCount=0;isWindowServer=false;processName="Other";
+ invalidCache=noMap=false;published={};seenStages=appliedCount=errorCount=0;isWindowServer=false;processName="Other";
  clientEntitlement=nullptr;trueEntitlement.releases=falseEntitlement.releases=0;entitlementQueries=0;
  for(size_t i=0;i<MaxN;i++){auto& p=active()[i];memcpy(code[i].data(),p.original,p.size);if(i<N){const auto page=(base+p.offset)&~uint64_t(4095);protection[page]=5;maxProtection[page]=5;}}
  originalCheck=reinterpret_cast<uint64_t>(original);getTaskMap=map;queryRegion=query;readUser=reader;writeUser=writer;

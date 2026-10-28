@@ -35,6 +35,7 @@ CopyIn readUser{nullptr};
 CopyOut writeUser{nullptr};
 UInt32 seenStages{0}, appliedCount{0}, errorCount{0}, windowServerCount{0}, weatherCount{0};
 UInt32 submitGuardCount{0};
+struct Published { UInt64 uuid[4], matched, reads; } published{};
 bool              srdShared{false}, legacyBlend{false}, computeScratch{false}, submitGuard{false};
 bool              renderRequested{false};
 bool              sequoia{false};
@@ -71,6 +72,8 @@ void stage(const Stage value)
         "NRedImmediateSyncD12", "NRedImmediateSyncD13", "NRedImmediateSyncD14", "NRedImmediateSyncD15"
     };
     const auto index = static_cast<UInt32>(value);
+    // 已记录阶段只读检查，避免每次系统调用都对共享缓存行做原子写。
+    if ((__atomic_load_n(&seenStages, __ATOMIC_RELAXED) & (1U << index)) != 0) { return; }
     if ((__atomic_fetch_or(&seenStages, 1U << index, __ATOMIC_RELAXED) & (1U << index)) == 0) {
         NRed::singleton().setProp32(keys[index], 1);
         SYSLOG("UserSurfaceSync", "%s stage=%u",
@@ -93,6 +96,20 @@ void error(const kern_return_t value)
 }
 
 using UserPatchMemory::Page;
+
+// 值不变时跳过 IORegistry 写入；并发写入后复查，保证最终发布的是槽位中的最新值。
+void publish(UInt64& last, const char* key, const UInt32 value)
+{
+    // 高位标记已发布，使首次的 0 值也会写入。
+    UInt64 tagged = (1ULL << 32) | value;
+    if (__atomic_exchange_n(&last, tagged, __ATOMIC_RELAXED) == tagged) { return; }
+    for (;;) {
+        NRed::singleton().setProp32(key, static_cast<UInt32>(tagged));
+        const auto latest = __atomic_load_n(&last, __ATOMIC_RELAXED);
+        if (latest == tagged) { return; }
+        tagged = latest;
+    }
+}
 
 bool leafProtection(vm_map_t map, const mach_vm_address_t page, vm_prot_t& protection)
 {
@@ -320,7 +337,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     for (UInt32 i = 0; i < 4; ++i) {
         UInt32 value;
         memcpy(&value, header + 88 + i * 4, sizeof(value));
-        NRed::singleton().setProp32(uuidKeys[i], value);
+        publish(published.uuid[i], uuidKeys[i], value);
     }
     // Sequoia 核验完整提交方法；旧路径继续使用已核实缓存的入口偏移。
     UInt64     submitOffset{0};
@@ -386,8 +403,8 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
                 return result;
             }
         }
-        NRed::singleton().setProp32("NRedImmediateSyncDynamicMatched", 1);
-        NRed::singleton().setProp32("NRedImmediateSyncDynamicReads", plan.reads);
+        publish(published.matched, "NRedImmediateSyncDynamicMatched", 1);
+        publish(published.reads, "NRedImmediateSyncDynamicReads", plan.reads);
     }
 
     // 禁止在残留另一策略的进程中把旧模式误报为已生效；切换参数仍需重启。

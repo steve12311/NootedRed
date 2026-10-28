@@ -110,7 +110,7 @@ static kern_return_t query(vm_map_t,uint64_t* a,uint64_t* n,unsigned*,int* p,uns
 static void reset(const UserLegacyCompat::Profile* profile){
  memory.clear();protections.clear();maximums.clear();properties.clear();failProtect.clear();failWrite.clear();
  protects=writes=allocations=deallocations=0;failRead=0;failAllocate=fairPlay=false;
- seenStages=appliedCount=errorCount=0;
+ published={};seenStages=appliedCount=errorCount=0;
  cacheHeader.fill(0);memcpy(cacheHeader.data(),"dyld_v1 x86_64h",16);
  memcpy(cacheHeader.data()+88,profile?profile->uuid:UserSurfaceSyncData::CacheUUID,16);
  if(profile)for(unsigned i=0;i<profile->pageCount;i++){

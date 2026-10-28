@@ -33,7 +33,10 @@ namespace UserPatchMapGate
                 }
                 if (!busy && free != Capacity) {
                     registry.keys[free] = key;
-                    if (++registry.active > registry.peak) { registry.peak = registry.active; }
+                    // peak 供锁外无锁读取诊断，写入仍在锁内。
+                    if (++registry.active > registry.peak) {
+                        __atomic_store_n(&registry.peak, registry.active, __ATOMIC_RELAXED);
+                    }
                     slot = free;
                     break;
                 }
