@@ -24,11 +24,17 @@ namespace UserCacheResolver
         return !input.failed;
     }
 
+    struct ScanAnchor
+    {
+        UInt32 offset;
+        UInt8  value;
+    };
+
     template<typename PrefixMatches, typename CandidateMatches>
-    __attribute__((noinline))
-    inline bool scanBuffered(Input& input, const Range& text, UInt32 size, UInt32 prefixSize,
-                             const PrefixMatches& prefixMatches, const CandidateMatches& candidateMatches, UInt64& found,
-                             UInt8* scan, UInt32 capacity)
+    __attribute__((noinline)) inline bool scanBuffered(Input& input, const Range& text, UInt32 size, UInt32 prefixSize,
+                                                       const PrefixMatches&    prefixMatches,
+                                                       const CandidateMatches& candidateMatches, UInt64& found,
+                                                       UInt8* scan, UInt32 capacity, const ScanAnchor* anchor = nullptr)
     {
         found = 0;
         for (UInt64 offset = 0; offset <= text.size - size;) {
@@ -36,6 +42,14 @@ namespace UserCacheResolver
             if (!input.read(text.address + offset, scan, length)) { return false; }
             const auto positions = length - prefixSize + 1;
             for (UInt32 j = 0; j < positions && offset + j <= text.size - size; ++j) {
+                if (anchor) {
+                    const auto  remaining = text.size - size - offset - j + 1;
+                    const auto  count     = remaining < positions - j ? UInt32(remaining) : positions - j;
+                    const auto* next =
+                        static_cast<const UInt8*>(memchr(scan + j + anchor->offset, anchor->value, count));
+                    if (!next) { break; }
+                    j = UInt32(next - scan) - anchor->offset;
+                }
                 if (!prefixMatches(scan + j)) { continue; }
                 if (++input.candidates > 128) { return false; }
                 const auto address = text.address + offset + j;
@@ -49,22 +63,26 @@ namespace UserCacheResolver
     }
 
     template<typename PrefixMatches, typename CandidateMatches>
-    __attribute__((noinline))
-    inline bool scanUnbuffered(Input& input, const Range& text, UInt32 size, UInt32 prefixSize,
-                               const PrefixMatches& prefixMatches, const CandidateMatches& candidateMatches, UInt64& found)
+    __attribute__((noinline)) inline bool scanUnbuffered(Input& input, const Range& text, UInt32 size,
+                                                         UInt32 prefixSize, const PrefixMatches& prefixMatches,
+                                                         const CandidateMatches& candidateMatches, UInt64& found,
+                                                         const ScanAnchor* anchor = nullptr)
     {
         UInt8 scan[1024];
-        return scanBuffered(input, text, size, prefixSize, prefixMatches, candidateMatches, found, scan, sizeof(scan));
+        return scanBuffered(input, text, size, prefixSize, prefixMatches, candidateMatches, found, scan, sizeof(scan),
+                            anchor);
     }
 
     template<typename PrefixMatches, typename CandidateMatches>
-    __attribute__((noinline))
-    inline bool scanFunction(Input& input, const Range& text, UInt32 size, UInt32 prefixSize,
-                             const PrefixMatches& prefixMatches, const CandidateMatches& candidateMatches, UInt64& found,
-                             UInt64 hint = 0)
+    __attribute__((noinline)) inline bool scanFunction(Input& input, const Range& text, UInt32 size, UInt32 prefixSize,
+                                                       const PrefixMatches&    prefixMatches,
+                                                       const CandidateMatches& candidateMatches, UInt64& found,
+                                                       UInt64 hint = 0, const ScanAnchor* anchor = nullptr)
     {
         found = 0;
-        if (prefixSize == 0 || prefixSize > 32 || size < prefixSize || size > text.size || text.size > MaxTextSize) {
+        if (prefixSize == 0 || prefixSize > 32 || (anchor && anchor->offset >= prefixSize) || size < prefixSize
+            || size > text.size || text.size > MaxTextSize)
+        {
             return false;
         }
         // 渲染基线保留完整核验后的参考 RVA 快路径；其他调用默认验证扫描唯一性。
@@ -73,21 +91,34 @@ namespace UserCacheResolver
             return !input.failed;
         }
         if (input.scanBuffer) {
-            return scanBuffered(input, text, size, prefixSize, prefixMatches, candidateMatches, found,
-                                input.scanBuffer, Input::ScanSize);
+            return scanBuffered(input, text, size, prefixSize, prefixMatches, candidateMatches, found, input.scanBuffer,
+                                Input::ScanSize, anchor);
         }
-        return scanUnbuffered(input, text, size, prefixSize, prefixMatches, candidateMatches, found);
+        return scanUnbuffered(input, text, size, prefixSize, prefixMatches, candidateMatches, found, anchor);
     }
 
     struct Prefix
     {
         UInt64 values[4]{}, masks[4]{};
-        void set(UInt32 index, UInt8 value, bool skipped)
+        void   set(UInt32 index, UInt8 value, bool skipped)
         {
             if (skipped) { return; }
-            const auto shift = (index % 8) * 8;
-            masks[index / 8] |= UInt64(0xFF) << shift;
+            const auto shift   = (index % 8) * 8;
+            masks[index / 8]  |= UInt64(0xFF) << shift;
             values[index / 8] |= UInt64(value) << shift;
+        }
+        bool commonAnchor(const Prefix& other, ScanAnchor& anchor) const
+        {
+            for (UInt32 i = 0; i < 32; ++i) {
+                const auto shift = (i % 8) * 8;
+                if (((masks[i / 8] >> shift) & (other.masks[i / 8] >> shift) & 0xFF) == 0xFF
+                    && ((values[i / 8] >> shift) & 0xFF) == ((other.values[i / 8] >> shift) & 0xFF))
+                {
+                    anchor = {i, UInt8(values[i / 8] >> shift)};
+                    return true;
+                }
+            }
+            return false;
         }
         bool matches(const UInt8* bytes) const
         {
@@ -163,10 +194,21 @@ namespace UserCacheResolver
     {
         const auto* refs     = patched ? function.patchedRefs : function.originalRefs;
         const auto  refCount = patched ? function.patchedCount : function.originalCount;
+        bool        ordered  = true;
+        for (UInt32 i = 1; i < refCount; ++i) { ordered &= refs[i - 1].offset <= refs[i].offset; }
+        UInt32 cursor{0};
         return matchBytes(input, address, function.size,
                           [&](UInt32 index, UInt8 value)
                           {
-                              return skipped(index, refs, refCount)
+                              if (!ordered) {
+                                  return skipped(index, refs, refCount)
+                                         || value == expected(function, index, f, patched, patches, locations, count);
+                              }
+                              while (cursor < refCount && index >= refs[cursor].offset
+                                     && index - refs[cursor].offset >= 4) {
+                                  ++cursor;
+                              }
+                              return (cursor < refCount && index >= refs[cursor].offset)
                                      || value == expected(function, index, f, patched, patches, locations, count);
                           });
     }
@@ -186,11 +228,9 @@ namespace UserCacheResolver
                                       skipped(i, refs, countRefs));
             }
         }
-        const bool samePrefix = memcmp(prefixes, prefixes + 1, sizeof(Prefix)) == 0;
+        const bool samePrefix    = memcmp(prefixes, prefixes + 1, sizeof(Prefix)) == 0;
         const auto prefixMatches = [&](const UInt8* bytes)
-        {
-            return prefixes[0].matches(bytes) || (!samePrefix && prefixes[1].matches(bytes));
-        };
+        { return prefixes[0].matches(bytes) || (!samePrefix && prefixes[1].matches(bytes)); };
         const auto candidateMatches = [&](UInt64 candidate)
         {
             for (UInt32 variant = 0; variant < 2; ++variant) {
@@ -202,7 +242,9 @@ namespace UserCacheResolver
             }
             return false;
         };
-        return scanFunction(input, text, function.size, 32, prefixMatches, candidateMatches, address);
+        ScanAnchor anchor{};
+        return scanFunction(input, text, function.size, 32, prefixMatches, candidateMatches, address, 0,
+                            prefixes[0].commonAnchor(prefixes[1], anchor) ? &anchor : nullptr);
     }
 
     template<typename Patch>
