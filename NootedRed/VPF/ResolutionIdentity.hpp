@@ -2,6 +2,9 @@
 #pragma once
 #include <IOKit/IOTypes.h>
 #include <UserSharedCache.hpp>
+#include <mach/kern_return.h>
+#include <mach/vm_map.h>
+#include <mach/vm_region.h>
 #include <string.h>
 
 namespace VPF
@@ -132,6 +135,81 @@ namespace VPF
     inline UInt32 resolutionProfile(const UInt32 deviceID, const UInt32 flags)
     {
         return (deviceID & 0xFFFFU) | (flags << 16);
+    }
+
+    using RegionQuery = kern_return_t (*)(vm_map_t, mach_vm_address_t*, mach_vm_size_t*, natural_t*,
+                                          vm_region_recurse_info_t, mach_msg_type_number_t*);
+
+    struct MappingFacts
+    {
+        UInt32 objectId;
+        UInt8  shareMode;
+        UInt8  shadowDepth;
+        bool   writable;
+    };
+
+    // 要求整个范围由同一非私有只读共享对象覆盖；任何 COW/私有页或混合对象都拒绝。
+    // 调用方只持有当前 map，查询本身不读取用户内容，也不修改映射。
+    inline bool inspectMapping(const RegionQuery query, const vm_map_t map, const UInt64 address, const UInt64 size,
+                               MappingFacts& facts)
+    {
+        if (!query || !map || address == 0 || size == 0 || address >= UserSharedCache::UserLimit
+            || size > UserSharedCache::UserLimit - address)
+        {
+            return false;
+        }
+        constexpr UInt32 MaxLevels = 8;
+        struct Level
+        {
+            UInt32 depth;
+            UInt64 end;
+        } levels[MaxLevels];
+        UInt32 levelCount = 0, depth = 0, regions = 0;
+        UInt64 cursor = address, end = address + size;
+        UInt32 objectId = 0;
+        bool   found    = false;
+        while (cursor < end) {
+            if (++regions > 4096) { return false; }
+            mach_vm_address_t               region = cursor;
+            mach_vm_size_t                  regionSize{0};
+            natural_t                       regionDepth = depth;
+            vm_region_submap_info_data_64_t info{};
+            mach_msg_type_number_t          count = VM_REGION_SUBMAP_INFO_COUNT_64;
+            if (query(map, &region, &regionSize, &regionDepth, reinterpret_cast<vm_region_recurse_info_t>(&info),
+                      &count)
+                    != KERN_SUCCESS
+                || count < VM_REGION_SUBMAP_INFO_COUNT_64 || region > cursor || regionSize == 0
+                || regionSize > UserSharedCache::UserLimit - region)
+            {
+                return false;
+            }
+            const UInt64 regionEnd = region + regionSize;
+            if (regionEnd <= cursor) { return false; }
+            if (info.is_submap) {
+                // 子映射只用于找到叶子区域；实际证据必须来自叶子条目。
+                if (levelCount == MaxLevels || regionDepth >= MaxLevels) { return false; }
+                levels[levelCount++] = {depth, regionEnd};
+                depth                = regionDepth + 1;
+                continue;
+            }
+            if (info.share_mode != SM_TRUESHARED || info.shadow_depth != 0 || (info.protection & VM_PROT_WRITE) != 0
+                || info.object_id == 0)
+            {
+                return false;
+            }
+            if (!found) {
+                objectId = info.object_id;
+                found    = true;
+            }
+            else if (info.object_id != objectId) {
+                return false;
+            }
+            cursor = regionEnd;
+            while (levelCount != 0 && cursor >= levels[levelCount - 1].end) { depth = levels[--levelCount].depth; }
+        }
+        if (!found) { return false; }
+        facts = {objectId, SM_TRUESHARED, 0, false};
+        return true;
     }
 
 }    // namespace VPF
