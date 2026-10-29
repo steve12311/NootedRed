@@ -1,6 +1,6 @@
 # 修复功能启动参数
 
-本版只使用以下三个入口，不兼容此前的修复启动参数。
+本版使用以下三个修复入口，不兼容此前的修复启动参数。
 
 | 参数 | 功能 | 省略时 |
 | --- | --- | --- |
@@ -32,6 +32,12 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 [多系统适配](macos-multi-os-compat.md)。
 
 显示、视频和 EC 三项可独立启用，关闭某一项只需移除对应参数并重启。
+共享缓存解析位置缓存（FVRC）默认启用，无需添加 `-NRedFVRC`。
+`-NRedNoFVRC` 可关闭该缓存并回退完整扫描，不改变显示／视频修复开关。
+映射身份使用短 VM 查询，保留共享对象、COW、完整函数及引用核验；不统计共享区域的驻留页。
+`NRedFVRCEnabled=1` 和 `NRedFVRCCacheReady=1` 表示缓存策略及存储已启用，
+实际复用可检查 `NRedFVRCDisplayHot`、`NRedFVRCSubmitHot`、`NRedFVRCDecodeHot`、`NRedFVRCGuardHot`。
+
 插件全局关闭 `-NRedOff`、调试参数及上游的 `AMDBacklight` 设置不在本次更名范围内；
 `AMDBacklight=0` 仍会阻止 EC 服务启动。
 

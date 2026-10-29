@@ -46,20 +46,20 @@ namespace
         RegionRecurse query;
     };
 
-    // VPF 层不包含 Mach 头；由当前调用提供完整区域信息，只读映射属性。
+    // VPF 层不包含 Mach 头；只查询映射属性，避免完整查询逐页统计整个共享缓存区域。
     bool probeMapping(void* context, UInt64 address, UInt32 depth, VPF::MappingInfo& info)
     {
-        const auto&                     state  = *static_cast<MappingProbeState*>(context);
-        mach_vm_address_t               region = address;
-        mach_vm_size_t                  regionSize{0};
-        natural_t                       regionDepth = depth;
-        vm_region_submap_info_data_64_t raw{};
-        mach_msg_type_number_t          count = VM_REGION_SUBMAP_INFO_COUNT_64;
+        const auto&                           state  = *static_cast<MappingProbeState*>(context);
+        mach_vm_address_t                     region = address;
+        mach_vm_size_t                        regionSize{0};
+        natural_t                             regionDepth = depth;
+        vm_region_submap_short_info_data_64_t raw{};
+        mach_msg_type_number_t                count = VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
         if (!state.query
             || state.query(state.map, &region, &regionSize, &regionDepth,
                            reinterpret_cast<vm_region_recurse_info_t>(&raw), &count)
                    != KERN_SUCCESS
-            || count < VM_REGION_SUBMAP_INFO_COUNT_64)
+            || count < VM_REGION_SUBMAP_SHORT_INFO_COUNT_64)
         {
             return false;
         }
@@ -903,7 +903,7 @@ namespace
 void UserVideoDecode::init(KernelPatcher& patcher)
 {
     UserPatchCoordinator::clearVideo();
-    VPF::ResolutionDiagnostics::setEnabled(checkKernelArgument("-NRedFVRC"));
+    VPF::ResolutionDiagnostics::setEnabled(!checkKernelArgument("-NRedNoFVRC"));
     NRed::singleton().setProp32("NRedFVRCEnabled", VPF::ResolutionDiagnostics::enabled() ? 1 : 0);
     if (VPF::ResolutionDiagnostics::enabled()) {
         VPF::resolutionCache.init();

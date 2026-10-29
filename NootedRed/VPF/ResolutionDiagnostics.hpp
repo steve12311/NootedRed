@@ -46,7 +46,7 @@ namespace VPF
         inline ResolutionCounters counters{};
         inline bool               resolutionCacheEnabled{false};
 
-        // 默认关闭；只有显式启动参数才允许解析器使用跨进程缓存。
+        // 模块初始化时设置策略；初始化前不使用跨进程缓存。
         inline void setEnabled(const bool value) { resolutionCacheEnabled = value; }
         inline bool enabled() { return resolutionCacheEnabled; }
 

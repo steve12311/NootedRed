@@ -191,7 +191,7 @@ namespace UserSurfaceSyncResolver
                         bool scratchMode = false, VPF::FastResolution* fast = nullptr)
     {
         auto& image = plan.image;
-        image       = {};
+        memset(&image, 0, sizeof(image));
         // Scratch 与撤回的 VT 策略按完整函数和实际相对引用核验。
         if (scratchMode && !resolveScratch(input, base, device, plan, fast)) { return false; }
         if (!imageForCache(input, base, image)) { return false; }

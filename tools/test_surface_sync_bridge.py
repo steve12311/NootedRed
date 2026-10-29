@@ -53,7 +53,6 @@ struct vm_region_submap_info_data_64_t {int protection=0,max_protection=0,is_sub
  unsigned char share_mode=0;unsigned short shadow_depth=0;};
 using vm_region_submap_short_info_data_64_t=vm_region_submap_info_data_64_t;using vm_region_recurse_info_t=int*;
 constexpr unsigned PAGE_SIZE=4096,VM_REGION_SUBMAP_SHORT_INFO_COUNT_64=12;
-constexpr unsigned VM_REGION_SUBMAP_INFO_COUNT_64=VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
 constexpr int TRUE=1,FALSE=0,KERN_SUCCESS=0,KERN_INVALID_ADDRESS=1,KERN_PROTECTION_FAILURE=2,KERN_INVALID_ARGUMENT=4,KERN_FAILURE=5;
 constexpr int VM_FLAGS_ANYWHERE=1,KERN_RESOURCE_SHORTAGE=3;
 static bool failWorkspaceAllocation=false;
@@ -75,7 +74,7 @@ struct Version{static unsigned majorValue,minorValue;};unsigned Version::majorVa
 const PenguinWizardry::KernelVersion& currentKernelVersion(){static std::optional<PenguinWizardry::KernelVersion> current;return current.emplace(Version::majorValue,Version::minorValue);}
 static bool flag=true,candidateFlag=false,legacyFlag=false,transferFlag=false,scratchFlag=false;
 static bool checkKernelArgument(const char* s){
- assert(strcmp(s,"-NRedDisplayFix")==0||strcmp(s,"-NRedFVRC")==0);
+ assert(strcmp(s,"-NRedDisplayFix")==0||strcmp(s,"-NRedNoFVRC")==0);
  return strcmp(s,"-NRedDisplayFix")==0&&flag;}
 struct KernelPatcher{
  static constexpr int KernelID=0;int solves=0,routes=0;bool missing=false,routeOK=true;

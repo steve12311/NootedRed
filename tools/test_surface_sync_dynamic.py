@@ -48,7 +48,6 @@ struct vm_region_submap_info_data_64_t {int protection=0,max_protection=0,is_sub
  unsigned char share_mode=0;unsigned short shadow_depth=0;};
 using vm_region_submap_short_info_data_64_t=vm_region_submap_info_data_64_t;using vm_region_recurse_info_t=int*;
 constexpr unsigned PAGE_SIZE=4096,VM_REGION_SUBMAP_SHORT_INFO_COUNT_64=12;
-constexpr unsigned VM_REGION_SUBMAP_INFO_COUNT_64=VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
 constexpr int TRUE=1,FALSE=0,KERN_SUCCESS=0,KERN_INVALID_ADDRESS=1,KERN_PROTECTION_FAILURE=2,KERN_RESOURCE_SHORTAGE=3,KERN_INVALID_ARGUMENT=4,KERN_FAILURE=5;
 constexpr int VM_FLAGS_ANYWHERE=1;
 using vm_address_t=uint64_t;
@@ -63,8 +62,9 @@ struct NRed{static NRed& singleton(){static NRed n;return n;}void setProp32(cons
  unsigned getDeviceID(){return device;}static unsigned device;};unsigned NRed::device=0x15e7;
 struct Version{unsigned major(){return 25;}unsigned minor(){return 0;}bool majorMatches(unsigned v){return v==25;}};
 constexpr unsigned MACOS_26=25;static Version currentKernelVersion(){return {};}
+static bool noFvrc=false;
 static bool checkKernelArgument(const char*s){
- if(strcmp(s,"-NRedFVRC")==0)return true;
+ if(strcmp(s,"-NRedNoFVRC")==0)return noFvrc;
  return strcmp(s,"-NRedDisplayFix")==0;}
 struct KernelPatcher{static constexpr int KernelID=0;struct RouteRequest{template<typename T>RouteRequest(const char*,T,uint64_t&) {}};
  uint64_t solveSymbol(int,const char*){return 1;}void clearError(){}bool routeMultipleLong(int,RouteRequest*,int){return true;}};
@@ -143,6 +143,8 @@ static void rx(){for(auto[a,p]:pageProtections)assert(p==5);}
 static void untouched(){assert(memory==initial&&writes==0&&protects==0);}
 int main(){
  unsigned cases=0;
+ noFvrc=true;reset();assert(properties.at("NRedFVRCEnabled")==0);
+ noFvrc=false;reset();assert(properties.at("NRedFVRCEnabled")==1&&properties.at("NRedFVRCCacheReady")==1);
  for(auto& device:DevicePatches)for(unsigned mode=0;mode<3;mode++){
   reset(device.deviceID);legacyBlend=mode==2;srdShared=mode!=0;
   UserSurfaceSyncResolver::Plan p;assert(UserSurfaceSyncResolver::resolve(reader,base,device,srdShared,legacyBlend,p));

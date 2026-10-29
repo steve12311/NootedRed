@@ -36,7 +36,6 @@ struct vm_region_submap_info_data_64_t {int protection=0,max_protection=0,is_sub
  unsigned char share_mode=0;unsigned short shadow_depth=0;};
 using vm_region_submap_short_info_data_64_t=vm_region_submap_info_data_64_t;using vm_region_recurse_info_t=int*;
 constexpr unsigned PAGE_SIZE=4096,VM_REGION_SUBMAP_SHORT_INFO_COUNT_64=12;
-constexpr unsigned VM_REGION_SUBMAP_INFO_COUNT_64=VM_REGION_SUBMAP_SHORT_INFO_COUNT_64;
 constexpr int TRUE=1,FALSE=0,KERN_SUCCESS=0,KERN_INVALID_ARGUMENT=4,KERN_FAILURE=5;
 constexpr int VM_PROT_NONE=0,VM_PROT_READ=1,VM_PROT_WRITE=2,VM_PROT_EXECUTE=4,VM_PROT_COPY=16;
 #define SYSLOG(...) ((void)0)
@@ -46,9 +45,9 @@ struct NRed {static NRed& singleton(){static NRed n;return n;}void setProp32(con
  unsigned getDeviceID(){return device; }static unsigned device;};unsigned NRed::device=0x1638;
 struct Version{unsigned major(){return majorValue;}unsigned minor(){return minorValue;}static unsigned majorValue,minorValue;};unsigned Version::majorValue=25;unsigned Version::minorValue=6;
 const PenguinWizardry::KernelVersion& currentKernelVersion(){static std::optional<PenguinWizardry::KernelVersion> current;return current.emplace(Version::majorValue,Version::minorValue);}
-static bool flag=true,fvrcEnabled=false;static bool checkKernelArgument(const char* s){
- assert(strcmp(s,"-NRedVideoFix")==0||strcmp(s,"-NRedFVRC")==0);
- if(strcmp(s,"-NRedFVRC")==0)return fvrcEnabled;
+static bool flag=true,fvrcEnabled=true;static bool checkKernelArgument(const char* s){
+ assert(strcmp(s,"-NRedVideoFix")==0||strcmp(s,"-NRedNoFVRC")==0);
+ if(strcmp(s,"-NRedNoFVRC")==0)return !fvrcEnabled;
  return flag;}
 namespace VCN { static bool active=true; bool allocated(){return active;} }
 #define IONew(T,N) (new T[N])
@@ -123,6 +122,10 @@ static void call(proc_t process=nullptr){SharedRegionCheckArgs args{0x1000};int 
 static void bytes(bool patched){for(size_t i=0;i<N;i++){auto& p=active()[i];assert(memcmp(code[i].data(),patched?p.patched:p.original,p.size)==0);}}
 static void rx(){for(auto [a,p]:protection){assert(p==5);assert(maxProtection.at(a)==5);}}
 int main(){
+ KernelPatcher policy;
+ UserVideoDecode::init(policy);assert(properties.at("NRedFVRCEnabled")==1&&properties.at("NRedFVRCCacheReady")==1);
+ fvrcEnabled=false;UserVideoDecode::init(policy);assert(properties.at("NRedFVRCEnabled")==0);
+ fvrcEnabled=true;
  for(bool enabled:{false,true}){flag=enabled;KernelPatcher p;UserVideoDecode::init(p);assert(p.routes==2*int(enabled));}
  flag=true;
  for(unsigned id=0;id<=0xffff;id++){
