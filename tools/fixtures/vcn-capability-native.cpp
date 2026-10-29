@@ -100,6 +100,26 @@ int main()
             else reached=true;
             assert(reached==good);++checks;
         }
+    // 原生编码器保存宏块对齐尺寸，纹理同时保存可见尺寸与实际分配尺寸。
+    for (unsigned codec : {0U,1U}) for (uint32_t width : {130U,1920U,1922U})
+        for (uint32_t height : {720U,722U,1080U}) {
+            const uint32_t codedWidth=(width+15)&~15U,codedHeight=(height+15)&~15U;
+            put(encoder,0x52c,static_cast<uint8_t>(codec));
+            put(encoder,0x60,codedWidth);put(encoder,0x64,codedHeight);
+            put(encoder,0x424,codedWidth);put(encoder,0x428,codedHeight);
+            put(texture,0x70,width);put(texture,0x74,height);
+            put(texture,0x78,(width+127)&~127U);put(texture,0x7c,codedHeight);
+            bool reached=false;
+            if (!setjmp(accepted)) assert(fixedFrame(encoder.data(),nullptr,texture.data(),nullptr)==5);
+            else reached=true;
+            assert(reached);++checks;
+            // 分配不足，或编码范围超过可见尺寸的宏块边界，均必须拒绝。
+            put(texture,0x7c,codedHeight-2);
+            assert(fixedFrame(encoder.data(),nullptr,texture.data(),nullptr)==5);++checks;
+            put(texture,0x7c,codedHeight+16);put(encoder,0x64,codedHeight+16);
+            put(encoder,0x428,codedHeight+16);
+            assert(fixedFrame(encoder.data(),nullptr,texture.data(),nullptr)==5);++checks;
+        }
     put(encoder,0x52c,uint8_t{1});put(encoder,0x60,uint32_t{1920});put(encoder,0x64,uint32_t{1080});
     put(encoder,0x424,uint32_t{1920});put(encoder,0x428,uint32_t{1088});
     put(texture,0x70,uint32_t{1920});put(texture,0x74,uint32_t{1080});put(texture,0x78,uint32_t{2048});put(texture,0x7c,uint32_t{1088});

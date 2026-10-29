@@ -525,6 +525,7 @@ namespace
     {
         NRed::singleton().setProp32("NRedVCNEncodeGuardRevision", UserVideoGuardData::Revision);
         NRed::singleton().setProp32("NRedVCNDecodeGuardRevision", UserVideoGuardData::Revision);
+        NRed::singleton().setProp32("NRedVCNEncodeAlignmentRevision", 1);
         if (!process) { return; }
         const auto pid = proc_pid(process);
         char       name[32]{};

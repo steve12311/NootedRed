@@ -77,12 +77,16 @@ def build_payload(profile, work, compile_payload):
           'movq 0x460(%r11), %r11\ntestq %r11, %r11\nje LFrameError\nmovq (%r11), %r11\n'
           'testq %r11, %r11\nje LFrameError\ncallq LTargetGPU\njnc LFrameContinue\ntestq %rdx, %rdx\nje LFrameError\n'
           'movzbl 0x52c(%rdi), %eax\nleal 128(,%rax,2), %eax\nleaq 0x40(%rdi), %r10\ncallq LDimensions\njc LFrameError\n'
-          'movl 0x60(%rdi), %ecx\ncmpl 0x424(%rdi), %ecx\nja LFrameError\ncmpl 0x70(%rdx), %ecx\nja LFrameError\n'
-          'movl 0x64(%rdi), %ecx\ncmpl 0x428(%rdi), %ecx\nja LFrameError\ncmpl 0x74(%rdx), %ecx\nja LFrameError\n'
+          'movl 0x60(%rdi), %ecx\ncmpl 0x424(%rdi), %ecx\nja LFrameError\ncmpl 0x78(%rdx), %ecx\nja LFrameError\n'
+          'movl 0x64(%rdi), %ecx\ncmpl 0x428(%rdi), %ecx\nja LFrameError\ncmpl 0x7c(%rdx), %ecx\nja LFrameError\n'
           'movl 0x70(%rdx), %ecx\ncmpl 0x78(%rdx), %ecx\nja LFrameError\nmovl 0x74(%rdx), %ecx\ncmpl 0x7c(%rdx), %ecx\nja LFrameError\n'
           'leaq 0x404(%rdi), %r10\nmovl $128, %eax\ncallq LDimensions\njc LFrameError\n'
           'leaq 0x50(%rdx), %r10\nmovl $128, %eax\ncallq LDimensions\njc LFrameError\n'
-          'leaq 0x58(%rdx), %r10\nmovl $128, %eax\ncallq LDimensions\njc LFrameError\nLFrameContinue:\npopq %rcx\n')
+          'leaq 0x58(%rdx), %r10\nmovl $128, %eax\ncallq LDimensions\njc LFrameError\n')
+    # 可见尺寸已核验且不会溢出；只允许覆盖其末尾宏块内的已分配填充区域。
+    out+=('movl 0x70(%rdx), %ecx\naddl $15, %ecx\nandl $-16, %ecx\ncmpl %ecx, 0x60(%rdi)\nja LFrameError\n'
+          'movl 0x74(%rdx), %ecx\naddl $15, %ecx\nandl $-16, %ecx\ncmpl %ecx, 0x64(%rdi)\nja LFrameError\n'
+          'LFrameContinue:\npopq %rcx\n')
     out+=replay(ENCODE_PICTURE,20)+transfer(ENCODE_PICTURE,20)
     out+='LFrameError:\npopq %rcx\nmovl $5, %eax\nretq\n'
 
