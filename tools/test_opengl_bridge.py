@@ -33,6 +33,7 @@ def main():
 #include <UserOpenGLResolver.hpp>
 #include <VPF/DisplayManifestData.hpp>
 #include <VPF/ValidatedPageBackend.hpp>
+#include <VPF/DisplayRuntime.hpp>
 using vnode_t=void*;using memory_object_t=void*;using memory_object_offset_t=uint64_t;using vm_size_t=uint64_t;
 using boolean_t=int;using mach_vm_address_t=uint64_t;using thread_call_param_t=void*;using thread_call_t=void*;
 using thread_call_func_t=void(*)(void*,void*);
@@ -48,6 +49,9 @@ struct NRed{static NRed& singleton(){static NRed n;return n;}unsigned getDeviceI
  void setProp32(const char* name,unsigned value){assert(!inHook&&!locked);properties[name]=value;}};
 struct Version{unsigned major(){return ::major;}};static Version currentKernelVersion(){return {};}
 static bool checkKernelArgument(const char* name){assert(strcmp(name,"-NRedDisplayFix")==0);return flag;}
+namespace UserPatchCoordinator {
+static UInt32 requestedDisplayGroups(){return VPF::requestedGroupsForDisplayFix(checkKernelArgument("-NRedDisplayFix"),major);}
+}
 static thread_call_t thread_call_allocate(thread_call_func_t cb,void*){allocated++;callback=cb;return allocateOK?reinterpret_cast<void*>(1):nullptr;}
 constexpr unsigned THREAD_CALL_PRIORITY_KERNEL=1;
 static thread_call_t thread_call_allocate_with_priority(thread_call_func_t cb,void* p,unsigned priority){
@@ -101,6 +105,7 @@ static void reset(unsigned os=25,unsigned id=0x1638){
  if(Actual::reportCall)thread_call_free(Actual::reportCall);
  Actual::reportCall=nullptr;Actual::device=nullptr;Actual::manifests[0]=Actual::manifests[1]=nullptr;
  Actual::appliedMask=Actual::dynamicMask=Actual::errorMask=Actual::planMask=Actual::evidenceMask=0;
+ Actual::groupStates[0]=Actual::groupStates[1]=0;
  properties.clear();failedWrites.clear();onEnable=nullptr;pending=locked=inHook=false;
  flag=allocateOK=true;major=os;pci=id;allocated=freed=writeAccess=queued=validCalls=0;
  validValue=rangeResult=1;taintValue=nxValue=0;vnodeName="AMDRadeonX5000GLDriver";names=putnames=0;
@@ -131,6 +136,8 @@ int main(){
   assert(!properties.contains("NRedOpenGLSEApplied"));flush();
   assert(properties.at(index?"NRedOpenGLDualQuadApplied":"NRedOpenGLSEApplied")==1);
   assert(properties.at("NRedOpenGLVPFPlanVerified")==0);assert(Actual::evidenceMask==(1U<<index));
+  assert(properties.at(index?"NRedOpenGLDualQuadGroupState":"NRedOpenGLHwInfoGroupState")
+         ==unsigned(VPF::DisplayGroupState::Installed));
   auto before=writeAccess,queueBefore=queued;page(bytes.data());assert(writeAccess==before&&queued==queueBefore);cases++;
   // XNU 整页验证返回四位全真位图，不能仅接受旧布尔值 1。
   setup();validValue=0xf;page(bytes.data());flush();assert(bytes==expected&&Actual::appliedMask==(1U<<index));cases++;
@@ -154,6 +161,8 @@ int main(){
     case 7:expectedOffset=0xfffffffffffff000ULL;break;default:break;}
    auto old=bytes;page(bytes.data(),invalid!=6);assert(bytes==old&&writeAccess==0);cases++;
   }
+  setup();flag=false;auto denied=bytes;page(bytes.data());
+  assert(bytes==denied&&writeAccess==0&&Actual::appliedMask==0);cases++;
   setup();failedWrites={1};page(bytes.data());flush();assert(bytes!=expected&&properties.at("NRedOpenGLWriteRejected")==1&&Actual::appliedMask==0);cases++;
   setup();failedWrites={2};page(bytes.data());flush();assert(bytes==expected&&writeAccess==4&&Actual::appliedMask==(1U<<index));cases++;
   setup();failedWrites={2,4};page(bytes.data());flush();assert(bytes==expected&&Actual::appliedMask==0&&properties.at("NRedOpenGLRestoreFailed")==1);cases++;

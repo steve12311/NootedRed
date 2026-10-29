@@ -10,7 +10,7 @@ def write_sources():
     stubs = WORK / 'stubs'
     files = {
         'IOKit/IOTypes.h': '''#pragma once
-using UInt8=unsigned char; using UInt32=unsigned; using UInt64=unsigned long long;
+using UInt8=unsigned char; using UInt16=unsigned short; using UInt32=unsigned; using UInt64=unsigned long long;
 using mach_vm_address_t=UInt64; constexpr int KERN_FAILURE=5;
 ''',
         'IOKit/IOLocks.h': '''#pragma once
@@ -58,6 +58,7 @@ extern unsigned MODULECalls;
 static int callback(void*,void*,int result){++MODULECalls;return result;}
 void registerREGISTERModule(){UserPatchCoordinator::registerREGISTER(callback);}
 bool MODULEDefers(){return UserPatchCoordinator::deferModulePatches();}
+unsigned MODULEGroups(){return UserPatchCoordinator::requestedDisplayGroups();}
 void* MODULEState(unsigned index){
     using namespace UserPatchCoordinator;
     void* addresses[]={&displayCallback(),&videoCallback(),&activeFlag(),&gateLock(),
@@ -77,6 +78,7 @@ void* MODULEState(unsigned index){
 
 void registerDisplayModule(); void registerVideoModule();
 bool displayDefers(); bool videoDefers();
+unsigned displayGroups(); unsigned videoGroups();
 void* displayState(unsigned); void* videoState(unsigned);
 unsigned displayCalls=0,videoCalls=0;
 static unsigned nativeCount=0,enabled=0,skipped=0,rejected=0,routeCalls=0,lockFrees=0;
@@ -113,6 +115,14 @@ void NRed::setProp32(const char* key,UInt32 value){
 }
 int main(int argc,char** argv){
     using namespace UserPatchCoordinator;
+    configureDisplay(false,25);
+    assert(displayGroups()==0 && videoGroups()==0);
+    configureDisplay(true,25);
+    assert(displayGroups()==127 && videoGroups()==127);
+    configureDisplay(true,23);
+    assert(displayGroups()==119 && videoGroups()==119);
+    configureDisplay(false,25);
+    assert(displayGroups()==0 && videoGroups()==0);
     KernelPatcher patcher;
     if(argc==2){
         if(std::strcmp(argv[1],"none")!=0){

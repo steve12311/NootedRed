@@ -90,10 +90,11 @@ namespace VPF
     };
 
     // 有界账本，由调用方串行化；活跃 map 的隔离状态不得因进程身份变化而重置。
-    class CapabilityLedger
+    template<UInt32 MaxEntries>
+    class CapabilityLedgerStorage
     {
     public:
-        static constexpr UInt32 Capacity = 64;
+        static constexpr UInt32 Capacity = MaxEntries;
 
     private:
         struct Entry
@@ -179,5 +180,7 @@ namespace VPF
             return mapCount(feature, CapabilityState::Quarantined) != 0;
         }
     };
+
+    using CapabilityLedger = CapabilityLedgerStorage<64>;
 
 }    // namespace VPF

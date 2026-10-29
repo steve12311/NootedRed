@@ -5,6 +5,7 @@
 #include <IOKit/IOLib.h>
 #include <NRed.hpp>
 #include <UserPatchCoordinator.hpp>
+#include <VPF/DisplayDependencyPlanner.hpp>
 #include <kern/task.h>
 #include <mach/vm_map.h>
 #include <sys/proc.h>
@@ -23,6 +24,7 @@ namespace
 
     mach_vm_address_t originalCheck{0};
     GetTaskMap        getTaskMap{nullptr};
+    UInt32            displayGroups{0};
 
     __attribute__((noinline))
     int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* returnValue)
@@ -41,6 +43,15 @@ namespace
 
 namespace UserPatchCoordinator
 {
+
+    void configureDisplay(const bool enabled, const UInt32 major)
+    {
+        displayGroups = VPF::requestedGroupsForDisplayFix(enabled, major);
+        NRed::singleton().setProp32("NRedDisplayPlannerRevision", 1);
+        NRed::singleton().setProp32("NRedDisplayPlannerRequested", displayGroups);
+    }
+
+    UInt32 requestedDisplayGroups() { return displayGroups; }
 
     PatchCallback& displayCallback()
     {

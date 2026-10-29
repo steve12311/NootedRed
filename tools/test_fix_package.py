@@ -32,7 +32,10 @@ def main():
         source = (ROOT / 'NootedRed' / module).read_text()
         assert 'setEnabled(!checkKernelArgument("-NRedNoFVRC"))' in source
     gl = (ROOT / 'NootedRed/UserOpenGL.cpp').read_text()
-    assert 'checkKernelArgument("-NRedDisplayFix")' in gl
+    assert 'UserPatchCoordinator::requestedDisplayGroups()' in gl
+    nred = (ROOT / 'NootedRed/NRed.cpp').read_text()
+    assert 'configureDisplay(checkKernelArgument("-NRedDisplayFix")' in nred
+    assert nred.index('UserPatchCoordinator::configureDisplay') < nred.index('UserSurfaceSync::init(patcher)')
     assert 'UserOpenGL::init(patcher)' in (ROOT / 'NootedRed/NRed.cpp').read_text()
     ec = (ROOT / 'NootedRed/ECBacklight.cpp').read_text()
     assert 'PE_parse_boot_argn("NRedECBacklight"' not in ec

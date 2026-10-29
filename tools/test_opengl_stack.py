@@ -24,11 +24,12 @@ def inspect(binary, link_map):
         ('validatePage', '__ZN12_GLOBAL__N_112validatePage', 128, 1),
         ('validateRange', '__ZN12_GLOBAL__N_113validateRange', 128, 1),
         ('patchPage', '__ZN12_GLOBAL__N_19patchPage', 128, 1),
+        ('deliverBlock', '__ZN12_GLOBAL__N_112deliverBlock', 768, 1),
         ('patchBlock', '__ZN12_GLOBAL__N_110patchBlock', 768, 1),
         ('inspectValidatedPage', '__ZN3VPF20inspectValidatedPage', 256, 1),
         ('applyValidatedPage', '__ZN3VPF18applyValidatedPage', 128, 1),
         ('resolvePage', '__ZN18UserOpenGLResolver11resolvePage', 256, 1),
-        ('shared-region', '__ZN12_GLOBAL__N_124wrappedSharedRegionCheck', 128, 2),
+        ('shared-region', '__ZN12_GLOBAL__N_124wrappedSharedRegionCheck', 128, 3),
     ]
     assert not any(symbol.startswith('__ZN12_GLOBAL__N_17prepareEv') for _, _, symbol in symbols), 'unexpected preparation function'
     frames = []

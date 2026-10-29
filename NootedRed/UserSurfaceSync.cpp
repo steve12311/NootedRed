@@ -10,6 +10,7 @@
 #include <UserSurfaceSync.hpp>
 #include <UserSurfaceSyncData.hpp>
 #include <UserSurfaceSyncResolver.hpp>
+#include <VPF/DisplayRuntime.hpp>
 #include <VPF/ExecutableTrampolineResource.hpp>
 #include <VPF/MetalTransactionExecutor.hpp>
 #include <VPF/ResolutionDiagnostics.hpp>
@@ -71,6 +72,7 @@ UInt32 submitGuardCount{0};
 struct Published {
     UInt64 uuid[4], matched, reads, planState, planSites, planVerified;
     UInt64 fvrcDisplay, fvrcDisplayCold, fvrcSubmit, fvrcSubmitCold;
+    UInt64 groupsEnabled, groupsRejected, renderState, scratchState, submitState;
 } published{};
 bool              srdShared{false}, legacyBlend{false}, computeScratch{false}, submitGuard{false};
 bool              renderRequested{false};
@@ -168,7 +170,7 @@ struct SubmitGuardWorkspace
 // 守卫把“已用尾..容量尾”的空闲区整段填成 PM4 filler（池复用后尾部常混有旧命令），
 // 随后执行原入口前 15 字节并跳回。
 kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, SubmitGuardWorkspace& workspace,
-                                 UInt64 offset = 0)
+                                 VPF::DisplayRuntime<>& runtime, UInt64 offset = 0)
 {
     using namespace UserSubmitGuardData;
     fresh = false;
@@ -195,10 +197,21 @@ kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, S
         const UInt64 continuation = method + MethodPatchSize;
         memcpy(expected + PayloadJumpOffset, &continuation, sizeof(continuation));
         vm_prot_t protection{VM_PROT_NONE};
-        return readUser(target, existing, sizeof(existing)) == 0 && memcmp(existing, expected, sizeof(existing)) == 0
-                       && leafProtection(map, target, protection) && protection == (VM_PROT_READ | VM_PROT_EXECUTE) ?
-                   KERN_SUCCESS :
-                   KERN_INVALID_ARGUMENT;
+        if (readUser(target, existing, sizeof(existing)) != 0 || memcmp(existing, expected, sizeof(existing)) != 0
+            || !leafProtection(map, target, protection) || protection != (VM_PROT_READ | VM_PROT_EXECUTE))
+        {
+            return KERN_INVALID_ARGUMENT;
+        }
+        if (!runtime.verify(VPF::featureBit(VPF::FeatureId::DisplaySubmitGuard)
+                                | VPF::featureBit(VPF::FeatureId::DisplaySubmit),
+                            VPF::ExternalSubmitResolver)
+            || !runtime.begin()
+            || !runtime.installed(VPF::featureBit(VPF::FeatureId::DisplaySubmitGuard)
+                                  | VPF::featureBit(VPF::FeatureId::DisplaySubmit)))
+        {
+            return KERN_INVALID_ARGUMENT;
+        }
+        return KERN_SUCCESS;
     }
     if (memcmp(entry, MethodOriginal, sizeof(entry)) != 0) { return KERN_INVALID_ARGUMENT; }
 
@@ -216,6 +229,13 @@ kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, S
         ops, plan, base, workspace.saved, workspace.pages);
     VPF::MetalPrepareResult prepared;
     if (!transaction.prepare(prepared) || prepared.state != VPF::MetalPrepareState::AllOriginal) {
+        return KERN_INVALID_ARGUMENT;
+    }
+    if (!runtime.verify(VPF::featureBit(VPF::FeatureId::DisplaySubmitGuard)
+                            | VPF::featureBit(VPF::FeatureId::DisplaySubmit),
+                        VPF::ExternalSubmitResolver)
+        || !runtime.begin())
+    {
         return KERN_INVALID_ARGUMENT;
     }
 
@@ -270,6 +290,10 @@ kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, S
         });
 
     if (committed.status != VPF::TransactionStatus::Installed) {
+        runtime.failed(committed.status == VPF::TransactionStatus::CheckFailed
+                       || committed.status == VPF::TransactionStatus::BeforeWriteFailed
+                       || (committed.status == VPF::TransactionStatus::ProtectionFailed ? committed.restoreOk :
+                                                                                          committed.rollbackOk));
         // 只有未写入或已确认回滚的入口才能释放守卫页；否则保留页等待后续核验。
         const bool entryRestored =
             committed.status == VPF::TransactionStatus::CheckFailed
@@ -290,12 +314,15 @@ kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, S
                    KERN_FAILURE;
     }
     if (!resource.verify(true)) {
+        runtime.failed(false);
         owner.retained = true;
         NRed::singleton().setProp32("NRedSubmitGuardRollbackFailed", 1);
         return KERN_FAILURE;
     }
     owner.retained = true;
     fresh = true;
+    runtime.installed(VPF::featureBit(VPF::FeatureId::DisplaySubmitGuard)
+                      | VPF::featureBit(VPF::FeatureId::DisplaySubmit));
     return KERN_SUCCESS;
 }
 
@@ -310,6 +337,7 @@ struct PatchWorkspace
     SubmitGuardWorkspace          guard;
     Page                          pages[MaxPageCount];
     VPF::FastResolution           fast, submitFast;
+    VPF::DisplayRuntime<>         runtime;
 };
 
 struct WorkspaceBuffer
@@ -415,35 +443,6 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         publish(published.fvrcSubmitCold, "NRedFVRCSubmitCold", submitFast.hot ? 0 : 1);
     }
     if (sequoia && submitGuard && !knownCache) { NRed::singleton().setProp32("NRedSubmitGuardDynamicRejected", 1); }
-    if (knownCache && submitGuard) {
-        if (map) {
-            bool       fresh{false};
-            const auto installed = installSubmitGuard(map, base, fresh, workspace.value->guard, submitOffset);
-            if (installed == KERN_SUCCESS && fresh) {
-                const auto pid = process != nullptr ? proc_pid(process) : -1;
-                char       name[32]{};
-                if (pid > 0) { proc_name(pid, name, sizeof(name)); }
-                name[sizeof(name) - 1] = '\0';
-                if (strcmp(name, "WindowServer") == 0) {
-                    NRed::singleton().setProp32("NRedSubmitGuardWindowServerPID", static_cast<UInt32>(pid));
-                    NRed::singleton().setProp32("NRedSubmitGuardWindowServerApplied", 1);
-                }
-                auto count = __atomic_load_n(&submitGuardCount, __ATOMIC_RELAXED);
-                while (count < 16) {
-                    if (__atomic_compare_exchange_n(&submitGuardCount, &count, count + 1, false,
-                                                    __ATOMIC_RELAXED, __ATOMIC_RELAXED)) {
-                        NRed::singleton().setProp32("NRedSubmitGuardApplied", count + 1);
-                        break;
-                    }
-                }
-                SYSLOG("UserSurfaceSync", "SubmitGuard-v1 installed in pid %d", pid);
-            }
-            else if (installed != KERN_SUCCESS) {
-                NRed::singleton().setProp32("NRedSubmitGuardRejected", static_cast<UInt32>(installed));
-                SYSLOG("UserSurfaceSync", "SubmitGuard-v1 not installed: error=0x%X", installed);
-            }
-        }
-    }
     if (!renderRequested) { return result; }
     if (legacyProfile && !UserLegacyCompat::matches(readUser, base, header + 88, *legacyProfile)) {
         stage(Stage::CacheMismatch);
@@ -527,17 +526,80 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     }
     publish(published.planState, "NRedDisplayVPFPlanState", static_cast<UInt32>(prepared.state));
     publish(published.planSites, "NRedDisplayVPFPlanSites", transaction.siteCount());
+    if (prepared.state != VPF::MetalPrepareState::AllOriginal && prepared.state != VPF::MetalPrepareState::AllPatched)
+    {
+        stage(Stage::Mixed);
+        return result;
+    }
+    auto&      runtime = workspace.value->runtime;
+    const auto groups  = UserPatchCoordinator::requestedDisplayGroups() & VPF::MetalDisplayGroups;
+    runtime.reset(reinterpret_cast<UInt64>(map), major, deviceID, groups);
+    runtime.verify(
+        runtime.features()
+            & ~(VPF::featureBit(VPF::FeatureId::DisplaySubmitGuard) | VPF::featureBit(VPF::FeatureId::DisplaySubmit)),
+        VPF::ExternalMetalBridge);
+    struct RuntimeReport
+    {
+        VPF::DisplayRuntime<>& runtime;
+        ~RuntimeReport()
+        {
+            publish(published.groupsEnabled, "NRedDisplayPlannerEnabled", runtime.result().enabled);
+            publish(published.groupsRejected, "NRedDisplayPlannerRejected", runtime.result().rejected);
+            publish(published.renderState, "NRedDisplayRenderGroupState",
+                    static_cast<UInt32>(runtime.state(VPF::DisplayGroup::MetalRenderCore)));
+            publish(published.scratchState, "NRedDisplayScratchGroupState",
+                    static_cast<UInt32>(runtime.state(VPF::DisplayGroup::MetalScratch)));
+            publish(published.submitState, "NRedDisplaySubmitGroupState",
+                    static_cast<UInt32>(runtime.state(VPF::DisplayGroup::MetalSubmitSafety)));
+        }
+    } runtimeReport{runtime};
+    if (!knownCache || !submitGuard) { return result; }
+    if (knownCache && submitGuard) {
+        if (map) {
+            bool       fresh{false};
+            const auto installed = installSubmitGuard(map, base, fresh, workspace.value->guard, runtime, submitOffset);
+            if (installed == KERN_SUCCESS && fresh) {
+                const auto pid = process != nullptr ? proc_pid(process) : -1;
+                char       name[32]{};
+                if (pid > 0) { proc_name(pid, name, sizeof(name)); }
+                name[sizeof(name) - 1] = '\0';
+                if (strcmp(name, "WindowServer") == 0) {
+                    NRed::singleton().setProp32("NRedSubmitGuardWindowServerPID", static_cast<UInt32>(pid));
+                    NRed::singleton().setProp32("NRedSubmitGuardWindowServerApplied", 1);
+                }
+                auto count = __atomic_load_n(&submitGuardCount, __ATOMIC_RELAXED);
+                while (count < 16) {
+                    if (__atomic_compare_exchange_n(&submitGuardCount, &count, count + 1, false, __ATOMIC_RELAXED,
+                                                    __ATOMIC_RELAXED))
+                    {
+                        NRed::singleton().setProp32("NRedSubmitGuardApplied", count + 1);
+                        break;
+                    }
+                }
+                SYSLOG("UserSurfaceSync", "SubmitGuard-v1 installed in pid %d", pid);
+            }
+            else if (installed != KERN_SUCCESS) {
+                NRed::singleton().setProp32("NRedSubmitGuardRejected", static_cast<UInt32>(installed));
+                SYSLOG("UserSurfaceSync", "SubmitGuard-v1 not installed: error=0x%X", installed);
+                return result;
+            }
+        }
+    }
+    if (!runtime.ready()) { return result; }
     if (prepared.state == VPF::MetalPrepareState::AllPatched) {
+        runtime.installed(runtime.features());
         publish(published.planVerified, "NRedDisplayVPFPlanVerified", 1);
         stage(Stage::Already);
         return result;
     }
-    if (prepared.state != VPF::MetalPrepareState::AllOriginal) {
-        stage(Stage::Mixed);
-        return result;
-    }
     publish(published.planVerified, "NRedDisplayVPFPlanVerified", 1);
-    const auto committed = transaction.commit([] { return true; });
+    const auto committed = transaction.commit([&] { return runtime.ready(); });
+    if (committed.status != VPF::TransactionStatus::Installed) {
+        runtime.failed(committed.status == VPF::TransactionStatus::CheckFailed
+                       || committed.status == VPF::TransactionStatus::BeforeWriteFailed
+                       || (committed.status == VPF::TransactionStatus::ProtectionFailed ? committed.restoreOk :
+                                                                                          committed.rollbackOk));
+    }
     switch (committed.status) {
         case VPF::TransactionStatus::CheckFailed:
             stage(Stage::Region);
@@ -567,6 +629,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         case VPF::TransactionStatus::Installed:
             break;
     }
+    runtime.installed(runtime.features());
     stage(Stage::Applied);
     if (dynamic) { NRed::singleton().setProp32("NRedImmediateSyncDynamicApplied", 1); }
     // 仅记录已完整写入并恢复 RX 的 WindowServer，避免用全局计数代替故障进程证据。
@@ -669,7 +732,7 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
     sequoia         = currentKernelVersion().major() == 24;
     legacyProfile   = sequoia ? nullptr : UserLegacyData::metal(currentKernelVersion().major());
     renderRequested = false;
-    submitGuard     = checkKernelArgument("-NRedDisplayFix");
+    submitGuard     = (UserPatchCoordinator::requestedDisplayGroups() & VPF::MetalDisplayGroups) != 0;
     legacyBlend = renderRequested = submitGuard;
     computeScratch = srdShared = submitGuard && (sequoia || currentKernelVersion().majorMatches(MACOS_26));
     NRed::singleton().setProp32("NRedDisplayFixVersion", 2);

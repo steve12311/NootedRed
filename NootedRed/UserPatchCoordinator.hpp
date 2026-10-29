@@ -25,6 +25,9 @@ namespace UserPatchCoordinator
     UInt32&                                  leaseRejections();
     UInt32&                                  reportedPeak();
 
+    void   configureDisplay(bool enabled, UInt32 major);
+    UInt32 requestedDisplayGroups();
+
     inline void clearDisplay() { displayCallback() = nullptr; }
 
     inline void clearVideo() { videoCallback() = nullptr; }

@@ -67,9 +67,10 @@ namespace VPF
 
     }    // namespace DisplayStateDetail
 
-    // 组状态只聚合已记录的 FeatureId；未请求或无证据的功能保持 Disabled。
-    inline DisplayGroupState displayGroupState(const CapabilityLedger& ledger, const UInt64 map,
-                                               const DisplayGroup group)
+    // features 限定当前 OS/设备适用的成员；缺少证据的适用成员仍参与聚合。
+    template<UInt32 Capacity>
+    inline DisplayGroupState displayGroupState(const CapabilityLedgerStorage<Capacity>& ledger, const UInt64 map,
+                                               const DisplayGroup group, const UInt32 features = allFeatureBits)
     {
         const auto* spec = DisplayPlannerDetail::findGroup(
             DefaultDisplayGroups, static_cast<UInt32>(sizeof(DefaultDisplayGroups) / sizeof(DefaultDisplayGroups[0])),
@@ -84,7 +85,7 @@ namespace VPF
 
         for (UInt32 i = 0; i < FeatureCount; ++i) {
             const auto feature = static_cast<FeatureId>(i);
-            if ((spec->features & featureBit(feature)) == 0) { continue; }
+            if ((spec->features & features & featureBit(feature)) == 0) { continue; }
             any              = true;
             const auto state = ledger.state(map, feature);
             if (state != CapabilityState::Disabled) { allDisabled = false; }
@@ -121,9 +122,10 @@ namespace VPF
         return DisplayGroupState::Candidate;
     }
 
-    // 该视图用于测试和诊断；实际安装使用现有账本。
-    inline bool markDisplayGroup(CapabilityLedger& ledger, const UInt64 map, const DisplayGroup group,
-                                 const CapabilityState state)
+    // 安装门与诊断共享同一份 FeatureId 账本。
+    template<UInt32 Capacity>
+    inline bool markDisplayGroup(CapabilityLedgerStorage<Capacity>& ledger, const UInt64 map, const DisplayGroup group,
+                                 const CapabilityState state, const UInt32 features = allFeatureBits)
     {
         const auto* spec = DisplayPlannerDetail::findGroup(
             DefaultDisplayGroups, static_cast<UInt32>(sizeof(DefaultDisplayGroups) / sizeof(DefaultDisplayGroups[0])),
@@ -132,7 +134,7 @@ namespace VPF
         bool ok = true;
         for (UInt32 i = 0; i < FeatureCount; ++i) {
             const auto feature = static_cast<FeatureId>(i);
-            if ((spec->features & featureBit(feature)) == 0) { continue; }
+            if ((spec->features & features & featureBit(feature)) == 0) { continue; }
             ok &= ledger.set(map, feature, state);
         }
         return ok;

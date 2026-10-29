@@ -5,7 +5,9 @@
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserOpenGL.hpp>
 #include <UserOpenGLResolver.hpp>
+#include <UserPatchCoordinator.hpp>
 #include <VPF/DisplayManifestData.hpp>
+#include <VPF/DisplayRuntime.hpp>
 #include <VPF/ValidatedPageBackend.hpp>
 #include <kern/thread_call.h>
 #include <sys/vnode.h>
@@ -23,6 +25,7 @@ namespace
     const VPF::DisplayManifest*   manifests[2]{nullptr, nullptr};
     thread_call_t                 reportCall{nullptr};
     UInt32                        appliedMask{0}, dynamicMask{0}, errorMask{0}, planMask{0}, evidenceMask{0};
+    UInt32                        groupStates[2]{};
     constexpr UInt32              PageSize = UserOpenGLResolver::PageSize;
 
     // 仅在命中或写入失败后排队发布诊断；初始化不启动工作线程。
@@ -41,6 +44,8 @@ namespace
         nred.setProp32("NRedOpenGLRestoreFailed", (errors & 2) != 0);
         nred.setProp32("NRedOpenGLVPFPlanVerified", plans == 3);
         nred.setProp32("NRedOpenGLVPFEvidenceMask", proofs);
+        nred.setProp32("NRedOpenGLHwInfoGroupState", __atomic_load_n(&groupStates[0], __ATOMIC_RELAXED));
+        nred.setProp32("NRedOpenGLDualQuadGroupState", __atomic_load_n(&groupStates[1], __ATOMIC_RELAXED));
     }
 
     void report(UInt32& mask, UInt32 bits)
@@ -56,32 +61,58 @@ namespace
         return MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock) == KERN_SUCCESS;
     }
 
+    __attribute__((noinline)) void deliverBlock(const VPF::ValidatedPageWorkspace& workspace, const UInt8* bytes,
+                                                const UInt32 kind)
+    {
+        const auto             group = workspace.plan.manifest()->group;
+        VPF::DisplayRuntime<1> runtime;
+        runtime.reset(reinterpret_cast<UInt64>(bytes), device->major, device->deviceID,
+                      UserPatchCoordinator::requestedDisplayGroups() & VPF::displayGroupBit(group));
+        const auto feature = kind == 0 ? VPF::FeatureId::DisplayOpenGLHwInfo : VPF::FeatureId::DisplayOpenGLDualQuad;
+        if (!runtime.verify(workspace.evidenceVerified ? VPF::featureBit(feature) : 0, VPF::ExternalOpenGLPageHook)
+            || !runtime.begin())
+        {
+            return;
+        }
+        __atomic_fetch_or(&planMask, 1U << kind, __ATOMIC_RELAXED);
+        if (workspace.evidenceVerified) { __atomic_fetch_or(&evidenceMask, 1U << kind, __ATOMIC_RELAXED); }
+        const auto outcome = VPF::applyValidatedPage(
+            workspace, const_cast<UInt8*>(bytes),
+            [&]
+            {
+                return runtime.ready()
+                       && MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) == KERN_SUCCESS;
+            },
+            restoreWriting);
+        switch (outcome) {
+            case VPF::PagePatchOutcome::Delivered:
+            case VPF::PagePatchOutcome::AlreadyInstalled: {
+                runtime.installed(VPF::featureBit(feature));
+                if (workspace.plan.dynamic()) { report(dynamicMask, 1U << kind); }
+                report(appliedMask, 1U << kind);
+            } break;
+            case VPF::PagePatchOutcome::WriteFailed: {
+                runtime.failed(true);
+                report(errorMask, 1);
+            } break;
+            case VPF::PagePatchOutcome::RestoreFailed: {
+                runtime.failed(false);
+                report(errorMask, 2);
+            } break;
+            default: runtime.failed(true); break;
+        }
+        const auto state = static_cast<UInt32>(runtime.state(group));
+        if (__atomic_exchange_n(&groupStates[kind], state, __ATOMIC_RELAXED) != state) {
+            thread_call_enter(reportCall);
+        }
+    }
     __attribute__((noinline)) void patchBlock(const VPF::OpenGLPageContext& context, const UInt8* bytes, UInt64 offset,
                                               UInt32 kind)
     {
         if (kind >= 2 || manifests[kind] == nullptr) { return; }
         VPF::ValidatedPageWorkspace workspace;
         if (!VPF::inspectValidatedPage(*manifests[kind], *device, kind, bytes, offset, context, workspace)) { return; }
-        __atomic_fetch_or(&planMask, 1U << kind, __ATOMIC_RELAXED);
-        if (workspace.evidenceVerified) { __atomic_fetch_or(&evidenceMask, 1U << kind, __ATOMIC_RELAXED); }
-        const auto outcome = VPF::applyValidatedPage(
-            workspace, const_cast<UInt8*>(bytes),
-            [] { return MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) == KERN_SUCCESS; },
-            restoreWriting);
-        switch (outcome) {
-            case VPF::PagePatchOutcome::Delivered:
-            case VPF::PagePatchOutcome::AlreadyInstalled: {
-                if (workspace.plan.dynamic()) { report(dynamicMask, 1U << kind); }
-                report(appliedMask, 1U << kind);
-            } break;
-            case VPF::PagePatchOutcome::WriteFailed: {
-                report(errorMask, 1);
-            } break;
-            case VPF::PagePatchOutcome::RestoreFailed: {
-                report(errorMask, 2);
-            } break;
-            default: break;
-        }
+        deliverBlock(workspace, bytes, kind);
     }
 
     bool isDriver(vnode_t vnode)
@@ -139,7 +170,7 @@ namespace
 
 void UserOpenGL::init(KernelPatcher& patcher)
 {
-    if (!checkKernelArgument("-NRedDisplayFix")) { return; }
+    if ((UserPatchCoordinator::requestedDisplayGroups() & VPF::OpenGLDisplayGroups) == 0) { return; }
     manifests[0] = manifests[1] = nullptr;
     device = UserOpenGLData::findDevice(currentKernelVersion().major(), NRed::singleton().getDeviceID());
     if (!device) { return; }

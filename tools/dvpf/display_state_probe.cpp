@@ -1,6 +1,7 @@
 // DVPF 状态探针：显示组依赖、拒绝原因、共享账本视图和跳板生命周期。
 #include <VPF/DisplayCapabilityState.hpp>
 #include <VPF/DisplayDependencyPlanner.hpp>
+#include <VPF/DisplayRuntime.hpp>
 #include <VPF/ExecutableTrampolineResource.hpp>
 #include <cstdio>
 #include <cstdlib>
@@ -214,11 +215,76 @@ static void testTrampoline()
     check(verified.restoreEntry(true) && verified.release() && verified.invariant(), "verified release");
 }
 
+static void testRuntime()
+{
+    DisplayRuntime runtime;
+    for (UInt32 major = 23; major <= 25; ++major) {
+        const auto groups = requestedGroupsForDisplayFix(true, major) & MetalDisplayGroups;
+        runtime.reset(0x1000, major, 0x1638, groups);
+        check(!runtime.begin() && !runtime.ready(), "runtime no evidence no write");
+        const auto features = runtime.features();
+        const auto guard    = featureBit(FeatureId::DisplaySubmitGuard);
+        check(!runtime.verify(features & ~guard, ExternalMetalBridge), "runtime missing guard");
+        check(!runtime.begin(), "runtime cannot bypass guard rejection");
+        check(runtime.verify(guard, ExternalSubmitResolver), "runtime complete evidence");
+        check(runtime.begin() && runtime.ready(), "runtime eligible allows write");
+        check(runtime.installed(guard), "runtime guard delivered");
+        check(runtime.state(DisplayGroup::MetalSubmitSafety)
+                  == (major == 23 ? DisplayGroupState::Installed : DisplayGroupState::Installing),
+              "runtime partial safety group is not installed");
+        check(runtime.state(DisplayGroup::MetalRenderCore) == DisplayGroupState::Installing,
+              "runtime guard does not install render");
+        check(runtime.installed(features), "runtime all delivered");
+        check(runtime.state(DisplayGroup::MetalRenderCore) == DisplayGroupState::Installed,
+              "runtime applicable render members installed");
+        check(runtime.state(DisplayGroup::MetalSubmitSafety) == DisplayGroupState::Installed,
+              "runtime safety installed");
+        check(runtime.state(DisplayGroup::MetalScratch)
+                  == (major == 23 ? DisplayGroupState::Disabled : DisplayGroupState::Installed),
+              "runtime applicable scratch members installed");
+    }
+    runtime.reset(0x2000, 25, 0x1638, MetalDisplayGroups);
+    check(!runtime.verify(runtime.features() & ~featureBit(FeatureId::DisplaySRD),
+                          ExternalMetalBridge | ExternalSubmitResolver),
+          "runtime missing render member");
+    check(!runtime.begin(), "runtime missing dependency blocks scratch transaction");
+    check(runtime.result().reasons[static_cast<UInt32>(DisplayGroup::MetalScratch)]
+              == DisplayRejectReason::MissingDependency,
+          "runtime scratch dependency rejected");
+    check(runtime.verify(featureBit(FeatureId::DisplaySRD), 0) && runtime.begin(), "runtime resolve dependency");
+    runtime.installed(featureBit(FeatureId::DisplaySubmitGuard));
+    runtime.failed(false);
+    check(!runtime.ready(), "runtime quarantine prevents continuation");
+    check(runtime.state(DisplayGroup::MetalRenderCore) == DisplayGroupState::Quarantined,
+          "runtime rollback failure quarantines render");
+    check(runtime.state(DisplayGroup::MetalSubmitSafety) == DisplayGroupState::Quarantined,
+          "runtime partial safety failure is quarantined");
+    check(!runtime.installed(runtime.features()), "runtime cannot promote failed install");
+
+    const auto gl = displayGroupBit(DisplayGroup::GLHwInfo);
+    runtime.reset(0x3000, 25, 0x1638, gl);
+    check(!runtime.ready(), "runtime new page cannot reuse prior state");
+    check(!runtime.verify(runtime.features(), 0) && !runtime.begin(), "runtime missing page hook");
+    check(runtime.verify(0, ExternalOpenGLPageHook) && runtime.begin(), "runtime page ready");
+    runtime.failed(true);
+    check(runtime.state(DisplayGroup::GLHwInfo) == DisplayGroupState::RollbackComplete && !runtime.ready(),
+          "runtime recovered failure cannot continue");
+    runtime.reset(0x4000, 25, 0xFFFF, gl);
+    check(!runtime.verify(allFeatureBits, ExternalOpenGLPageHook) && !runtime.begin(), "runtime unsupported device");
+    runtime.reset(0x5000, 26, 0x1638, gl);
+    check(!runtime.verify(allFeatureBits, ExternalOpenGLPageHook) && !runtime.begin(), "runtime unsupported OS");
+    runtime.reset(0x6000, 25, 0x1638, 0);
+    check(!runtime.verify(allFeatureBits, ExternalOpenGLPageHook) && !runtime.begin(), "runtime disabled policy");
+    runtime.reset(0, 25, 0x1638, gl);
+    check(runtime.verify(allFeatureBits, ExternalOpenGLPageHook) && !runtime.begin(), "runtime missing address space");
+}
+
 int main()
 {
     testPlanner();
     testLedger();
     testTrampoline();
+    testRuntime();
     if (failures) {
         std::fprintf(stderr, "FAILED: %u checks\n", failures);
         return 1;

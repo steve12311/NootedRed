@@ -67,6 +67,8 @@ void NRed::init()
         [](void* const, KernelPatcher& patcher)
         {
             singleton().processPatcher();
+            UserPatchCoordinator::configureDisplay(checkKernelArgument("-NRedDisplayFix"),
+                                                   currentKernelVersion().major());
             UserSurfaceSync::init(patcher);
             UserOpenGL::init(patcher);
             UserVideoDecode::init(patcher);
