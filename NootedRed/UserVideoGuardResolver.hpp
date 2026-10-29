@@ -96,7 +96,9 @@ namespace UserVideoGuardResolver
             }
             const auto prefixMatches = [&](const UInt8* bytes)
             { return prefixes[0].matches(bytes) || prefixes[1].matches(bytes); };
-            const auto candidateMatches = [&](UInt64 address)
+            UserCacheResolver::ScanAnchor anchor{};
+            const bool                    anchored         = prefixes[0].commonAnchor(prefixes[1], anchor);
+            const auto                    candidateMatches = [&](UInt64 address)
             {
                 for (UInt32 variant = 0; variant < 2; ++variant) {
                     if (!UserCacheResolver::matchBytes(input, address, fn.size, [&](UInt32 offset, UInt8 value)
@@ -132,7 +134,7 @@ namespace UserVideoGuardResolver
                 if (!candidateMatches(address) || candidateInstalled) { return false; }
             }
             else if (!UserCacheResolver::scanFunction(input, image.text, fn.size, 32, prefixMatches, candidateMatches,
-                                                      address))
+                                                      address, 0, anchored ? &anchor : nullptr))
             {
                 return false;
             }

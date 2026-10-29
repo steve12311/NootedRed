@@ -30,8 +30,26 @@ namespace UserCacheResolver
         UInt8  value;
     };
 
+    inline const UInt8* findScanByte(const UInt8* bytes, UInt8 value, UInt32 count)
+    {
+        // 内核 memchr 逐字节扫描；用通用寄存器先跳过无命中字宽，不越过有效尾部。
+        constexpr UInt64 LowBits = 0x0101010101010101ULL, HighBits = 0x8080808080808080ULL;
+        const auto       repeated = UInt64(value) * LowBits;
+        while (count >= sizeof(UInt64)) {
+            const auto different = wide(bytes) ^ repeated;
+            if (((different - LowBits) & ~different & HighBits) != 0) { break; }
+            bytes += sizeof(UInt64);
+            count -= sizeof(UInt64);
+        }
+        // 按字节确认首个命中，同时消除相邻字节借位产生的附加标记。
+        for (; count != 0; --count, ++bytes) {
+            if (*bytes == value) { return bytes; }
+        }
+        return nullptr;
+    }
+
     // 由 tools/analyze_anchor_frequency.py 从生成函数数据统计的字节稀有度秩：
-    // 0 最少见。仅决定 memchr 过滤字节的选择，不参与候选匹配语义。
+    // 0 最少见。仅决定预筛选字节的选择，不参与候选匹配语义。
     inline constexpr UInt8 AnchorRarity[256] = {
         0xFF, 0xF6, 0xEE, 0xEC, 0xF0, 0xDB, 0xB6, 0xE0, 0xE8, 0xD0, 0x97, 0x98, 0xCC, 0xAF, 0x67, 0xF9, 0xE3, 0xBD,
         0x5B, 0x55, 0xA5, 0x79, 0x3F, 0x24, 0xBC, 0x40, 0x25, 0x2F, 0x68, 0x4C, 0x26, 0x9B, 0xDC, 0x93, 0x83, 0x64,
@@ -63,11 +81,9 @@ namespace UserCacheResolver
             const auto positions = length - prefixSize + 1;
             for (UInt32 j = 0; j < positions && offset + j <= text.size - size; ++j) {
                 if (anchor) {
-                    const auto remaining = text.size - size - offset - j + 1;
-                    const auto count     = remaining < positions - j ? UInt32(remaining) : positions - j;
-                    // 兼容内核按 signed char 比较的实现；libc 会把负的 int 转换回 unsigned char。
-                    const auto* next = static_cast<const UInt8*>(
-                        memchr(scan + j + anchor->offset, static_cast<signed char>(anchor->value), count));
+                    const auto  remaining = text.size - size - offset - j + 1;
+                    const auto  count     = remaining < positions - j ? UInt32(remaining) : positions - j;
+                    const auto* next      = findScanByte(scan + j + anchor->offset, anchor->value, count);
                     if (!next) { break; }
                     j = UInt32(next - scan) - anchor->offset;
                 }

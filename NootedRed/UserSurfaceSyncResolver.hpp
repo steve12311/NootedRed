@@ -99,9 +99,14 @@ namespace UserSurfaceSyncResolver
                              bool blend = false, UInt64 hint = 0)
     {
         if (size < 32) { return false; }
+        UserCacheResolver::Prefix prefix;
+        for (UInt32 i = 0; i < 32; ++i) { prefix.set(i, expected[i], false); }
+        UserCacheResolver::ScanAnchor anchor{};
+        const bool                    anchored = prefix.commonAnchor(prefix, anchor);
         return UserCacheResolver::scanFunction(
             input, text, size, 32, [&](const UInt8* bytes) { return memcmp(bytes, expected, 32) == 0; },
-            [&](UInt64 address) { return matches(input, address, expected, size, nullptr, 0, blend); }, found, hint);
+            [&](UInt64 address) { return matches(input, address, expected, size, nullptr, 0, blend); }, found, hint,
+            anchored ? &anchor : nullptr);
     }
 
     // Scratch 子解析器：10 个映像、2 个完整函数、1 个补丁位置。
@@ -506,18 +511,27 @@ namespace UserSurfaceSyncResolver
         if (!imageForCache(input, base, image)) { return false; }
         const auto& fn =
             sectionRelative ? UserSurfaceConstructorData::Submit::ResolverFunctions[0] : ResolverFunctions[0];
-        if (image.segmentCount > 8 || fn.size < 15) { return false; }
+        if (image.segmentCount > 8 || fn.size < 32) { return false; }
         UserCacheResolver::ImageBounds bounds{};
         if (!imageBounds(image, bounds)) { return false; }
         const UserCacheResolver::ImageReference refs[1]           = {{DriverPath, sizeof(DriverPath)}};
         UInt32                                  functionImages[1] = {0};
         UserCacheResolver::KnownLocation        known[1]{};
         const auto                              budget = saveBudget(input);
-        UInt64                                  nativeHead, nativeTail;
-        __builtin_memcpy(&nativeHead, fn.original, sizeof(nativeHead));
-        __builtin_memcpy(&nativeTail, fn.original + 7, sizeof(nativeTail));
-        UInt64     found{0};
-        const auto candidate = [&](UInt64 address)
+        UserCacheResolver::Prefix               prefixes[2];
+        for (UInt32 variant = 0; variant < 2; ++variant) {
+            for (UInt32 i = 0; i < 32; ++i) {
+                static constexpr UInt8 jump[6]   = {0xFF, 0x25, 0, 0, 0, 0};
+                const bool             entryByte = variant && i < 15;
+                const bool relocated = i >= 15 && UserCacheResolver::skipped(i, fn.originalRefs, fn.originalCount);
+                const bool masked    = entryByte ? i >= 6 && i < 14 : relocated;
+                prefixes[variant].set(i, entryByte ? (i < 6 ? jump[i] : 0x90) : fn.original[i], masked);
+            }
+        }
+        UserCacheResolver::ScanAnchor anchor{};
+        const bool                    anchored = prefixes[0].commonAnchor(prefixes[1], anchor);
+        UInt64                        found{0};
+        const auto                    candidate = [&](UInt64 address)
         {
             UInt8 entry[15];
             if (!input.read(address, entry, sizeof(entry))) { return false; }
@@ -565,19 +579,9 @@ namespace UserSurfaceSyncResolver
             fast->rejectHot();
         }
         if (!UserCacheResolver::scanFunction(
-                input, image.text, fn.size, 15,
-                [&](const UInt8* bytes)
-                {
-                    UInt64 head;
-                    __builtin_memcpy(&head, bytes, sizeof(head));
-                    if (head == nativeHead) {
-                        UInt64 tail;
-                        __builtin_memcpy(&tail, bytes + 7, sizeof(tail));
-                        if (tail == nativeTail) { return true; }
-                    }
-                    return (head & 0x0000FFFFFFFFFFFFULL) == 0x25FF && bytes[14] == 0x90;
-                },
-                candidate, found))
+                input, image.text, fn.size, 32,
+                [&](const UInt8* bytes) { return prefixes[0].matches(bytes) || prefixes[1].matches(bytes); }, candidate,
+                found, 0, anchored ? &anchor : nullptr))
         {
             return false;
         }
