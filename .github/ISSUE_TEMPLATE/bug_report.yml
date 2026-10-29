@@ -1,81 +1,129 @@
 name: Bug Report
-description: Report an issue caused by NootedRed
-type: "Bug"
-projects: ["ChefKissInc/2"]
-assignees:
-  - VisualEhrmanntraut
+description: Report a reproducible bug in this NootedRed fork.
+title: "[Bug] "
 body:
   - type: markdown
     attributes:
       value: |
-        # This form is not for asking questions, requesting time estimates, asking for help or similar. The Discussions tab or the Telegram supergroup are better suited for those.
+        Thanks for reporting a problem. Please use the exact build you tested and provide reproducible steps.
+        Do not upload unredacted EFI archives, serial numbers, UUIDs, tokens, or other personal data.
+        This repository is an experimental fork; identify regressions separately from pre-existing upstream issues.
   - type: dropdown
-    id: os
+    id: macos_family
     attributes:
-      label: macOS Version
-      description: On which OS is the bug occurring? OSes that do not appear in the dropdown are not supported.
+      label: macOS version
+      description: Choose the macOS release where the problem occurs.
       options:
-        - All supported macOS versions
-        - macOS Catalina
-        - macOS Big Sur
-        - macOS Monterey
-        - macOS Ventura
-        - macOS Sonoma
+        - macOS Tahoe
         - macOS Sequoia
+        - macOS Sonoma
+        - macOS Ventura
+        - macOS Monterey
+        - macOS Big Sur
+        - macOS Catalina
+        - Other / not listed
     validations:
       required: true
   - type: input
-    id: os_version
+    id: macos_build
     attributes:
-      label: What is the precise OS version on which the bug is occurring?
-      placeholder: ex. 15.2 Beta (24C5089c)
+      label: Exact macOS version and build
+      placeholder: "e.g. macOS 15.8.1 or 26.x, with the exact build number"
+    validations:
+      required: true
+  - type: input
+    id: nootedred_build
+    attributes:
+      label: Exact NootedRed version
+      description: Include release asset (RELEASE/DEBUG) and commit SHA if you built it yourself.
+      placeholder: "e.g. v0.9.0-pre-release.12, RELEASE; or commit SHA"
     validations:
       required: true
   - type: input
     id: cpu
     attributes:
-      label: What is your CPU's model?
-      description: Only Ryzen 1st gen to 5th gen, and 7030 series are supported.
-      placeholder: ex. AMD Athlon Silver 3020e
+      label: CPU / APU model
+      placeholder: "e.g. AMD Ryzen 7 5800H (Cezanne)"
+    validations:
+      required: true
+  - type: input
+    id: gpu_pci
+    attributes:
+      label: AMD GPU PCI Device ID
+      description: If unknown, write "unknown" and include your APU model.
+      placeholder: "e.g. 1002:1638"
+    validations:
+      required: true
+  - type: dropdown
+    id: subsystem
+    attributes:
+      label: Affected subsystem
+      options:
+        - Display / desktop rendering
+        - Metal / GPU compute
+        - OpenGL / application rendering
+        - Video decoding / VideoToolbox / VCN
+        - DRM / protected playback
+        - Startup / black screen / sleep-wake
+        - Other / unknown
+    validations:
+      required: true
+  - type: input
+    id: smbios
+    attributes:
+      label: SMBIOS model
+      placeholder: "e.g. MacBookPro16,2"
+  - type: input
+    id: opencore
+    attributes:
+      label: OpenCore version
+      placeholder: "e.g. 1.0.x RELEASE"
+  - type: textarea
+    id: relevant_config
+    attributes:
+      label: Relevant boot arguments and other graphics patches
+      description: List NootedRed flags, OCLP root patches, WhateverGreen, other GPU drivers, and any nonstandard settings. Redact identifiers.
+      placeholder: "NootedRed boot args: ...\nOther graphics-related components: ..."
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Give numbered, repeatable steps; mention the application and operation involved.
+      placeholder: "1. Start...\n2. Open...\n3. Observe..."
     validations:
       required: true
   - type: textarea
-    id: description
+    id: actual
     attributes:
-      label: Describe the unexpected behaviour in detail.
-      placeholder: I clicked on X, then Y, and Z happened.
+      label: Actual behavior
+      description: Describe visual symptoms, crash, freeze, stutter, or GPU reset as precisely as possible.
     validations:
       required: true
   - type: textarea
-    id: expected_behaviour
+    id: expected
     attributes:
-      label: What should've happened instead?
-      placeholder: X should be doing Y.
+      label: Expected behavior
     validations:
       required: true
+  - type: textarea
+    id: regression
+    attributes:
+      label: Comparison with previous builds
+      description: If this is a regression, give the last known working and first broken versions; otherwise say "unknown".
   - type: textarea
     id: logs
     attributes:
-      label: Attach any logs related to this issue. For example .gpuRestart, .panic, etc files.
-      description: |
-        You can find those in `/Library/Logs/DiagnosticReports`.
-        If attaching a panic, make sure it was created while you have `keepsyms=1` in your boot args (it's useless without symbol names).
+      label: Diagnostics, logs, and screenshots
+      description: Attach relevant .gpuRestart, .panic, .ips, or screenshots. Look under /Library/Logs/DiagnosticReports. Redact private details.
+      placeholder: "Drag files here or paste a short relevant excerpt. If unavailable, explain why."
   - type: checkboxes
+    id: checks
     attributes:
-      label: Issue Submission Terms
-      description: "By submitting this bug, I agree to the following terms:"
+      label: Submission checklist
       options:
-        - label: I have made sure that there are no other reports about this bug.
+        - label: I searched existing issues and checked for duplicates.
           required: true
-        - label: I don't use configurator software (e.g. OpenCore Auxiliary Tools, OpenCore Configurator).
+        - label: I verified the macOS, hardware, and NootedRed build details above.
           required: true
-        - label: I've made and using my own EFI according to the ChefKiss Hackintosh Guide.
-          required: true
-        - label: I'm not using any software that may conflict, including, but not limited to, OpenCore Legacy Patcher, BFixup, WhateverGreen.
-          required: true
-        - label: I'm not reporting a performance issue whilst using builds of the software that are not marked RELEASE (i.e. DEBUG, RESEARCH_RELEASE).
-          required: true
-        - label: I swear that this report is not generated by AI. Reports must be handwritten, with information verified.
-          required: true
-        - label: I swear by oath, that the information submitted is factual, and the terms therein have been read and followed completely, otherwise, I have committed perjury and I acknowledge that this will result in my issue being closed or deleted and/or me getting blocked from the ChefKiss GitHub organisation, and thereby shall not bypass any such restriction in any way.
+        - label: I removed secrets and personal identifiers from shared logs or configuration files.
           required: true

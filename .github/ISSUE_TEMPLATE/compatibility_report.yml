@@ -1,0 +1,72 @@
+name: Compatibility Report
+description: Report tested results on a specific APU and macOS combination.
+title: "[Compatibility] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Share reproducible compatibility results, whether working or not.
+        For a specific new defect, please use the Bug Report form instead.
+  - type: input
+    id: cpu
+    attributes:
+      label: APU model and generation
+      placeholder: "e.g. Ryzen 5 4600H / Renoir"
+    validations:
+      required: true
+  - type: input
+    id: pci
+    attributes:
+      label: AMD GPU PCI Device ID
+      placeholder: "e.g. 1002:1636"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Exact macOS version and build
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Exact NootedRed release or commit
+    validations:
+      required: true
+  - type: dropdown
+    id: test_result
+    attributes:
+      label: Overall test result
+      options:
+        - Fully working in tested scenarios
+        - Partially working
+        - Not working
+    validations:
+      required: true
+  - type: textarea
+    id: tests
+    attributes:
+      label: Features actually tested
+      description: Separate tested features from features not tested. Include Display, Metal, OpenGL, video decode, sleep-wake, and DRM as applicable.
+      placeholder: "Display: ...\nMetal/OpenGL: ...\nVideo decoding: ...\nSleep/wake: ...\nDRM: ...\nNot tested: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Relevant configuration
+      description: SMBIOS, OpenCore version, NootedRed boot args and other GPU-related modifications. Remove private identifiers.
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence / logs / screenshots
+      description: Include verifiable results if available; remove private identifiers.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checklist
+      options:
+        - label: These are results from actual testing, not assumed hardware support.
+          required: true
+        - label: I searched for existing reports and removed personal identifiers.
+          required: true
