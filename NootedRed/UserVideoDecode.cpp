@@ -83,7 +83,76 @@ namespace
         UInt64 uuid[4], matched, reads, guardReads, path, planState, ledgerState, planner;
         UInt64 fvrcDecode, fvrcGuard, fvrcDecodeCold, fvrcGuardCold;
     } published{};
-    VPF::CapabilityLedger             videoLedger;
+    // 调用方持有 guardLock；每个存活 map 保留独立状态，销毁时释放。
+    class VideoLedger
+    {
+        struct Entry
+        {
+            UInt64               map;
+            VPF::FeatureId       feature;
+            VPF::CapabilityState state;
+            Entry*               next;
+        };
+        Entry* entries{nullptr};
+
+    public:
+        VideoLedger()                              = default;
+        VideoLedger(const VideoLedger&)            = delete;
+        VideoLedger& operator=(const VideoLedger&) = delete;
+        ~VideoLedger() { clear(); }
+
+        VPF::CapabilityState state(const UInt64 map, const VPF::FeatureId feature) const
+        {
+            for (auto* entry = entries; entry; entry = entry->next) {
+                if (entry->map == map && entry->feature == feature) { return entry->state; }
+            }
+            return VPF::CapabilityState::Disabled;
+        }
+
+        bool set(const UInt64 map, const VPF::FeatureId feature, const VPF::CapabilityState target)
+        {
+            if (!map) { return false; }
+            for (auto* entry = entries; entry; entry = entry->next) {
+                if (entry->map == map && entry->feature == feature) {
+                    if (!VPF::canTransition(entry->state, target)) { return false; }
+                    entry->state = target;
+                    return true;
+                }
+            }
+            if (!VPF::canTransition(VPF::CapabilityState::Disabled, target)) { return false; }
+            auto* entry = IONew(Entry, 1);
+            if (!entry) { return false; }
+            // IONew 不调用构造函数，必须完整初始化后才能发布。
+            *entry  = {map, feature, target, entries};
+            entries = entry;
+            return true;
+        }
+
+        void removeMap(const UInt64 map)
+        {
+            auto** link = &entries;
+            while (*link) {
+                auto* entry = *link;
+                if (entry->map == map) {
+                    *link = entry->next;
+                    IODelete(entry, Entry, 1);
+                }
+                else {
+                    link = &entry->next;
+                }
+            }
+        }
+
+        void clear()
+        {
+            while (entries) {
+                auto* entry = entries;
+                entries     = entry->next;
+                IODelete(entry, Entry, 1);
+            }
+        }
+    };
+    VideoLedger                       videoLedger;
     bool                              fairPlayDriverOnly{false};
     bool                              sequoia{false};
     const UserVideoDecodeData::Patch* devicePatches{nullptr};
@@ -236,7 +305,7 @@ namespace
         publish(published.ledgerState, "NRedVCNVPFLedgerState", static_cast<UInt32>(ledgerState(map)));
     }
 
-    // 返回 false 时不得再读取或写入目标页面：Quarantined/账本容量耗尽均 fail closed。
+    // 返回 false 时不得再读取或写入目标页面：隔离状态和分配失败均拒绝安装。
     bool prepareLedger(const UInt64 map)
     {
         if (!guardLock || map == 0) { return false; }
@@ -992,6 +1061,7 @@ void UserVideoDecode::init(KernelPatcher& patcher)
     }
     NRed::singleton().setProp32("NRedVCNVPFLifecycle", 1);
     NRed::singleton().setProp32("NRedVCNVPFLifecycleRevision", 2);
+    NRed::singleton().setProp32("NRedVCNVideoLedgerRevision", 2);
     KernelPatcher::RouteRequest request{"_shared_region_check_np", wrappedSharedRegionCheck, originalCheck};
     if (!patcher.routeMultipleLong(KernelPatcher::KernelID, &request, 1)) {
         patcher.clearError();

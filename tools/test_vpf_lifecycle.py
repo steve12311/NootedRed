@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import shutil
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -60,6 +61,10 @@ class LifecycleTests(unittest.TestCase):
             return source[start:end + 1]
 
         template = (ROOT / 'tools/fixtures/vpf-lifecycle-bridge.cpp.in').read_text()
+        declaration = re.search(r'    VideoLedger\s+videoLedger;', source).start()
+        template = template.replace('static VPF::CapabilityLedger videoLedger;',
+                                    source[source.index('    class VideoLedger'):declaration]
+                                    + 'static VideoLedger videoLedger;')
         template = template.replace('LEDGER', ledger)
         template = template.replace('MAP_DESTROY', function('    void wrappedMapDestroy('))
         template = template.replace('MAP_TARGET', function('    mach_vm_address_t mapDestroyTarget('))

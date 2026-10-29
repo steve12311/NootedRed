@@ -2,6 +2,7 @@
 #include <array>
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <mutex>
@@ -21,6 +22,8 @@ static void IOLockFree(IOLock* value) { ++lockFrees; delete value; }
 static void IOLockLock(IOLock* value) { value->lock(); }
 static void IOLockUnlock(IOLock* value) { value->unlock(); }
 static IOLock* guardLock = nullptr;
+#define IONew(T,N) static_cast<T*>(std::malloc(sizeof(T)*(N)))
+#define IODelete(P,T,N) std::free(P)
 static VPF::CapabilityLedger videoLedger;
 static struct { UInt64 ledgerState; } published{};
 struct NRed
@@ -196,10 +199,10 @@ int main()
         assert(prepareLedger(key));
         wrappedMapDestroy(reinterpret_cast<void*>(key));
     }
-    for (UInt64 i = 0; i < VPF::CapabilityLedger::Capacity; ++i) { assert(prepareLedger(0x10000 + i)); }
-    assert(!prepareLedger(0x20000));
+    for (UInt64 i = 0; i < 1024; ++i) { assert(prepareLedger(0x10000 + i)); }
+    assert(prepareLedger(0x20000));
     wrappedMapDestroy(reinterpret_cast<void*>(0x10000));
     assert(prepareLedger(0x20000));
     reset();
-    std::puts("PASS production lifecycle: mandatory hook, failure lock lifetime, destroy-before-reuse, quarantine, exec-like map churn, capacity and thunk target");
+    std::puts("PASS production lifecycle: mandatory hook, failure lock lifetime, destroy-before-reuse, quarantine, exec-like map churn, 1024 live maps and thunk target");
 }
