@@ -42,6 +42,60 @@ namespace
 namespace UserPatchCoordinator
 {
 
+    PatchCallback& displayCallback()
+    {
+        static PatchCallback value{nullptr};
+        return value;
+    }
+
+    PatchCallback& videoCallback()
+    {
+        static PatchCallback value{nullptr};
+        return value;
+    }
+
+    UInt8& activeFlag()
+    {
+        static UInt8 value{0};
+        return value;
+    }
+
+    IOLock*& gateLock()
+    {
+        static IOLock* value{nullptr};
+        return value;
+    }
+
+    UserPatchMapGate::Registry<MaxMapSlots>& registry()
+    {
+        static UserPatchMapGate::Registry<MaxMapSlots> value{};
+        return value;
+    }
+
+    UInt32& nativeCalls()
+    {
+        static UInt32 value{0};
+        return value;
+    }
+
+    UInt32& coordinatedRuns()
+    {
+        static UInt32 value{0};
+        return value;
+    }
+
+    UInt32& leaseRejections()
+    {
+        static UInt32 value{0};
+        return value;
+    }
+
+    UInt32& reportedPeak()
+    {
+        static UInt32 value{0};
+        return value;
+    }
+
     int coordinate(void* process, void* args, const int result, void* mapKey)
     {
         if (!active() || !mapKey) { return result; }

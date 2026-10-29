@@ -1,5 +1,5 @@
 // DVPF：同一 vm_map 的显示/视频共享缓存事务协调器。
-// 本头只保存参与者和门状态；真正的 Hook 安装与原生调用在 UserPatchCoordinator.cpp。
+// 参与者、门状态与 Hook 的唯一实现在 UserPatchCoordinator.cpp。
 #pragma once
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOTypes.h>
@@ -15,59 +15,15 @@ namespace UserPatchCoordinator
     // 回调只接收已成功返回的原生结果；参数保持调用者自己的结构布局。
     using PatchCallback = int (*)(void* process, void* args, int result);
 
-    inline PatchCallback& displayCallback()
-    {
-        static PatchCallback value{nullptr};
-        return value;
-    }
-
-    inline PatchCallback& videoCallback()
-    {
-        static PatchCallback value{nullptr};
-        return value;
-    }
-
-    inline UInt8& activeFlag()
-    {
-        static UInt8 value{0};
-        return value;
-    }
-
-    inline IOLock*& gateLock()
-    {
-        static IOLock* value{nullptr};
-        return value;
-    }
-
-    inline UserPatchMapGate::Registry<MaxMapSlots>& registry()
-    {
-        static UserPatchMapGate::Registry<MaxMapSlots> value{};
-        return value;
-    }
-
-    inline UInt32& nativeCalls()
-    {
-        static UInt32 value{0};
-        return value;
-    }
-
-    inline UInt32& coordinatedRuns()
-    {
-        static UInt32 value{0};
-        return value;
-    }
-
-    inline UInt32& leaseRejections()
-    {
-        static UInt32 value{0};
-        return value;
-    }
-
-    inline UInt32& reportedPeak()
-    {
-        static UInt32 value{0};
-        return value;
-    }
+    PatchCallback&                           displayCallback();
+    PatchCallback&                           videoCallback();
+    UInt8&                                   activeFlag();
+    IOLock*&                                 gateLock();
+    UserPatchMapGate::Registry<MaxMapSlots>& registry();
+    UInt32&                                  nativeCalls();
+    UInt32&                                  coordinatedRuns();
+    UInt32&                                  leaseRejections();
+    UInt32&                                  reportedPeak();
 
     inline void clearDisplay() { displayCallback() = nullptr; }
 
