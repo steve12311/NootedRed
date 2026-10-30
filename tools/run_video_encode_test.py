@@ -15,6 +15,7 @@ def main():
     parser.add_argument("--width", type=int, default=1280, help="偶数宽度，16–4096")
     parser.add_argument("--height", type=int, default=720, help="偶数高度，16–2160")
     parser.add_argument("--frames", type=int, default=3, help="完整编码和回读的帧数，1–120")
+    parser.add_argument("--main10", action="store_true", help="HEVC Main10：x420 输入与 10 位回读校验")
     parser.add_argument("--timeout", type=int, default=20, help="每项测试超时秒数，范围 1–60")
     args = parser.parse_args()
     if not 1 <= args.timeout <= 60:
@@ -38,7 +39,10 @@ def main():
     rows = []
     cases = [("list", ["--list"])]
     modes = ["software"] + (["auto", "hardware"] if args.hardware else [])
-    cases += [(f"{mode}-{codec}", [f"--{mode}", codec]) for mode in modes for codec in ["h264", "hevc"]]
+    codecs = ["hevc"] if args.main10 else ["h264", "hevc"]
+    extra = ["--main10"] if args.main10 else []
+    prefix = "main10-" if args.main10 else ""
+    cases += [(f"{prefix}{mode}-{codec}", [f"--{mode}", codec, *extra]) for mode in modes for codec in codecs]
     monitor = GPUMonitor(work) if args.hardware else None
     try:
         return run_cases(args, work, executable, cases, monitor, rows)

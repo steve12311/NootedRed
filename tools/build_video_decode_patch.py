@@ -111,19 +111,13 @@ def main():
     global WORK
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--sequoia-cache', type=Path)
-    parser.add_argument('--safety-major', type=int, choices=[24, 25], help='生成对应系统的第一阶段安全守卫')
-    parser.add_argument('--safety-cache', type=Path)
-    parser.add_argument('--check-safety', action='store_true')
+    parser.add_argument('--refresh-encode', action='store_true', help='使用已核验的内嵌原生上下文刷新编码补丁')
     args = parser.parse_args()
-    if args.safety_major:
-        import build_video_capability_patch
-        options = ['--major', str(args.safety_major)]
-        if args.safety_cache: options += ['--cache', str(args.safety_cache)]
-        if args.check_safety: options += ['--check']
-        build_video_capability_patch.main(options)
+    if args.refresh_encode:
+        from refresh_video_encode_data import refresh
+        WORK.mkdir(parents=True, exist_ok=True)
+        refresh(compile_payload((ROOT / "tools/video_encode_params.s").read_text(), "encode-params"))
         return
-    if args.safety_cache or args.check_safety:
-        parser.error('--safety-cache / --check-safety 需要 --safety-major')
     profile = json.loads((ROOT / 'tools/fixtures/sequoia-compat.json').read_text()) if args.sequoia_cache else None
     if profile:
         WORK = ROOT / 'build/sequoia/video'
@@ -228,15 +222,13 @@ def main():
             address, code = function(name)
             assert code[0x2A:0x31] == bytes.fromhex("4869c0a4000000")
             add(name, address + 0x2A, code[0x2A:0x31], bytes.fromhex("4869c030000000"))
-        # 输入纹理的实际 pitch 可大于编码宽度；保留原生的字节到元素换算及半宽色度布局。
+        # 按实际纹理元素大小设置 P010 输入参数，同时保留原有 pitch 换算。
         name = "__ZN11Vcn2Encoder15setEncodeParamsEPvP15VAVendorTexture"
         address, code = function(name)
-        assert code[0x31:0x56] == bytes.fromhex(
-            "8b8a840000008b87240400000fafc105ff0000002500ffffff31d2f7f1894318d1e889431c")
-        pitch = compile_payload(".text\n.globl _payload\n_payload:\n"
-            "movl 0x80(%rdx), %eax\nmovl 0x84(%rdx), %ecx\nxorl %edx, %edx\ndivl %ecx\n"
-            "movl %eax, 0x18(%rbx)\nshrl %eax\nmovl %eax, 0x1c(%rbx)\n.org 37, 0x90\n", "encode-pitch")
-        add(name, address + 0x31, code[0x31:0x56], pitch)
+        assert len(code) == 138
+        payload = compile_payload((ROOT / "tools/video_encode_params.s").read_text(), "encode-params")
+        assert len(payload) == len(code)
+        add(name, address, code, payload)
         code_section = next(s for s in sections if s[0] == "__text")
         text = cache.read(code_section[1], code_section[2])
         for old, new in [(0x2220221, 0x2020201), (0x6660661, 0x6060601)]:

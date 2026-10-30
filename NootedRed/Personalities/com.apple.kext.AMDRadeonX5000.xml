@@ -291,12 +291,17 @@
 			</array>
 		</dict>
 		<key>IOGVAHEVCEncode</key>
-		<string>1</string>
+		<string>2</string>
 		<key>IOGVAHEVCEncodeCapabilities</key>
 		<dict>
 			<key>VTPerProfileDetails</key>
 			<dict>
 				<key>1</key>
+				<dict>
+					<key>VTMaxEncodeLevel</key>
+					<integer>153</integer>
+				</dict>
+				<key>2</key>
 				<dict>
 					<key>VTMaxEncodeLevel</key>
 					<integer>153</integer>
@@ -309,6 +314,7 @@
 			<key>VTSupportedProfileArray</key>
 			<array>
 				<integer>1</integer>
+				<integer>2</integer>
 			</array>
 		</dict>
 		<key>IOKitDebug</key>
