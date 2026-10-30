@@ -112,13 +112,10 @@ namespace VPF
             {
                 return false;
             }
+            // 半开区间相交即拒绝（含部分重叠）；上方已保证 address + size 不越过 UserLimit，不会溢出。
             for (UInt32 i = 0; i < siteCount_; ++i) {
                 const auto& other = sites_[i];
-                if (UserSharedCache::Range{address, size}.contains(other.address, other.size)
-                    || UserSharedCache::Range{other.address, other.size}.contains(address, size))
-                {
-                    return false;
-                }
+                if (address < other.address + other.size && other.address < address + size) { return false; }
             }
             sites_[siteCount_++] = {address, offset, size, functionIndex, instructionOffset, original, replacement};
             return true;

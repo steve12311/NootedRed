@@ -269,6 +269,24 @@ static void testScratch()
     }
 }
 
+// 站点按半开区间 [address, address + size) 判定重叠：部分重叠、包含和重复均拒绝，相邻允许。
+static void testSiteOverlap()
+{
+    static const UInt8 bytes[16]{};
+    const UInt64       start = 0x180000000ULL;
+    VerifiedPatchPlan  plan;
+    plan.reset(start, {start, 0x1000});
+    check(plan.addSite(start + 0x100, 0x100, 8, VPF::NoFunction, 0, bytes, bytes), "overlap first site");
+    check(!plan.addSite(start + 0x104, 0x104, 8, VPF::NoFunction, 0, bytes, bytes), "overlap partial tail");
+    check(!plan.addSite(start + 0xFC, 0xFC, 8, VPF::NoFunction, 0, bytes, bytes), "overlap partial head");
+    check(!plan.addSite(start + 0x102, 0x102, 2, VPF::NoFunction, 0, bytes, bytes), "overlap contained");
+    check(!plan.addSite(start + 0xF8, 0xF8, 16, VPF::NoFunction, 0, bytes, bytes), "overlap containing");
+    check(!plan.addSite(start + 0x100, 0x100, 8, VPF::NoFunction, 0, bytes, bytes), "overlap duplicate");
+    check(plan.addSite(start + 0x108, 0x108, 4, VPF::NoFunction, 0, bytes, bytes), "overlap adjacent after");
+    check(plan.addSite(start + 0xF8, 0xF8, 8, VPF::NoFunction, 0, bytes, bytes), "overlap adjacent before");
+    check(plan.siteCount() == 3, "overlap site count");
+}
+
 int main(int argc, char** argv)
 {
     jsonMode = argc > 1 && std::strcmp(argv[1], "--json") == 0;
@@ -279,6 +297,7 @@ int main(int argc, char** argv)
     testGuard<GuardDarwin25>("Darwin25", VPF::OsDarwin25, 25);
     testSequoiaSurface();
     testScratch();
+    testSiteOverlap();
     if (jsonMode) { std::printf("]}\n"); }
     if (failures) {
         std::fprintf(stderr, "FAILED: %u checks\n", failures);
