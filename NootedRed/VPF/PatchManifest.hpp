@@ -15,7 +15,6 @@ namespace VPF
         DisplayPipelineConstructor,
         DisplaySubmit,
         Vcn2Decode,
-        Vcn2SafetyGuard,
         Vcn2Encode,
         AppleGVASelection,
         FairPlayNativeDecodeSubset,

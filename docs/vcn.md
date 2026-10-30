@@ -16,8 +16,10 @@
 代际依据 [Linux 内核 AMD 硬件组件表](https://www.kernel.org/doc/html/v6.17/gpu/amdgpu/amd-hardware-list-info.html)。
 同一视频代际是复用现有桥接的依据，不代表 Apple 驱动已经支持或新设备已经硬解成功。
 
-第一阶段安全候选仅在 Darwin `24/25` 完整核验守卫后启用用户态适配；Darwin `23`
-因缺少安全入口的完整证据而拒绝启用，详见 [VCN2 第一阶段](vcn2-phase1.md)。内核能力分类仍保留 `23/24/25`。
+用户态适配只在有对应补丁数据的 Darwin `24/25` 启用；Darwin `23` 因没有匹配的补丁数据
+而保持失败关闭（`NRedVCNUserUnsupportedOS`），不使用其他版本的补丁。原第一阶段的编解码格式与
+尺寸拦截器已整体移除，设备补丁直接按完整函数核验后安装；历史记录见
+[VCN2 第一阶段](vcn2-phase1.md)。内核能力分类仍保留 `23/24/25`。
 14/15 的既有配置与限制见
 [多系统适配](macos-multi-os-compat.md)。VCN 启用前还必须通过已核实的内核 ABI：两侧硬件虚表的六个槽位
 分别核对具名方法身份或完整 getter 内容，包含 getter 访问的字段偏移；不兼容时不安装桥接。
@@ -58,7 +60,6 @@ python3 tools/build_vcn_kernel_patch.py
 python3 tools/build_video_decode_patch.py
 python3 tools/test_vcn_candidate.py
 python3 tools/test_vcn_addr_profile.py
-python3 tools/test_vcn_user_bridge.py
 python3 tools/test_video_cache_dynamic.py
 python3 tools/test_video_cache_dynamic.py --sanitize
 python3 tools/test_compute_cache_dynamic.py

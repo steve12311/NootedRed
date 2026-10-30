@@ -3,7 +3,6 @@
 #include <VPF/VerifiedPatchPlan.hpp>
 #include <UserSurfaceSyncResolver.hpp>
 #include <UserVideoDecodeResolver.hpp>
-#include <UserVideoGuardResolver.hpp>
 
 namespace VPF
 {
@@ -75,14 +74,6 @@ namespace VPF
             manifest.resolver.functions != nullptr && manifest.resolver.siteCount == patchCount;
         return adaptPatches(out, manifest, base, cache, legacy.patches, patchCount, imageCount ? &image : nullptr,
                             imageCount, legacy.reads, state, aligned);
-    }
-
-    inline bool adaptGuard(VerifiedPatchPlan& out, const FeatureManifest& manifest, UInt64 base,
-                           const UserSharedCache::Range& cache, const UserVideoGuardResolver::Plan& legacy)
-    {
-        const auto state = legacy.installed ? PlanState::AllPatched : PlanState::AllOriginal;
-        return adaptPatches(out, manifest, base, cache, legacy.patches, legacy.count, nullptr, 0, legacy.reads, state,
-                            false);
     }
 
 }    // namespace VPF

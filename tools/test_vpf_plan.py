@@ -30,7 +30,7 @@ class PlanTests(unittest.TestCase):
 
     def test_plan_schema_and_bounds(self):
         plans = self.document['plans']
-        self.assertEqual(len(plans), 22)
+        self.assertEqual(len(plans), 20)
         keys = set()
         for plan in plans:
             key = compare_plan.plan_key(plan)

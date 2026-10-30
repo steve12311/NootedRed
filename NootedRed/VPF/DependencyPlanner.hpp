@@ -81,7 +81,6 @@ namespace VPF
         bool     cycle{false};
     };
 
-    inline constexpr FeatureId RequiresSafetyGuard[] = {FeatureId::Vcn2SafetyGuard};
     inline constexpr FeatureId RequiresDecode[]      = {FeatureId::Vcn2Decode};
     inline constexpr FeatureId RequiresSRD[]         = {FeatureId::DisplaySRD};
     inline constexpr FeatureId BeforeSubmitGuard[]   = {FeatureId::DisplaySubmitGuard};
@@ -100,11 +99,8 @@ namespace VPF
          nullptr, 0, OsDarwin23},
         {FeatureId::DisplayComputeScratch, OsDarwin24 | OsDarwin25, DisplayDeviceMask, ExternalMetalBridge,
          RequiresSRD, 1, nullptr, 0},
-        {FeatureId::Vcn2SafetyGuard, OsDarwin24 | OsDarwin25, VcnDeviceMask, ExternalVcnBridge, nullptr, 0, nullptr, 0},
-        {FeatureId::Vcn2Decode, OsDarwin24 | OsDarwin25, VcnDeviceMask, ExternalVcnBridge, RequiresSafetyGuard, 1,
-         nullptr, 0},
-        {FeatureId::Vcn2Encode, OsDarwin24 | OsDarwin25, VcnDeviceMask, ExternalVcnBridge, RequiresSafetyGuard, 1,
-         nullptr, 0},
+        {FeatureId::Vcn2Decode, OsDarwin24 | OsDarwin25, VcnDeviceMask, ExternalVcnBridge, nullptr, 0, nullptr, 0},
+        {FeatureId::Vcn2Encode, OsDarwin24 | OsDarwin25, VcnDeviceMask, ExternalVcnBridge, nullptr, 0, nullptr, 0},
         {FeatureId::AppleGVASelection, OsDarwin24 | OsDarwin25, VcnDeviceMask, ExternalVcnBridge, RequiresDecode, 1,
          nullptr, 0},
         {FeatureId::FairPlayNativeDecodeSubset, OsDarwin24 | OsDarwin25, VcnDeviceMask, ExternalFairPlay,

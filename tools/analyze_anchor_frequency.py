@@ -11,8 +11,6 @@ RESOLVER = ROOT / 'NootedRed/UserCacheResolver.hpp'
 HEADERS = [
     'UserVideoDecodeData.hpp',
     'UserSequoiaVideoData.hpp',
-    'UserVideoGuard24Data.hpp',
-    'UserVideoGuard25Data.hpp',
     'UserSequoiaSurfaceData.hpp',
     'UserSurfaceConstructorData.hpp',
     'UserSurfaceSyncData.hpp',
@@ -22,8 +20,6 @@ SOURCE = r'''
 #include <cstdio>
 #include <UserVideoDecodeData.hpp>
 #include <UserSequoiaVideoData.hpp>
-#include <UserVideoGuard24Data.hpp>
-#include <UserVideoGuard25Data.hpp>
 #include <UserSequoiaSurfaceData.hpp>
 #include <UserSurfaceConstructorData.hpp>
 #include <UserSurfaceSyncData.hpp>
@@ -39,8 +35,6 @@ int main()
 {
     collect(UserVideoDecodeData::ResolverFunctions);
     collect(UserSequoiaVideoData::ResolverFunctions);
-    collect(UserVideoGuard24Data::ResolverFunctions);
-    collect(UserVideoGuard25Data::ResolverFunctions);
     collect(UserSequoiaSurfaceData::ResolverFunctions);
     collect(UserSequoiaSurfaceData::Submit::ResolverFunctions);
     collect(UserSurfaceConstructorData::ResolverFunctions);

@@ -15,7 +15,6 @@ import generate_manifest
 
 GROUPS = {
     'Vcn2Decode': 'vcn-applegva',
-    'Vcn2SafetyGuard': 'vcn-applegva',
     'Vcn2Encode': 'vcn-applegva',
     'AppleGVASelection': 'vcn-applegva',
     'FairPlayNativeDecodeSubset': 'vcn-applegva',

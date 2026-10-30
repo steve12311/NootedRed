@@ -1,4 +1,4 @@
-"""既有 Resolver 与当前生产计划的视频/守卫等价性。"""
+"""既有 Resolver 与当前生产计划的视频等价性。"""
 from __future__ import annotations
 
 import json
@@ -35,7 +35,7 @@ class EquivalenceTests(unittest.TestCase):
         WORK.mkdir(parents=True, exist_ok=True)
         old = WORK / 'legacy-headers'
         old.mkdir(exist_ok=True)
-        for name in ('UserVideoDecodeResolver.hpp', 'UserVideoGuardResolver.hpp'):
+        for name in ('UserVideoDecodeResolver.hpp',):
             try:
                 content = subprocess.check_output(
                     ['git', 'show', f'{LEGACY_REVISION}:NootedRed/{name}'], cwd=ROOT, text=True, timeout=15
@@ -61,20 +61,16 @@ class EquivalenceTests(unittest.TestCase):
         cls.old = json.loads(subprocess.check_output([str(executable)], text=True, timeout=60))
         cls.current = plan_dump.dump_plans()
         cls.old_by_key = {_key(plan): plan for plan in cls.old['plans']}
-        cls.current_by_key = {
-            _key(plan): plan for plan in cls.current['plans']
-            if plan['feature'] in ('Vcn2Decode', 'Vcn2SafetyGuard')
-        }
+        cls.current_by_key = {_key(plan): plan for plan in cls.current['plans'] if plan['feature'] == 'Vcn2Decode'}
 
     def test_plan_set_is_complete(self):
         self.assertEqual(self.old['kind'], 'vpf.video-legacy')
-        self.assertEqual(len(self.old_by_key), 10)
+        self.assertEqual(len(self.old_by_key), 8)
         self.assertEqual(set(self.old_by_key), set(self.current_by_key))
-        self.assertEqual(len(self.current_by_key), 10)
+        self.assertEqual(len(self.current_by_key), 8)
         for plan in self.current_by_key.values():
             self.assertEqual(plan['state'], 'AllOriginal')
-            expected_images = 3 if plan['feature'] == 'Vcn2Decode' else 0
-            self.assertEqual(len(plan['images']), expected_images)
+            self.assertEqual(len(plan['images']), 3)
 
     def test_old_and_new_patch_bytes_match(self):
         for key, old in self.old_by_key.items():

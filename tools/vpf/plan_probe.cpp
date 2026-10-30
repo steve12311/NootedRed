@@ -31,20 +31,6 @@ struct VideoDarwin25
     static inline constexpr auto& functions = UserVideoDecodeData::ResolverFunctions;
 };
 
-struct GuardDarwin24
-{
-    static inline constexpr auto& images         = UserVideoGuard24Data::ResolverImages;
-    static inline constexpr auto& functions      = UserVideoGuard24Data::ResolverFunctions;
-    static inline constexpr auto& sectionTargets = UserVideoGuard24Data::SectionTargets;
-};
-
-struct GuardDarwin25
-{
-    static inline constexpr auto& images         = UserVideoGuard25Data::ResolverImages;
-    static inline constexpr auto& functions      = UserVideoGuard25Data::ResolverFunctions;
-    static inline constexpr auto& sectionTargets = UserVideoGuard25Data::SectionTargets;
-};
-
 using VPF::FeatureManifest;
 using VPF::PlanState;
 using VPF::VerifiedPatchPlan;
@@ -187,27 +173,6 @@ static void testVideo(const char* os, const UInt32 osMask, const bool sequoia)
     }
 }
 
-template<typename Data>
-static void testGuard(const char* os, const UInt32 osMask, const UInt32 major)
-{
-    constexpr auto targets = sizeof(Data::sectionTargets) / sizeof(Data::sectionTargets[0]);
-    cache(Data::images, Data::functions, true, Data::sectionTargets, targets);
-    UserSharedCache::Input input{reader, {}};
-    UInt8                    scan[UserSharedCache::Input::ScanSize];
-    input.scanBuffer = scan;
-    UserVideoGuardResolver::Plan legacy;
-    char                          label[128];
-    std::snprintf(label, sizeof(label), "guard %s", os);
-    check(UserVideoGuardResolver::resolve(input, base, major, legacy), label);
-    const auto* manifest = VPF::ManifestData::find(VPF::FeatureId::Vcn2SafetyGuard, osMask, 0);
-    check(manifest != nullptr, label);
-    if (!manifest) { return; }
-    VerifiedPatchPlan plan;
-    check(VPF::adaptGuard(plan, *manifest, base, input.cache, legacy), label);
-    checkPlan(plan, legacy.patches, legacy.count, legacy.reads, label);
-    emitPlan("Vcn2SafetyGuard", os, 0, legacy.installed ? PlanState::AllPatched : PlanState::AllOriginal, plan);
-}
-
 static void testSequoiaSurface()
 {
     using namespace UserSequoiaSurfaceData;
@@ -293,8 +258,6 @@ int main(int argc, char** argv)
     if (jsonMode) { std::printf("{\"schemaVersion\":1,\"kind\":\"vpf.plans\",\"plans\":["); }
     testVideo<VideoDarwin24>("Darwin24", VPF::OsDarwin24, true);
     testVideo<VideoDarwin25>("Darwin25", VPF::OsDarwin25, false);
-    testGuard<GuardDarwin24>("Darwin24", VPF::OsDarwin24, 24);
-    testGuard<GuardDarwin25>("Darwin25", VPF::OsDarwin25, 25);
     testSequoiaSurface();
     testScratch();
     testSiteOverlap();

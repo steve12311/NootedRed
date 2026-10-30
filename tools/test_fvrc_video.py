@@ -1,4 +1,4 @@
-"""验证视频 Decode/Guard 解析在真实生成数据上的跨 ASLR 复用与回退。"""
+"""验证视频 Decode 解析在真实生成数据上的跨 ASLR 复用与回退。"""
 from pathlib import Path
 import subprocess
 
@@ -30,7 +30,6 @@ def main():
 #include <string>
 #include <vector>
 #include <UserVideoDecodeResolver.hpp>
-#include <UserVideoGuardResolver.hpp>
 static std::map<std::string,unsigned> properties;
 ''' + fixture + r'''
 static bool mappingDirty=false,mappingWrongObject=false;
@@ -84,32 +83,9 @@ static void video(){
  }
  printf("PASS fvrc-video-decode: cross-ASLR reuse, read reduction, dirty/object fallback, relative patch equality\n");
 }
-static void guard(){
- using namespace UserVideoGuard25Data;
- cache(ResolverImages,ResolverFunctions,true,SectionTargets,sizeof(SectionTargets)/sizeof(SectionTargets[0]));
- resetMapping();TEXTBYTES=0;
- UserVideoGuardResolver::Plan first{};UserSharedCache::Input cold{reader,{}};
- auto fastFirst=beginFast();
- assert(UserVideoGuardResolver::resolve(cold,base,25,first,&fastFirst));
- assert(!fastFirst.hot&&TEXTBYTES>0x60000&&first.count==UserVideoGuardData::MaxEntries);
- const auto coldText=TEXTBYTES;
- base+=0x40000000ULL;
- cache(ResolverImages,ResolverFunctions,true,SectionTargets,sizeof(SectionTargets)/sizeof(SectionTargets[0]));
- resetMapping();TEXTBYTES=0;
- UserVideoGuardResolver::Plan second{};UserSharedCache::Input hot{reader,{}};
- auto fastSecond=beginFast();
- assert(UserVideoGuardResolver::resolve(hot,base,25,second,&fastSecond));
- assert(fastSecond.hot&&TEXTBYTES*4<coldText);
- for(unsigned i=0;i<first.count;i++)assert(first.patches[i].offset==second.patches[i].offset);
- assert(!second.installed&&second.page==0);
- printf("PASS fvrc-video-guard: cross-ASLR reuse, read reduction, per-call guard page remains unset\n");
-}
-int main(int argc,char** argv){
- assert(argc==2);
+int main(){
  VPF::ResolutionDiagnostics::setEnabled(true);VPF::resolutionCache.init();assert(VPF::resolutionCache.ready);
- if(strcmp(argv[1],"decode")==0)video();
- else if(strcmp(argv[1],"guard")==0)guard();
- else return 2;
+ video();
  return 0;
 }
 '''
@@ -119,8 +95,7 @@ int main(int argc,char** argv){
                     '-fno-omit-frame-pointer', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function',
                     '-I' + str(stubs), '-I' + str(ROOT / 'NootedRed'), '-I' + str(ROOT / 'tools/fixtures'),
                     str(path), '-o', str(executable)], check=True, timeout=60)
-    for scenario in ('decode', 'guard'):
-        subprocess.run([str(executable), scenario], check=True, timeout=120)
+    subprocess.run([str(executable)], check=True, timeout=120)
 
 
 if __name__ == '__main__':

@@ -23,8 +23,6 @@ OUTPUT = ROOT / 'NootedRed/VPF/PatchManifestData.hpp'
 HEADERS = (
     'UserVideoDecodeData.hpp',
     'UserSequoiaVideoData.hpp',
-    'UserVideoGuard24Data.hpp',
-    'UserVideoGuard25Data.hpp',
     'UserSurfaceSyncData.hpp',
     'UserSurfaceConstructorData.hpp',
     'UserSequoiaSurfaceData.hpp',
@@ -229,26 +227,6 @@ def _specs(headers: dict[str, cppdata.HeaderData]) -> list[FeatureSpec]:
                     uuid_name='CacheUUID',
                 )
             )
-
-    # 安全守卫：24/25 各自有完整原生函数、入口表与绑定表。
-    for header_name, namespace, os_name in (
-        ('UserVideoGuard24Data.hpp', 'UserVideoGuard24Data', 'Darwin24'),
-        ('UserVideoGuard25Data.hpp', 'UserVideoGuard25Data', 'Darwin25'),
-    ):
-        specs.append(
-            FeatureSpec(
-                key=f'Vcn2SafetyGuard_{os_name}',
-                feature='Vcn2SafetyGuard',
-                os=(os_name,),
-                device_id=0,
-                evidence='RelocationAwareFullFunction',
-                header=header_name,
-                namespace=namespace,
-                patches='IdentityPatches',
-                functions='ResolverFunctions',
-                locations='ResolverLocations',
-            )
-        )
 
     # Sequoia 显示组：每台设备一套补丁表，共用完整函数证据。
     header = headers['UserSequoiaSurfaceData.hpp']

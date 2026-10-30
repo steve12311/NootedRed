@@ -38,17 +38,14 @@ static void expect(const char* label, const PlannerResult& result, const UInt32 
 int main()
 {
     constexpr UInt32 videoRequested = bits({FeatureId::Vcn2Decode, FeatureId::Vcn2Encode});
-    constexpr UInt32 videoEnabled =
-        bits({FeatureId::Vcn2SafetyGuard, FeatureId::Vcn2Decode, FeatureId::Vcn2Encode});
+    constexpr UInt32 videoEnabled = bits({FeatureId::Vcn2Decode, FeatureId::Vcn2Encode});
     for (const UInt32 os : {static_cast<UInt32>(OsDarwin24), static_cast<UInt32>(OsDarwin25)}) {
         for (const UInt32 device : {0x15E7U, 0x1636U, 0x1638U, 0x164CU}) {
             const auto result = plan(input(os, device, videoRequested, ExternalVcnBridge));
             expect("video", result, videoEnabled);
-            assert(orderedBefore(result, FeatureId::Vcn2SafetyGuard, FeatureId::Vcn2Decode));
-            assert(orderedBefore(result, FeatureId::Vcn2SafetyGuard, FeatureId::Vcn2Encode));
         }
     }
-    // Darwin 23 的 VCN 用户态安全守卫证据缺失：全部拒绝。
+    // Darwin 23 没有 VCN 用户态补丁数据：全部拒绝。
     expect("video darwin23", plan(input(OsDarwin23, 0x1638, videoRequested, ExternalVcnBridge)), 0);
     // 缺少内核桥接或非 VCN 设备：拒绝。
     expect("video no bridge", plan(input(OsDarwin25, 0x1638, videoRequested, 0)), 0);
@@ -59,7 +56,7 @@ int main()
                                            FeatureId::AppleGVASelection, FeatureId::FairPlayNativeDecodeSubset}),
                                      ExternalVcnBridge | ExternalFairPlay));
     expect("fairplay", fairPlay,
-           bits({FeatureId::Vcn2SafetyGuard, FeatureId::Vcn2Decode, FeatureId::FairPlayNativeDecodeSubset}),
+           bits({FeatureId::Vcn2Decode, FeatureId::FairPlayNativeDecodeSubset}),
            bits({FeatureId::Vcn2Encode, FeatureId::AppleGVASelection}),
            bits({FeatureId::Vcn2Encode, FeatureId::AppleGVASelection}));
 

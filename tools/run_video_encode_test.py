@@ -2,11 +2,64 @@
 import argparse
 import datetime
 import json
+import re
 from pathlib import Path
 import subprocess
-from video_hardware_guard import require_guard, GPUMonitor, HardwareFault, wait_for_case
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class HardwareFault(RuntimeError):
+    pass
+
+
+class GPUMonitor:
+    """实时保存 GPU/桌面异常；监视器失效也停止后续硬件用例。"""
+    def __init__(self, work):
+        self.path = work / 'gpu-events.jsonl'
+        self.output = self.path.open('w')
+        self.errors = (work / 'gpu-monitor.stderr.txt').open('w')
+        predicate = ('process == "kernel" AND (eventMessage CONTAINS[c] "gpuRestart"'
+                     ' OR eventMessage CONTAINS[c] "GPU Reset") OR eventMessage CONTAINS[c] "WindowServer watchdog"')
+        self.process = subprocess.Popen(['/usr/bin/log', 'stream', '--style', 'json', '--predicate', predicate],
+                                        stdout=self.output, stderr=self.errors)
+
+    def check(self):
+        if self.process.poll() is not None:
+            raise HardwareFault('GPU 日志监视器退出，停止硬件测试')
+        text = self.path.read_text(errors='replace')
+        for message in re.findall(r'"eventMessage"\s*:\s*"([^"\n]*)', text):
+            if any(word in message.lower() for word in ('gpurestart', 'gpu reset', 'windowserver watchdog')):
+                raise HardwareFault('检测到新增 GPU 重置或桌面看门狗异常，停止全部后续测试')
+
+    def close(self):
+        if self.process.poll() is None:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=5)
+        self.output.close()
+        self.errors.close()
+
+
+def wait_for_case(process, timeout, monitor=None):
+    deadline = time.monotonic() + timeout
+    while True:
+        if monitor:
+            monitor.check()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        try:
+            result = process.wait(timeout=min(0.25, remaining))
+            if monitor:
+                monitor.check()
+            return result
+        except subprocess.TimeoutExpired:
+            continue
 
 
 def main():
@@ -34,8 +87,6 @@ def main():
         "-framework", "Foundation", "-framework", "VideoToolbox", "-framework", "CoreMedia",
         "-framework", "CoreVideo", str(ROOT / "tools/test_video_encode.m"), "-o", str(executable),
     ], check=True, timeout=60)
-    if args.hardware:
-        print(f"Guarded encoder PID: {require_guard()}", flush=True)
     rows = []
     cases = [("list", ["--list"])]
     modes = ["software"] + (["auto", "hardware"] if args.hardware else [])
@@ -52,8 +103,7 @@ def main():
 
 def run_cases(args, work, executable, cases, monitor, rows):
     for label, options in cases:
-        if label.startswith(("auto-", "hardware-")):
-            require_guard()
+        if monitor:
             monitor.check()
         print(f"BEGIN {label}", flush=True)
         with (work / f"{label}.jsonl").open("w") as output, (work / f"{label}.stderr.txt").open("w") as errors:

@@ -27,10 +27,10 @@ class PatchAuditTests(unittest.TestCase):
         self.assertEqual(first.read_bytes(), second.read_bytes())
         report = json.loads(first.read_text())
         self.assertEqual(report['kind'], 'vpf.patch-site-audit')
-        self.assertEqual(report['totalSites'], 224)
+        self.assertEqual(report['totalSites'], 214)
         self.assertEqual(sum(report['totalByCategory'].values()), report['totalSites'])
         self.assertEqual(sum(report['totalByGroup'].values()), report['totalSites'])
-        self.assertEqual(len(report['features']), 21)
+        self.assertEqual(len(report['features']), 19)
         for candidate in report['reviewCandidates']:
             self.assertLessEqual(candidate['size'], 4)
             self.assertIn(candidate['group'], ('vcn-applegva', 'metal-display', 'submit-guard'))

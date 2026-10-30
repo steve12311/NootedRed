@@ -3,8 +3,6 @@
 #include <VPF/PatchManifest.hpp>
 #include <UserVideoDecodeData.hpp>
 #include <UserSequoiaVideoData.hpp>
-#include <UserVideoGuard24Data.hpp>
-#include <UserVideoGuard25Data.hpp>
 #include <UserSurfaceSyncData.hpp>
 #include <UserSurfaceConstructorData.hpp>
 #include <UserSequoiaSurfaceData.hpp>
@@ -22,8 +20,6 @@ inline constexpr auto Sites_Vcn2Decode_Darwin25_15E7 = makeSites(UserVideoDecode
 inline constexpr auto Sites_Vcn2Decode_Darwin25_1636 = makeSites(UserVideoDecodeData::Patches1636, UserVideoDecodeData::ResolverLocations);
 inline constexpr auto Sites_Vcn2Decode_Darwin25_1638 = makeSites(UserVideoDecodeData::Patches, UserVideoDecodeData::ResolverLocations);
 inline constexpr auto Sites_Vcn2Decode_Darwin25_164C = makeSites(UserVideoDecodeData::Patches164C, UserVideoDecodeData::ResolverLocations);
-inline constexpr auto Sites_Vcn2SafetyGuard_Darwin24 = makeSites(UserVideoGuard24Data::IdentityPatches, UserVideoGuard24Data::ResolverLocations);
-inline constexpr auto Sites_Vcn2SafetyGuard_Darwin25 = makeSites(UserVideoGuard25Data::IdentityPatches, UserVideoGuard25Data::ResolverLocations);
 inline constexpr auto Sites_DisplaySRD_Darwin24_1638 = makeSites(UserSequoiaSurfaceData::Patches1638, UserSequoiaSurfaceData::ResolverLocations);
 inline constexpr auto Sites_DisplaySRD_Darwin24_15D8 = makeSites(UserSequoiaSurfaceData::Patches15D8, UserSequoiaSurfaceData::ResolverLocations);
 inline constexpr auto Sites_DisplaySRD_Darwin24_15DD = makeSites(UserSequoiaSurfaceData::Patches15DD, UserSequoiaSurfaceData::ResolverLocations);
@@ -59,12 +55,6 @@ inline constexpr FeatureManifest Features[] = {
     {FeatureId::Vcn2Decode, OsDarwin25, 0x164C, EvidenceKind::RelocationAwareFullFunction,
      {UserVideoDecodeData::ResolverImages, 3, UserVideoDecodeData::ResolverFunctions, 19, UserVideoDecodeData::ResolverLocations, 23, Sites_Vcn2Decode_Darwin25_164C.sites, 23},
      "UserVideoDecodeData.hpp", "3137475689B434E8A34F56C5D57216A1"},
-    {FeatureId::Vcn2SafetyGuard, OsDarwin24, 0x0000, EvidenceKind::RelocationAwareFullFunction,
-     {UserVideoGuard24Data::ResolverImages, 1, UserVideoGuard24Data::ResolverFunctions, 5, UserVideoGuard24Data::ResolverLocations, 5, Sites_Vcn2SafetyGuard_Darwin24.sites, 5},
-     "UserVideoGuard24Data.hpp", nullptr},
-    {FeatureId::Vcn2SafetyGuard, OsDarwin25, 0x0000, EvidenceKind::RelocationAwareFullFunction,
-     {UserVideoGuard25Data::ResolverImages, 1, UserVideoGuard25Data::ResolverFunctions, 5, UserVideoGuard25Data::ResolverLocations, 5, Sites_Vcn2SafetyGuard_Darwin25.sites, 5},
-     "UserVideoGuard25Data.hpp", nullptr},
     {FeatureId::DisplaySRD, OsDarwin24, 0x1638, EvidenceKind::RelocationAwareFullFunction,
      {UserSequoiaSurfaceData::ResolverImages, 5, UserSequoiaSurfaceData::ResolverFunctions, 5, UserSequoiaSurfaceData::ResolverLocations, 4, Sites_DisplaySRD_Darwin24_1638.sites, 4},
      "UserSequoiaSurfaceData.hpp", "42EC2890BC40317EBB2745142BFF7F26"},

@@ -37,7 +37,7 @@ class ManifestTests(unittest.TestCase):
         self.assertGreater(len(self.features), 0)
         self.assertEqual(
             {feature['feature'] for feature in self.features},
-            {'Vcn2Decode', 'Vcn2SafetyGuard', 'DisplaySRD', 'DisplayLegacyBlend', 'DisplayComputeScratch',
+            {'Vcn2Decode', 'DisplaySRD', 'DisplayLegacyBlend', 'DisplayComputeScratch',
              'DisplayPipelineConstructor', 'DisplaySubmit'},
         )
         for feature in self.features:

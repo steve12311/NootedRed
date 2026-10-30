@@ -10,7 +10,6 @@
 #include <UserVideoDecode.hpp>
 #include <UserVideoDecodeData.hpp>
 #include <UserVideoDecodeResolver.hpp>
-#include <UserVideoGuardResolver.hpp>
 #include <VCN.hpp>
 #include <VCNCapabilities.hpp>
 #include <VPF/CapabilityState.hpp>
@@ -80,8 +79,8 @@ namespace
     UInt32                         seenStages{0}, appliedCount{0}, errorCount{0};
     struct Published
     {
-        UInt64 uuid[4], matched, reads, guardReads, path, planState, ledgerState, planner;
-        UInt64 fvrcDecode, fvrcGuard, fvrcDecodeCold, fvrcGuardCold;
+        UInt64 uuid[4], matched, reads, path, planState, ledgerState, planner;
+        UInt64 fvrcDecode, fvrcDecodeCold;
     } published{};
     // 调用方持有 guardLock；每个存活 map 保留独立状态，销毁时释放。
     class VideoLedger
@@ -157,7 +156,7 @@ namespace
     bool                              sequoia{false};
     const UserVideoDecodeData::Patch* devicePatches{nullptr};
     constexpr auto                    PatchCount   = arrsize(UserVideoDecodeData::Patches);
-    constexpr UInt32                  Capacity     = PatchCount + UserVideoGuardData::MaxEntries;
+    constexpr UInt32                  Capacity     = PatchCount;
     constexpr UInt32                  MaxPageCount = Capacity * 2;
     static_assert(PatchCount <= 32 && UserVideoDecodeData::PageCount <= 16);
     static_assert(arrsize(UserSequoiaVideoData::Patches) == PatchCount);
@@ -269,26 +268,24 @@ namespace
 
     // 规划器只判断功能组前提；补丁选择仍由现有策略和 FairPlay 掩码给出。
     bool planVideoFeatures(const UInt32 osMask, const UInt32 deviceID, const bool fairPlay, const bool decodeVerified,
-                           const bool guardVerified, VPF::PlannerResult& result)
+                           VPF::PlannerResult& result)
     {
         VPF::PlannerInput input{};
         input.osMask   = osMask;
         input.deviceID = deviceID;
         input.requested =
-            VPF::featureBit(VPF::FeatureId::Vcn2SafetyGuard) | VPF::featureBit(VPF::FeatureId::Vcn2Decode)
+            VPF::featureBit(VPF::FeatureId::Vcn2Decode)
             | (fairPlay ?
                    VPF::featureBit(VPF::FeatureId::FairPlayNativeDecodeSubset) :
                    (VPF::featureBit(VPF::FeatureId::Vcn2Encode) | VPF::featureBit(VPF::FeatureId::AppleGVASelection)));
-        input.verified = (guardVerified ? VPF::featureBit(VPF::FeatureId::Vcn2SafetyGuard) : 0)
-                         | (decodeVerified ? (VPF::featureBit(VPF::FeatureId::Vcn2Decode)
-                                              | VPF::featureBit(VPF::FeatureId::Vcn2Encode)
-                                              | VPF::featureBit(VPF::FeatureId::AppleGVASelection)
-                                              | VPF::featureBit(VPF::FeatureId::FairPlayNativeDecodeSubset)) :
-                                             0);
+        input.verified = decodeVerified ? (VPF::featureBit(VPF::FeatureId::Vcn2Decode)
+                                           | VPF::featureBit(VPF::FeatureId::Vcn2Encode)
+                                           | VPF::featureBit(VPF::FeatureId::AppleGVASelection)
+                                           | VPF::featureBit(VPF::FeatureId::FairPlayNativeDecodeSubset)) :
+                                          0;
         input.external = VPF::ExternalVcnBridge | (fairPlay ? VPF::ExternalFairPlay : 0);
         result         = VPF::plan(input);
-        return !result.cycle && (result.enabled & input.requested) == input.requested
-               && VPF::orderedBefore(result, VPF::FeatureId::Vcn2SafetyGuard, VPF::FeatureId::Vcn2Decode);
+        return !result.cycle && (result.enabled & input.requested) == input.requested;
     }
 
     VPF::CapabilityState ledgerState(const UInt64 map)
@@ -432,12 +429,12 @@ namespace
     struct TransactionState
     {
         UserVideoDecodeData::Patch selected[PatchCount]{}, install[Capacity]{};
-        VPF::VerifiedPatchPlan     decodePlan{}, guardPlan{}, installPlan{};
+        VPF::VerifiedPatchPlan     decodePlan{}, installPlan{};
         VPF::PlannerResult         planner{};
         Page                       pages[MaxPageCount]{};
         UserSharedCache::Input     input{nullptr, {}};
         UInt8                      scan[UserSharedCache::Input::ScanSize];
-        VPF::FastResolution        fast, guardFast;
+        VPF::FastResolution        fast;
     };
     struct TransactionBuffer
     {
@@ -462,80 +459,12 @@ namespace
         }
     };
 
-    struct GuardBuffer
-    {
-        UserVideoGuardResolver::Plan* plan{nullptr};
-        GuardBuffer()
-        {
-            plan = IONew(UserVideoGuardResolver::Plan, 1);
-            if (plan) { memset(plan, 0, sizeof(*plan)); }
-        }
-        ~GuardBuffer()
-        {
-            if (plan) { IODelete(plan, UserVideoGuardResolver::Plan, 1); }
-        }
-    };
-
-    struct GuardPage
-    {
-        vm_map_t     map;
-        vm_address_t page{0};
-        bool         retained{false};
-        ~GuardPage()
-        {
-            if (page && !retained) {
-                const auto status = vm_deallocate(map, page, PAGE_SIZE);
-                if (status != KERN_SUCCESS) { error(status); }
-            }
-        }
-    };
-
-    bool executableGuard(vm_map_t map, UInt64 page)
+    // 已安装页面的权限检查；与编解码拦截无关，只验证 RX 安装状态。
+    bool executablePage(vm_map_t map, UInt64 page)
     {
         vm_prot_t current{0}, maximum{0};
         return UserPatchMemory::leafProtection(map, page, current, queryRegion, error, &maximum)
                && current == (VM_PROT_READ | VM_PROT_EXECUTE) && maximum == current;
-    }
-
-    bool createGuard(GuardPage& owner, UserVideoGuardResolver::Plan& plan)
-    {
-        auto status = vm_allocate(owner.map, &owner.page, PAGE_SIZE, VM_FLAGS_ANYWHERE);
-        if (status != KERN_SUCCESS) {
-            error(status);
-            return false;
-        }
-        if (!UserVideoGuardResolver::setPage(plan, owner.page, currentKernelVersion().major())
-            || writeUser(plan.expected, owner.page, plan.length) != 0)
-        {
-            return false;
-        }
-        status = vm_protect(owner.map, owner.page, PAGE_SIZE, FALSE, VM_PROT_READ | VM_PROT_EXECUTE);
-        if (status == KERN_SUCCESS) {
-            status = vm_protect(owner.map, owner.page, PAGE_SIZE, TRUE, VM_PROT_READ | VM_PROT_EXECUTE);
-        }
-        if (status != KERN_SUCCESS) {
-            error(status);
-            return false;
-        }
-        return executableGuard(owner.map, owner.page) && readUser(owner.page, plan.observed, plan.length) == 0
-               && memcmp(plan.expected, plan.observed, plan.length) == 0;
-    }
-
-    void recordSafety(proc_t process)
-    {
-        NRed::singleton().setProp32("NRedVCNEncodeGuardRevision", UserVideoGuardData::Revision);
-        NRed::singleton().setProp32("NRedVCNDecodeGuardRevision", UserVideoGuardData::Revision);
-        NRed::singleton().setProp32("NRedVCNEncodeAlignmentRevision", 1);
-        if (!process) { return; }
-        const auto pid = proc_pid(process);
-        char       name[32]{};
-        if (pid > 0) { proc_name(pid, name, sizeof(name)); }
-        if (strncmp(name, "VTEncoderXPC", 12) == 0) {
-            NRed::singleton().setProp32("NRedVCNGuardedEncoderPID", static_cast<UInt32>(pid));
-        }
-        else if (strncmp(name, "VTDecoderXPC", 12) == 0) {
-            NRed::singleton().setProp32("NRedVCNGuardedDecoderPID", static_cast<UInt32>(pid));
-        }
     }
 
     struct DynamicBuffer
@@ -684,19 +613,8 @@ namespace
             NRed::singleton().setProp32("NRedDRMVideoPatchCount", patchCount);
         }
 
-        GuardBuffer guard;
-        auto&       guardFast = transaction.state->guardFast;
-        guardFast.begin(&header[88], major, VPF::resolutionProfile(deviceID, 0), 0, probeMapping, &probeState);
-        if (!guard.plan || !UserVideoGuardResolver::resolve(input, base, major, *guard.plan, &guardFast)) {
-            NRed::singleton().setProp32("NRedVCNUserGuardRejected", 1);
-            return result;
-        }
-        publish(published.guardReads, "NRedVCNUserGuardReads", guard.plan->reads);
-        publish(published.fvrcGuard, "NRedFVRCGuardHot", guardFast.hot ? 1 : 0);
-        publish(published.fvrcGuardCold, "NRedFVRCGuardCold", guardFast.hot ? 0 : 1);
         const auto* decodeManifest = VPF::ManifestData::find(VPF::FeatureId::Vcn2Decode, mask, deviceID);
-        const auto* guardManifest  = VPF::ManifestData::find(VPF::FeatureId::Vcn2SafetyGuard, mask, 0);
-        if (!decodeManifest || !guardManifest) {
+        if (!decodeManifest) {
             stage(Stage::CodeMismatch, fairPlayPID);
             error(KERN_INVALID_ARGUMENT);
             return result;
@@ -709,9 +627,7 @@ namespace
                                dynamic ? dynamicBuffer.plan->images : nullptr,
                                dynamic ? UserVideoDecodeResolver::ImageCount : 0,
                                dynamic ? dynamicBuffer.plan->reads : 0, VPF::PlanState::AllOriginal, aligned)
-            || !VPF::adaptGuard(workspace.guardPlan, *guardManifest, base, cache, *guard.plan)
-            || !planVideoFeatures(mask, deviceID, fairPlayDecode, workspace.decodePlan.valid(),
-                                  workspace.guardPlan.valid(), workspace.planner))
+            || !planVideoFeatures(mask, deviceID, fairPlayDecode, workspace.decodePlan.valid(), workspace.planner))
         {
             NRed::singleton().setProp32("NRedVCNVPFPlannerRejected", 1);
             stage(Stage::CodeMismatch, fairPlayPID);
@@ -723,7 +639,7 @@ namespace
 
         auto& installPlan = workspace.installPlan;
         installPlan.reset(*decodeManifest, base, cache);
-        if (!addPlanImages(installPlan, workspace.decodePlan) || !appendPlanSites(installPlan, workspace.guardPlan)
+        if (!addPlanImages(installPlan, workspace.decodePlan)
             || !appendPlanSites(installPlan, workspace.decodePlan) || installPlan.siteCount() == 0
             || installPlan.siteCount() > Capacity || !installPlan.seal(VPF::PlanState::AllOriginal))
         {
@@ -788,23 +704,14 @@ namespace
         }
         publish(published.planState, "NRedVCNVPFPlanState", static_cast<UInt32>(planState));
         if (planState == VPF::PlanState::AllPatched) {
-            if (!guard.plan->installed) {
-                stage(Stage::Mixed, fairPlayPID);
-                return result;
-            }
-            if (!executableGuard(map, guard.plan->page)) {
-                stage(Stage::Region, fairPlayPID);
-                return result;
-            }
             for (UInt32 p = 0; p < pageCount; ++p) {
-                if (!executableGuard(map, pages[p].address)) {
+                if (!executablePage(map, pages[p].address)) {
                     stage(Stage::Region, fairPlayPID);
                     return result;
                 }
             }
             stage(Stage::Already, fairPlayPID);
             observeLedger(mapKey);
-            recordSafety(process);
             if (fairPlayDecode) { NRed::singleton().setProp32("NRedDRMVideoState", 3); }
             return result;
         }
@@ -813,23 +720,13 @@ namespace
             return result;
         }
 
-        GuardPage   owner{map};
         ExecutorOps ops{map, queryRegion, error, readUser, writeUser};
         using Executor = VPF::SharedRegionTransaction<ExecutorOps, UserVideoDecodeData::Patch, Page,
                                                       UserVideoDecodeData::MaxPatchSize>;
         Executor executor(ops, base, workspace.install, installCount,
-                          reinterpret_cast<UInt8(*)[UserVideoDecodeData::MaxPatchSize]>(saved), pages, pageCount,
-                          guard.plan->count);
+                          reinterpret_cast<UInt8(*)[UserVideoDecodeData::MaxPatchSize]>(saved), pages, pageCount, 0);
         markLedger(mapKey, VPF::CapabilityState::Installing);
-        const auto committed = executor.commit(
-            [&]
-            {
-                if (!createGuard(owner, *guard.plan)) {
-                    NRed::singleton().setProp32("NRedVCNUserGuardAllocationRejected", 1);
-                    return false;
-                }
-                return true;
-            });
+        const auto committed = executor.commit([] { return true; });
         switch (committed.status) {
             case VPF::TransactionStatus::CheckFailed      : stage(Stage::Region, fairPlayPID); return result;
             case VPF::TransactionStatus::BeforeWriteFailed: return result;
@@ -846,8 +743,6 @@ namespace
                 if (!committed.rollbackOk) {
                     stage(Stage::Rollback, fairPlayPID);
                     error(KERN_FAILURE);
-                    owner.retained = true;
-                    NRed::singleton().setProp32("NRedVCNGuardRollbackRetainedPage", 1);
                 }
                 return result;
             case VPF::TransactionStatus::RestoreFailed:
@@ -856,14 +751,10 @@ namespace
                 if (!committed.rollbackOk) {
                     stage(Stage::Rollback, fairPlayPID);
                     error(KERN_FAILURE);
-                    owner.retained = true;
-                    NRed::singleton().setProp32("NRedVCNGuardRollbackRetainedPage", 1);
                 }
                 return result;
             case VPF::TransactionStatus::Installed: break;
         }
-        owner.retained = true;
-        recordSafety(process);
         installedLedger(mapKey);
         stage(Stage::Applied, fairPlayPID);
         if (fairPlayDecode) { NRed::singleton().setProp32("NRedDRMVideoState", 2); }
@@ -999,8 +890,9 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         SYSLOG("UserVideoDecode", "VCN capability rejected: device=0x%X reason=%u", deviceID, rejected);
         return;
     }
+    // Darwin 23 没有对应的用户态补丁数据；保持失败关闭，不使用其他版本的补丁。
     if (currentKernelVersion().major() == 23) {
-        NRed::singleton().setProp32("NRedVCNUserSafetyProfileMissing", 1);
+        NRed::singleton().setProp32("NRedVCNUserUnsupportedOS", 1);
         NRed::singleton().setProp32("NRedVCNUserRejected", 6);
         return;
     }

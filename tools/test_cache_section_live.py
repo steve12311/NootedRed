@@ -63,7 +63,6 @@ static void* kernelMemchr(const void* source,int value,size_t count){
 #endif
 #include <UserSurfaceSyncResolver.hpp>
 #include <UserVideoDecodeResolver.hpp>
-#include <UserVideoGuardResolver.hpp>
 struct Mapping {uint64_t start,end,offset,mask,add;const char* path;int fd=-1;};
 static Mapping mappings[]={MAPPINGS};
 static unsigned calls=0;static uint64_t bytesRead=0;
@@ -103,12 +102,8 @@ int main(){
 #endif
   assert(UserVideoDecodeResolver::resolve(input,base,device.patches,plan,MAJOR==24));
   originals(plan,sizeof(plan.patches)/sizeof(plan.patches[0]));
-  printf("PASS real video device=%x reads=%u\n",device.deviceID,plan.reads);
-  UserVideoGuardResolver::Plan guard;
-  assert(UserVideoGuardResolver::resolve(input,base,MAJOR,guard));
-  originals(guard,guard.count);
-  printf("PASS real video+guard device=%x cumulative reads=%u bytes=%u\n",device.deviceID,input.reads,input.bytes);
-  printf("PERF video+guard device=%x calls=%u bytes=%llu cpu_ms=%.3f\n",device.deviceID,calls,bytesRead,1000.0*(clock()-start)/CLOCKS_PER_SEC);
+  printf("PASS real video device=%x reads=%u bytes=%u\n",device.deviceID,plan.reads,input.bytes);
+  printf("PERF video device=%x calls=%u bytes=%llu cpu_ms=%.3f\n",device.deviceID,calls,bytesRead,1000.0*(clock()-start)/CLOCKS_PER_SEC);
  }
  if(MAJOR==25){calls=0;bytesRead=0;auto start=clock();uint64_t offset=0;assert(UserSurfaceSyncResolver::resolveTahoeSubmit(reader,base,offset));
  printf("PASS real full submit method offset=%llx\n",offset);
@@ -158,7 +153,7 @@ int main(){
         baseline = WORK / 'baseline'
         baseline.mkdir(exist_ok=True)
         for name in ['UserCacheResolver.hpp', 'UserSharedCache.hpp', 'UserSurfaceSyncResolver.hpp',
-                     'UserVideoDecodeResolver.hpp', 'UserVideoGuardResolver.hpp']:
+                     'UserVideoDecodeResolver.hpp']:
             text = subprocess.check_output(['git', 'show', args.baseline_ref + ':NootedRed/' + name],
                                            cwd=ROOT, text=True, timeout=10)
             (baseline / name).write_text(text)

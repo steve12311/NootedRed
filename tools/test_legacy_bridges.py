@@ -22,7 +22,6 @@ COMMON = r'''
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserSurfaceSyncResolver.hpp>
 #include <UserVideoDecodeResolver.hpp>
-#include <UserVideoGuardResolver.hpp>
 #include <UserSubmitGuardData.hpp>
 #include <UserLegacyData.hpp>
 #include <VCNCapabilities.hpp>
@@ -262,12 +261,12 @@ int main(){
  for(unsigned device:{0x15E7U,0x1636U,0x1638U,0x164CU})for(bool drm:{false,true}){
   NRed::singleton().device=device;KernelPatcher kernel;UserVideoDecode::init(kernel);
   assert(kernel.routes==0&&!devicePatches&&properties.at("NRedVCNUserRejected")==6);
-  assert(properties.at("NRedVCNUserSafetyProfileMissing")==1);
+  assert(properties.at("NRedVCNUserUnsupportedOS")==1);
   auto* profile=UserLegacyData::video(23,device);reset(profile);fairPlay=drm;
   auto pristine=memory;call();assert(memory==pristine&&writes==0&&protects==0&&allocations==0);
   assert(!properties.contains("NRedVCNUserApplied"));
  }
- puts("PASS actual Sonoma video entry: all four devices and both FairPlay states reject missing safety evidence without memory writes");
+ puts("PASS actual Sonoma video entry: all four devices and both FairPlay states reject the unsupported OS without memory writes");
 }
 '''
         text = COMMON.replace('BODY', body).replace('INIT', init).replace('MAIN', main_code)

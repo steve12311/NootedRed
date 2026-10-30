@@ -30,13 +30,29 @@ def main():
     preamble = preamble.replace('#include "UserVideoDecodeData.hpp"', '#include <vector>\n#include "UserVideoDecodeData.hpp"\n#include "UserVideoDecodeResolver.hpp"')
     preamble += '#include "user-cache-dynamic.hpp"\n'
     harness = preamble + r'''
+// 当前源码使用 IOLock 与 map 门；测试夹具提供单进程替身，不涉及真实锁语义。
+#include <mutex>
+#include <condition_variable>
+struct IOLock { std::mutex mutex; };
+static IOLock* IOLockAlloc(){return new IOLock;}
+static void IOLockFree(IOLock* p){delete p;}
+static void IOLockLock(IOLock* p){p->mutex.lock();}
+static void IOLockUnlock(IOLock* p){p->mutex.unlock();}
+constexpr int THREAD_UNINT=0;
+static std::condition_variable_any gateChanged;
+static int IOLockSleep(IOLock* p,void*,int){std::unique_lock<std::mutex> held(p->mutex,std::adopt_lock);gateChanged.wait(held);held.release();return 0;}
+static void IOLockWakeup(IOLock*,void*,bool){gateChanged.notify_all();}
+#include <UserPatchMapGate.hpp>
 static bool drmClient=false;
 static const char* clientName="Music";
 static std::set<uint64_t> drmTouchedPages;
+static std::map<uint64_t,int> maxima;
 static kern_return_t vm_protect(vm_map_t,uint64_t a,unsigned,int setMax,int flags){
  protects++;if(protects==failedProtect || failedProtectCalls.contains(protects))return 42;assert(protections.contains(a));
  drmTouchedPages.insert(a);
- if(setMax)protections[a]&=flags&7;else protections[a]=flags&7;return 0;}
+ int value=flags&7;
+ if(setMax){maxima[a]=value;protections[a]&=value;}else{protections[a]=value;maxima[a]|=value;}
+ return 0;}
 BODY
 static int original(proc_t,SharedRegionCheckArgs*,int* value){*value=123;return 0;}
 static int proc_pid(proc_t){return 217;}static void proc_name(int,char* name,int size){snprintf(name,size,"%s",drmClient?clientName:"VTDecoderXPC");}
@@ -53,13 +69,14 @@ static bool cleanPage(uint64_t a){
 }
 static kern_return_t query(vm_map_t,uint64_t* a,uint64_t* size,unsigned*,int* p,unsigned* count){
  assert(*count==VM_REGION_SUBMAP_SHORT_INFO_COUNT_64);auto*i=reinterpret_cast<vm_region_submap_short_info_data_64_t*>(p);
- i->protection=protections.contains(*a)?protections.at(*a):1;i->is_submap=0;*size=4096;
+ i->protection=protections.contains(*a)?protections.at(*a):1;i->max_protection=maxima.contains(*a)?maxima.at(*a):7;
+ i->is_submap=0;*size=4096;
  i->object_id=0x1234;i->share_mode=cleanPage(*a)?5:2;i->shadow_depth=0;return 0;}
 static void setup(unsigned id){
  using namespace UserVideoDecodeData;cache(ResolverImages,ResolverFunctions,true);cleanBlocks=blocks;
  devicePatches=findDevice(id);assert(devicePatches);
  VPF::ResolutionDiagnostics::setEnabled(true);VPF::resolutionCache.init();
- drmClient=false;clientEntitlement=nullptr;drmTouchedPages.clear();
+ drmClient=false;clientEntitlement=nullptr;drmTouchedPages.clear();maxima.clear();
 #ifndef BASELINE
  fairPlayDriverOnly=false;
 #endif
@@ -67,6 +84,7 @@ static void setup(unsigned id){
 }
 static void call(){SharedRegionCheckArgs args{0x1000};int value=0;assert(wrappedSharedRegionCheck(drmClient?reinterpret_cast<void*>(217):nullptr,&args,&value)==0&&value==123);}
 int main(){
+ guardLock=IOLockAlloc();
  unsigned cases=0;
  for(unsigned id:{0x15e7U,0x1636U,0x1638U,0x164cU}){
   setup(id);UserVideoDecodeResolver::Plan plan;
@@ -180,12 +198,4 @@ int main(){
 
 
 if __name__ == '__main__':
-    if '--baseline' in sys.argv:
-        main()
-    else:
-        # 新事务夹具合并设备补丁与全部安全入口，继续覆盖本文件的重排、
-        # 元数据拒绝、FairPlay 和跨页故障场景，避免用不含守卫的模拟计划测试安装器。
-        import test_vcn_user_bridge
-        sys.argv = [sys.argv[0], '--major', '24' if '--sequoia' in sys.argv else '25'] + (
-            ['--sanitize'] if '--sanitize' in sys.argv else [])
-        test_vcn_user_bridge.main()
+    main()

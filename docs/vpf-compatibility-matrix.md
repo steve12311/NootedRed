@@ -6,9 +6,9 @@
 
 | 系统 | Darwin | 显示入口 | 视频入口 | VPF 状态 |
 | --- | --- | --- | --- | --- |
-| macOS 14 Sonoma | 23 | `-NRedDisplayFix`；`UserLegacyData::metal(23)` 精确配置 | `-NRedVideoFix`；安全守卫证据缺失，拒绝用户态视频补丁 | Manifest 不覆盖 OS23 精确配置 |
-| macOS 15 Sequoia | 24 | `-NRedDisplayFix`；动态 `resolveSequoia` + 动态 Submit | `-NRedVideoFix`；`UserSequoiaVideoData` 动态解析 + 守卫 24 | Manifest 覆盖 |
-| macOS 26 Tahoe | 25 | `-NRedDisplayFix`；动态 `resolve` + 静态 SRD/LegacyBlend/Scratch/Submit | `-NRedVideoFix`；`UserVideoDecodeData` 动态解析 + 守卫 25 | Manifest 覆盖 |
+| macOS 14 Sonoma | 23 | `-NRedDisplayFix`；`UserLegacyData::metal(23)` 精确配置 | `-NRedVideoFix`；没有对应补丁数据，拒绝用户态视频补丁 | Manifest 不覆盖 OS23 精确配置 |
+| macOS 15 Sequoia | 24 | `-NRedDisplayFix`；动态 `resolveSequoia` + 动态 Submit | `-NRedVideoFix`；`UserSequoiaVideoData` 动态解析 | Manifest 覆盖 |
+| macOS 26 Tahoe | 25 | `-NRedDisplayFix`；动态 `resolve` + 静态 SRD/LegacyBlend/Scratch/Submit | `-NRedVideoFix`；`UserVideoDecodeData` 动态解析 | Manifest 覆盖 |
 
 没有新增 VPF boot-args；`NRedECFix` 等与 VPF 无关。
 
@@ -60,8 +60,7 @@ Manifest 覆盖和合成测试不能证明各设备已通过实机验收。
 
 | 功能 | Darwin 23 | Darwin 24 | Darwin 25 |
 | --- | --- | --- | --- |
-| 用户态视频补丁 | **拒绝**：`NRedVCNUserSafetyProfileMissing=1`、`NRedVCNUserRejected=6` | `UserSequoiaVideoData` 动态；所有 UUID | 参考 UUID `31374756-89B4-34E8-A34F-56C5D57216A1` 静态快路径；其他 UUID `UserVideoDecodeData` 动态 |
-| 安全守卫 | 无 | `UserVideoGuard24Data`；先于设备适配 | `UserVideoGuard25Data`；先于设备适配 |
+| 用户态视频补丁 | **拒绝**：`NRedVCNUserUnsupportedOS=1`、`NRedVCNUserRejected=6` | `UserSequoiaVideoData` 动态；所有 UUID | 参考 UUID `31374756-89B4-34E8-A34F-56C5D57216A1` 静态快路径；其他 UUID `UserVideoDecodeData` 动态 |
 | FairPlay | 不启用用户态视频补丁 | entitlement `com.apple.private.fpsd.client`；只选 AMD 解码子集 | 同左 |
 | AppleGVA / 编码 | 原生 | 原生策略；编码补丁不在 FairPlay 子集 | 同左 |
 | 受保护视频黑屏 / 固件证书 | 未解决 | 未解决 | 未解决 |
@@ -69,10 +68,8 @@ Manifest 覆盖和合成测试不能证明各设备已通过实机验收。
 关键拒绝/诊断键：
 
 - `NRedVCNUserRejected`：能力/符号/路由/MapGate 初始化拒绝。
-- `NRedVCNUserSafetyProfileMissing`：Darwin 23 守卫证据缺失。
+- `NRedVCNUserUnsupportedOS`：Darwin 23 没有对应补丁数据，拒绝启用。
 - `NRedVCNUserDynamicRejected`：动态视频计划核验失败。
-- `NRedVCNUserGuardRejected`：守卫入口/载荷/函数核验失败。
-- `NRedVCNGuardRollbackRetainedPage`：守卫回滚无法确认时保留页。
 - `NRedVCNUserMixed` / `NRedImmediateSyncD08`：混合状态拒绝。
 
 ## 4. Manifest 覆盖
@@ -80,7 +77,6 @@ Manifest 覆盖和合成测试不能证明各设备已通过实机验收。
 | FeatureId | Darwin | 设备 | 站点 | 说明 |
 | --- | --- | ---: | ---: | --- |
 | `Vcn2Decode` | 24 / 25 | 4 | 23/实例 | 视频补丁表；含编码相关站点，但 FairPlay 仍按位掩码选解码子集 |
-| `Vcn2SafetyGuard` | 24 / 25 | 0（共用） | 5/实例 | Identity 约束；运行时入口补丁由 `adaptGuard` 取实际 Plan |
 | `DisplaySRD` | 24 | 6 | 4/实例 | `UserSequoiaSurfaceData` 动态完整函数 |
 | `DisplaySRD` | 25 | 0 | 2 | 静态 `SrdSharedPatches`；`ExactValidatedBuild` |
 | `DisplayLegacyBlend` | 25 | 0 | 3 | 静态 `LegacyBlendPatches` |
