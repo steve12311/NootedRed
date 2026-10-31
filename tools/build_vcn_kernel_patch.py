@@ -7,11 +7,12 @@ import struct
 import subprocess
 
 from audit_video_driver import disk_image, vtable
+from kext_binary import driver
 from metal_cache import array
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vcn"
-DRIVER = Path("/System/Library/Extensions/AMDRadeonX6000.kext/Contents/MacOS/AMDRadeonX6000")
+DRIVER = driver("AMDRadeonX6000")
 GETTERS = {
     '5000': ['554889e58a870e03000024015dc3', '554889e5488b87400602005dc3', '554889e58b87500502005dc3'],
     '6000': ['554889e58a870e03000024015dc3', '554889e5488b87480602005dc3', '554889e58b87480502005dc3'],
@@ -19,7 +20,7 @@ GETTERS = {
 
 
 def abi_guards(version):
-    path = Path(f"/System/Library/Extensions/AMDRadeonX{version}.kext/Contents/MacOS/AMDRadeonX{version}")
+    path = driver(f"AMDRadeonX{version}")
     _, read = disk_image(path)
     names = {}
     for line in subprocess.run(['nm', '-n', str(path)], check=True, capture_output=True, text=True, timeout=60).stdout.splitlines():

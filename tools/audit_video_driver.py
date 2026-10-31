@@ -5,6 +5,7 @@ import json
 import struct
 import subprocess
 
+from kext_binary import driver
 from metal_cache import CACHE, CacheReader, macho
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,7 +69,7 @@ def main():
     WORK.mkdir(parents=True, exist_ok=True)
     report = {"drivers": {}}
     for label, classname in [("X5000", "AMDVega10Hardware"), ("X6000", "AMDNavi10Hardware")]:
-        path = Path(f"/System/Library/Extensions/AMDRadeon{label}.kext/Contents/MacOS/AMDRadeon{label}")
+        path = driver(f"AMDRadeon{label}")
         data, read = disk_image(path)
         # 内核驱动的虚拟地址与文件偏移分开；直接解析本机未剥离的符号表。
         result = subprocess.run(["nm", "-n", str(path)], check=True, capture_output=True, text=True, timeout=60)

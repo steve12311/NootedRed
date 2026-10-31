@@ -4,9 +4,11 @@ from pathlib import Path
 import struct
 import subprocess
 
+from kext_binary import driver
+
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vtable-baseline"
-DRIVER = Path("/System/Library/Extensions/AMDRadeonX5000.kext/Contents/MacOS/AMDRadeonX5000")
+DRIVER = driver("AMDRadeonX5000")
 
 
 def main():
@@ -71,6 +73,11 @@ struct MachInfo {
     }
 };
 struct KernelPatcher { static constexpr int kernelWriteLock = 0; };
+static unsigned evidenceMatched = 0, evidenceMismatched = 0, evidencePublished = 0;
+namespace KernelDisplayEvidence {
+    inline void recordComputeVTable(bool matched) { (matched ? evidenceMatched : evidenceMismatched)++; }
+    inline void publish() { evidencePublished++; }
+}
 constexpr int KERN_SUCCESS = 0;
 #define SYSLOG(...) ((void)0)
 #define PANIC_COND(condition, ...) do { if (condition) throw std::runtime_error("write denied"); } while (0)
@@ -108,8 +115,10 @@ int main() {
         const auto original = module.orgPM4SubmitCommandBuffer;
         const auto before = table;
         writes = 0;
+        evidenceMatched = evidenceMismatched = evidencePublished = 0;
         module.install(table.data());
         assert(writes == 2 && module.orgPM4SubmitCommandBuffer == original);
+        assert(evidenceMatched == 1 && evidenceMismatched == 0 && evidencePublished == 1);
         for (size_t i = 0; i < table.size(); i++) {
             assert(table[i] == (i == (offset + 16) / 8 ? reinterpret_cast<uintptr_t>(X5000::computeSubmitCommandBuffer)
                                                        : before[i]));
@@ -119,6 +128,7 @@ int main() {
         writes = 0;
         module.install(table.data());
         assert(table == before && writes == 0 && module.orgPM4SubmitCommandBuffer == 0xBADC0DE);
+        assert(evidenceMismatched == 1 && evidencePublished == 2);
         module.orgPM4SubmitCommandBuffer = original;
         failWrite = true;
         bool rejected = false;

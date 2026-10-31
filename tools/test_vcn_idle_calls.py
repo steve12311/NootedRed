@@ -7,13 +7,14 @@ import struct
 import subprocess
 
 from audit_video_driver import disk_image, vtable
+from kext_binary import driver
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vcn"
 
 
 def native_image(version):
-    path = Path(f"/System/Library/Extensions/AMDRadeonX{version}.kext/Contents/MacOS/AMDRadeonX{version}")
+    path = driver(f"AMDRadeonX{version}")
     _, read = disk_image(path)
     names = {}
     result = subprocess.run(["nm", "-n", str(path)], capture_output=True, text=True, check=True, timeout=60)
