@@ -30,7 +30,7 @@ def macho(read, base):
 
 
 class CacheReader:
-    def __init__(self, directory=CACHE, uuid="3137475689b434e8a34f56c5d57216a1"):
+    def __init__(self, directory=CACHE, uuid="21fb8708fc8e3765be8c65d612cdf049"):
         self.directory = Path(directory)
         self.files, self.mappings = [], []
         self.base = 0

@@ -84,10 +84,11 @@ constexpr auto PatchCount = arrsize(UserSurfaceSyncData::ComputeScratchPatches);
 constexpr auto LegacyPatchCount = arrsize(UserSurfaceSyncData::LegacyBlendPatches);
 constexpr auto BaselinePatchCount = arrsize(UserSurfaceSyncData::Patches);
 static_assert(BaselinePatchCount == arrsize(UserSurfaceSyncData::SrdSharedPatches));
-static_assert(PatchCount <= 16 && UserSurfaceSyncData::PageCount <= 8);
+static_assert(PatchCount <= 16);
 static_assert(UserSurfaceSyncData::MaxPatchSize <= 512);
 static_assert(UserSequoiaSurfaceData::MaxPatchSize <= UserSurfaceSyncResolver::Plan::BufferSize);
 constexpr UInt32 MaxPageCount = 8;
+static_assert(PatchCount * 2 <= MaxPageCount);
 
 const UserSurfaceSyncData::Patch* activePatches()
 {
@@ -170,11 +171,11 @@ struct SubmitGuardWorkspace
 // 守卫把“已用尾..容量尾”的空闲区整段填成 PM4 filler（池复用后尾部常混有旧命令），
 // 随后执行原入口前 15 字节并跳回。
 kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, SubmitGuardWorkspace& workspace,
-                                 VPF::DisplayRuntime<>& runtime, UInt64 offset = 0)
+                                 VPF::DisplayRuntime<>& runtime, UInt64 offset)
 {
     using namespace UserSubmitGuardData;
     fresh = false;
-    if (offset == 0) { offset = legacyProfile ? UserLegacyData::submitOffset(legacyProfile->major) : MethodOffset; }
+    if (offset == 0 && legacyProfile) { offset = UserLegacyData::submitOffset(legacyProfile->major); }
     if (offset == 0 || base >= UserSharedCache::UserLimit || offset >= UserSharedCache::UserLimit - base
         || MethodPatchSize > UserSharedCache::UserLimit - base - offset)
     {
@@ -332,7 +333,6 @@ struct PatchWorkspace
     UserSurfaceSyncData::Patch combined[PatchCount];
     UserSurfaceSyncResolver::Plan plan;
     UInt8                         saved[PatchCount][UserSurfaceSyncResolver::Plan::BufferSize];
-    UInt8                         context[UserSurfaceSyncResolver::Plan::BufferSize];
     VPF::VerifiedPatchPlan        requestPlan;
     SubmitGuardWorkspace          guard;
     Page                          pages[MaxPageCount];
@@ -391,11 +391,11 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         stage(Stage::CacheMismatch);
         return result;
     }
-    const bool dynamic = sequoia || (!legacyProfile && memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0);
-    auto& plan = workspace.value->plan;
-    auto& input = plan.input;
-    input.reader = readUser;
-    input.scanBuffer = plan.scan;
+    const bool dynamic         = !legacyProfile;
+    auto&      plan            = workspace.value->plan;
+    auto&      input           = plan.input;
+    input.reader               = readUser;
+    input.scanBuffer           = plan.scan;
     const auto        major    = currentKernelVersion().major();
     const auto        deviceID = NRed::singleton().getDeviceID();
     vm_map_t          map      = getTaskMap(current_task());
@@ -421,9 +421,9 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         memcpy(&value, header + 88 + i * 4, sizeof(value));
         publish(published.uuid[i], uuidKeys[i], value);
     }
-    // Sequoia 核验完整提交方法；旧路径继续使用已核实缓存的入口偏移。
-    UInt64     submitOffset{0};
-    auto&      submitFast = workspace.value->submitFast;
+    // Darwin 24/25 始终核验完整提交方法；UUID 只用于诊断和已核验位置缓存。
+    UInt64               submitOffset{0};
+    auto&                submitFast    = workspace.value->submitFast;
     VPF::FastResolution* submitFastPtr = nullptr;
     if (submitGuard && (sequoia || dynamic)) {
         const UInt32 submitFlags = sequoia ? 1U : 2U;
@@ -432,12 +432,9 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         submitFastPtr = &submitFast;
     }
     const bool knownCache =
-        sequoia ? (submitGuard && UserSurfaceSyncResolver::resolveSubmit(input, base, submitOffset, false, submitFastPtr)) :
-                  (legacyProfile ?
-                       memcmp(header + 88, legacyProfile->uuid, 16) == 0 :
-                       (!dynamic
-                        || (submitGuard
-                            && UserSurfaceSyncResolver::resolveSubmit(input, base, submitOffset, true, submitFastPtr))));
+        legacyProfile ?
+            memcmp(header + 88, legacyProfile->uuid, 16) == 0 :
+            (submitGuard && UserSurfaceSyncResolver::resolveSubmit(input, base, submitOffset, !sequoia, submitFastPtr));
     if (submitFastPtr) {
         publish(published.fvrcSubmit, "NRedFVRCSubmitHot", submitFast.hot ? 1 : 0);
         publish(published.fvrcSubmitCold, "NRedFVRCSubmitCold", submitFast.hot ? 0 : 1);
@@ -481,18 +478,6 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         publish(published.reads, "NRedImmediateSyncDynamicReads", plan.reads);
     }
 
-    // 禁止在残留另一策略的进程中把旧模式误报为已生效；切换参数仍需重启。
-    if (!legacyProfile && !dynamic && !computeScratch) {
-        auto& ctx = workspace.value->context;
-        for (UInt32 i = patchCount; i < PatchCount; ++i) {
-            const auto& extra = ComputeScratchPatches[i];
-            if (readUser(base + extra.offset, ctx, extra.size) != 0 || memcmp(ctx, extra.original, extra.size) != 0)
-            {
-                stage(Stage::CodeMismatch);
-                return result;
-            }
-        }
-    }
     auto& saved = workspace.value->saved;
     auto& pages = workspace.value->pages;
     const auto cache = dynamic ? input.cache : UserSharedCache::Range{base, UserSharedCache::UserLimit - base};

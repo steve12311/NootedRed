@@ -32,7 +32,7 @@ _surface_sync_init:
     movl $0x80, 0x14(%rdi)
     // 保留原生 3.0f 常量的 RIP 寻址。
     .byte 0xc4, 0xe2, 0x79, 0x18, 0x05
-    .long 0x7ffb10fbfde8 - 0x7ffb10d71a28 - (. - _surface_sync_init + 4)
+    .long 0x7ffb10fc1de8 - 0x7ffb10d73a28 - (. - _surface_sync_init + 4)
     vmovlps %xmm0, 0x1c(%rdi)
     movl $0x10000, 0x2c(%rdi)
     movabsq $0x800000008000, %rax
@@ -47,7 +47,7 @@ _surface_sync_init:
     popq %rbx
     popq %rbp
     .byte 0xe9
-    .long 0x7ffb10c545c6 - 0x7ffb10d71a28 - (. - _surface_sync_init + 4)
+    .long 0x7ffb10c565c6 - 0x7ffb10d73a28 - (. - _surface_sync_init + 4)
     // 另一个原生覆盖入口也保留完整配置读取，然后应用相同设备限制。
     .org 166, 0x90
 Loverride:
@@ -57,7 +57,7 @@ Loverride:
     pushq %rsi
     movq %rdi, %rbx
     .byte 0xe8
-    .long 0x7ffb10c5422b - 0x7ffb10d71a28 - (. - _surface_sync_init + 4)
+    .long 0x7ffb10c5622b - 0x7ffb10d73a28 - (. - _surface_sync_init + 4)
     popq %rsi
     cmpl $0x1638, 0xc(%rsi)
     jne Loverride_done

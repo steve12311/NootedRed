@@ -54,13 +54,10 @@ python3 tools/build_video_decode_patch.py
 python3 tools/import_legacy_compat.py --check
 python3 tools/test_vcn_cp_factory.py
 python3 tools/test_legacy_bridges.py --sanitize
-python3 tools/test_vcn_user_bridge.py
 python3 tools/test_video_cache_dynamic.py --sanitize
 ```
 
 CP 工厂测试在三个系统的真实函数上分别遍历 65,536 个 family，验证只新增 family 5 的 PSP 分支，
 保留无效参数及初始化失败清理；KE 分发器错误透传回归仍使用 26 的真实函数。
-桥接测试覆盖 Music／TV／任意名称的真实和缺失权限、默认启用、视频总开关、系统和设备门限、
-未选页不写入、逐项写入／权限失败回滚、重复查询状态。
 动态缓存测试对 Music／TV／任意名称重复验证重排、跨页及回滚。
 这些测试检查兼容策略，不执行 DRM 解密或验证实际音频播放。

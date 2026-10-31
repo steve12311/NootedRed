@@ -29,6 +29,30 @@ def main():
     preamble = template[:template.index('static bool isWindowServer')]
     preamble = preamble.replace('#include "UserVideoDecodeData.hpp"', '#include <vector>\n#include "UserVideoDecodeData.hpp"\n#include "UserVideoDecodeResolver.hpp"')
     preamble += '#include "user-cache-dynamic.hpp"\n'
+    preamble = preamble.replace('#define IONew(T,N) (new T[N])\n#define IODelete(P,T,N) delete[] P', r'''
+#include <cstdlib>
+#include <type_traits>
+struct TransactionState;
+static bool failTransaction=false,failDynamic=false;
+static unsigned liveTransactions=0,liveDynamicPlans=0;
+template<class T>T* trackedNew(size_t count){
+ if constexpr(std::is_same_v<T,TransactionState>){if(failTransaction)return nullptr;}
+ if constexpr(std::is_same_v<T,UserVideoDecodeResolver::Plan>){if(failDynamic)return nullptr;}
+ auto* p=static_cast<T*>(malloc(sizeof(T)*count));if(!p)return nullptr;
+ memset(p,0xa5,sizeof(T)*count);
+ if constexpr(std::is_same_v<T,TransactionState>)liveTransactions++;
+ if constexpr(std::is_same_v<T,UserVideoDecodeResolver::Plan>)liveDynamicPlans++;
+ return p;
+}
+template<class T>void trackedDelete(T* p){
+ if constexpr(std::is_same_v<T,TransactionState>){assert(liveTransactions>0);liveTransactions--;}
+ if constexpr(std::is_same_v<T,UserVideoDecodeResolver::Plan>){assert(liveDynamicPlans>0);liveDynamicPlans--;}
+ free(p);
+}
+#define IONew(T,N) trackedNew<T>(N)
+#define IODelete(P,T,N) trackedDelete(P)
+''')
+
     harness = preamble + r'''
 // 当前源码使用 IOLock 与 map 门；测试夹具提供单进程替身，不涉及真实锁语义。
 #include <mutex>
@@ -54,7 +78,7 @@ static kern_return_t vm_protect(vm_map_t,uint64_t a,unsigned,int setMax,int flag
  if(setMax){maxima[a]=value;protections[a]&=value;}else{protections[a]=value;maxima[a]|=value;}
  return 0;}
 BODY
-static int original(proc_t,SharedRegionCheckArgs*,int* value){*value=123;return 0;}
+static int original(proc_t,SharedRegionCheckArgs*,int* value){assert(liveTransactions==0&&liveDynamicPlans==0);*value=123;return 0;}
 static int proc_pid(proc_t){return 217;}static void proc_name(int,char* name,int size){snprintf(name,size,"%s",drmClient?clientName:"VTDecoderXPC");}
 static vm_map_t map(task_t){return reinterpret_cast<void*>(2);}
 static std::map<uint64_t,std::vector<uint8_t>> cleanBlocks;
@@ -79,10 +103,18 @@ static void setup(unsigned id){
  drmClient=false;clientEntitlement=nullptr;drmTouchedPages.clear();maxima.clear();
  published={};seenStages=appliedCount=errorCount=0;originalCheck=reinterpret_cast<uint64_t>(original);readUser=reader;writeUser=writer;getTaskMap=map;queryRegion=query;
 }
-static void call(){SharedRegionCheckArgs args{0x1000};int value=0;assert(wrappedSharedRegionCheck(drmClient?reinterpret_cast<void*>(217):nullptr,&args,&value)==0&&value==123);}
+static void call(){SharedRegionCheckArgs args{0x1000};int value=0;assert(wrappedSharedRegionCheck(drmClient?reinterpret_cast<void*>(217):nullptr,&args,&value)==0&&value==123);assert(liveTransactions==0&&liveDynamicPlans==0);}
 int main(){
  guardLock=IOLockAlloc();
  unsigned cases=0;
+ // IONew 按原始内存模拟；逐一拒绝两处工作区分配，退出时必须全部释放。
+ for(bool dynamicFailure:{false,true}){
+  setup(0x1638);auto initial=blocks;
+  failTransaction=!dynamicFailure;failDynamic=dynamicFailure;call();
+  assert(blocks==initial&&writes==0&&protects==0);
+  assert(properties.at("NRedVCNUserLastError")==KERN_RESOURCE_SHORTAGE);
+  failTransaction=failDynamic=false;cases++;
+ }
  for(unsigned id:{0x15e7U,0x1636U,0x1638U,0x164cU}){
   setup(id);UserVideoDecodeResolver::Plan plan;
   assert(UserVideoDecodeResolver::resolve(reader,base,devicePatches,plan));
@@ -180,6 +212,10 @@ int main(){
         harness = harness.replace('0x7F87FE', '0x7FE1FE')
         harness = harness.replace('drmClient=false;clientEntitlement', 'sequoia=true;drmClient=false;clientEntitlement')
     # 从实际源文件中提取的桥接引用进程诊断函数。
+    uuid = 'UserSequoiaVideoData::CacheUUID' if '--sequoia' in sys.argv else 'UserVideoDecodeData::CacheUUID'
+    harness = harness.replace('BODY', 'static bool referenceUUID=false;\nBODY')
+    harness = harness.replace('cleanBlocks=blocks;', f'if(referenceUUID)put(base+88,{uuid},16);cleanBlocks=blocks;')
+    harness = harness.replace('int main(){', 'int main(int argc,char**){referenceUUID=argc>1;')
     harness = harness.replace('BODY', body)
     harness = harness.replace('static kern_return_t vm_protect', 'static int proc_pid(proc_t);static void proc_name(int,char*,int);\nstatic kern_return_t vm_protect', 1)
     if '--baseline' in sys.argv:
@@ -191,7 +227,9 @@ int main(){
         flags.append('-DBASELINE')
     subprocess.run(['clang++', '-std=c++23', '-O2', *flags, '-I'+str(WORK/'stubs'),
                     '-I'+str(ROOT/'NootedRed'), '-I'+str(ROOT/'tools/fixtures'), str(file), '-o', str(exe)], check=True, timeout=60)
-    subprocess.run([str(exe)], check=True, timeout=60)
+    if '--known-uuid' not in sys.argv:
+        subprocess.run([str(exe)], check=True, timeout=60)
+    subprocess.run([str(exe), '--known-uuid'], check=True, timeout=60)
 
 
 if __name__ == '__main__':

@@ -9,7 +9,7 @@ from metal_cache import CacheReader, macho
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / 'build/user-surface-sync/scratch'
 SYMBOL = '__ZL33amdMtl_GFX9_AllocateScratchBufferP28GFX9_MtlComputePipelineStatej'
-DIGEST = '901b678273297d0148c2cf9c4812cab5281e80338414eba0f0f3570b4bca8c8d'
+DIGEST = '1b15f52f45d61d09adae7f12979f52e729ee97e857dcb959e5fa62f06dd45a4e'
 
 
 def supported_devices():

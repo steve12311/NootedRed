@@ -75,7 +75,6 @@ python3 tools/test_surface_sync_bridge.py
 python3 tools/test_surface_sync_dynamic.py
 python3 tools/test_compute_cache_dynamic.py --sanitize
 python3 tools/test_video_cache_dynamic.py --sanitize
-python3 tools/test_vcn_user_bridge.py
 python3 tools/test_vcn_native_load.py
 python3 tools/test_ec_backlight_service.py
 python3 tools/test_ec_backlight_service.py --thread-sanitizer

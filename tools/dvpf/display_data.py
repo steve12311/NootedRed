@@ -317,7 +317,7 @@ def load_submit_guard() -> list[dict]:
     if len(template) != patch_size:
         raise ValueError('SubmitGuard 入口模板长度不符')
     offsets = _legacy_submit_offsets()
-    offsets[25] = values['MethodOffset']
+    offsets[24] = offsets[25] = 0
     result = []
     for major in (23, 24, 25):
         offset = offsets.get(major)

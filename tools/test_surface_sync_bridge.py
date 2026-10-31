@@ -33,6 +33,7 @@ def main():
 #include <map>
 #include <set>
 #include <string>
+#include <algorithm>
 #include <array>
 #include <optional>
 #include <vector>
@@ -95,7 +96,9 @@ static std::map<uint64_t,int> protection,maxProtection;
 static std::set<int> failProtect;
 static int protectCalls=0,writeCalls=0,failWrite=0,originalResult=0,regionMode=0;
 static bool invalidCache=false,noMap=false;
-static uint64_t base=UserSurfaceSyncData::CacheBase+0x100000;
+#include "metal-dynamic-fixture.hpp"
+static uint64_t base=MetalFixture::base;
+static uint64_t testSubmitOffset;
 constexpr auto BaseN=arrsize(UserSurfaceSyncData::ComputeScratchPatches);
 constexpr auto MaxN=BaseN;
 static size_t N=2;
@@ -113,8 +116,9 @@ static kern_return_t vm_protect(vm_map_t,uint64_t address,unsigned,int setMax,vm
 }
 BODY
 INIT
-static const auto* active(){return activePatches();}
-static auto fixture(size_t i){return UserSurfaceSyncData::ComputeScratchPatches[i];}
+static const auto* active(){return MetalFixture::plan.patches;}
+static auto fixture(size_t i){return MetalFixture::plan.patches[i];}
+static unsigned pageCount(){return unsigned(protection.size()-1);}
 static int original(proc_t,SharedRegionCheckArgs*,int* value){assert(liveWorkspaces==0);*value=123;return originalResult;}
 static vm_map_t map(task_t){return noMap?nullptr:reinterpret_cast<void*>(2);}
 static kern_return_t query(vm_map_t,uint64_t* address,uint64_t* size,unsigned* depth,int* data,unsigned* count){
@@ -123,20 +127,26 @@ static kern_return_t query(vm_map_t,uint64_t* address,uint64_t* size,unsigned* d
  auto* info=reinterpret_cast<vm_region_submap_short_info_data_64_t*>(data);*size=PAGE_SIZE;
  info->is_submap=*depth==0;
  if(*depth==0)info->protection=1;else if(protection.contains(*address))info->protection=protection.at(*address);
- else{fprintf(stderr,"query page missing: address=%llx depth=%u, known pages:",(unsigned long long)*address,*depth);for(auto [page,flags]:protection)fprintf(stderr," %llx=%d",(unsigned long long)page,flags);fputc('\n',stderr);abort();}
- if(*depth==0)info->max_protection=5;else info->max_protection=maxProtection.at(*address);
+ else{
+  bool text=false;for(auto image:MetalFixture::imageAddresses)text|=*address>=image+0x1000&&*address<image+0x70000;
+  assert(text);info->protection=5;
+ }
+ if(*depth==0)info->max_protection=5;else info->max_protection=maxProtection.contains(*address)?maxProtection.at(*address):5;
  if(regionMode==2)*address+=PAGE_SIZE;if(regionMode==3)*count=1;if(regionMode==4)*size=PAGE_SIZE-1;
  return 0;
 }
 static int reader(uint64_t address,void* p,size_t size){
  if(address==0x1000){memcpy(p,&base,8);return 0;}
- if(address==base){memset(p,0,size);memcpy(p,UserSurfaceSyncData::CacheMagic,16);memcpy(static_cast<uint8_t*>(p)+88,UserSurfaceSyncData::CacheUUID,16);
-  if(invalidCache)static_cast<uint8_t*>(p)[88]^=1;return 0;}
- if(address==base+UserSubmitGuardData::MethodOffset){assert(size==methodEntry.size());memcpy(p,methodEntry.data(),size);return 0;}
  if(address==guardAddress){assert(size<=guardPage.size());memcpy(p,guardPage.data(),size);return 0;}
- for(size_t i=0;i<MaxN;i++){auto record=fixture(i);const auto start=base+record.offset;
-  if(address>=start && address-start<record.size && size<=record.size-(address-start)){memcpy(p,code[i].data()+(address-start),size);return 0;}}
- return 1;
+ if(MetalFixture::reader(address,p,size)!=0)return 1;
+ auto overlay=[&](uint64_t start,const uint8_t* bytes,size_t length){
+  const auto first=std::max(address,start),last=std::min(address+size,start+length);
+  if(first<last)memcpy(static_cast<uint8_t*>(p)+first-address,bytes+first-start,last-first);
+ };
+ for(size_t i=0;i<MaxN;i++){auto record=fixture(i);overlay(base+record.offset,code[i].data(),record.size);}
+ overlay(base+testSubmitOffset,methodEntry.data(),methodEntry.size());
+ if(invalidCache&&address<=base+448&&base+448<address+size)static_cast<uint8_t*>(p)[base+448-address]^=0xff;
+ return 0;
 }
 static int writer(const void* p,uint64_t address,size_t size){
  writeCalls++;
@@ -148,11 +158,14 @@ static int writer(const void* p,uint64_t address,size_t size){
 }
 static void reset(){
  assert(liveWorkspaces==0);failWorkspaceAllocation=false;
+ MetalFixture::setup(NRed::device,srdShared,legacyBlend,computeScratch);
+ testSubmitOffset=MetalFixture::functionAddresses[1]-base;
  protection.clear();maxProtection.clear();properties.clear();failProtect.clear();protectCalls=writeCalls=failWrite=originalResult=regionMode=0;
  writeOrder.clear();
  invalidCache=noMap=false;published={};seenStages=appliedCount=errorCount=windowServerCount=weatherCount=0;isWindowServer=isWeather=false;
- for(size_t i=0;i<MaxN;i++){auto p=fixture(i);memcpy(code[i].data(),p.original,p.size);if(i<N){const auto page=(base+p.offset)&~uint64_t(4095);protection[page]=5;maxProtection[page]=5;}}
- const auto method=base+UserSubmitGuardData::MethodOffset;
+ for(size_t i=0;i<MaxN;i++){auto p=fixture(i);memcpy(code[i].data(),p.original,p.size);if(i<N){const auto page=(base+p.offset)&~uint64_t(4095);protection[page]=5;maxProtection[page]=5;
+ const auto last=(base+p.offset+p.size-1)&~uint64_t(4095);protection[last]=5;maxProtection[last]=5;}}
+ const auto method=base+testSubmitOffset;
  uint8_t payload[sizeof(UserSubmitGuardData::Payload)];memcpy(payload,UserSubmitGuardData::Payload,sizeof(payload));
  const uint64_t continuation=method+UserSubmitGuardData::MethodPatchSize;
  memcpy(payload+UserSubmitGuardData::PayloadJumpOffset,&continuation,sizeof(continuation));
@@ -202,24 +215,34 @@ scratchFlag=argc>1&&strcmp(argv[1],"--scratch")==0;candidateFlag=argc>1&&strcmp(
  reset();call();bytes(true);rx();assert(writeCalls==N && properties.at("NRedImmediateSyncApplied")==1);
  assert(properties.at("NRedDisplayVPFPlanVerified")==1 && properties.at("NRedDisplayVPFPlanSites")==N);
  int prior=writeCalls;call();assert(writeCalls==prior && properties.at("NRedImmediateSyncD07")==1);
- for(int p=1;p<=int(computeScratch?3:(legacyFlag?2:1));p++){reset();failProtect.insert(p);call();assert(writeCalls==0);bytes(false);rx();}
+ for(int p=1;p<=int(pageCount());p++){reset();failProtect.insert(p);call();assert(writeCalls==0);bytes(false);rx();}
  for(int entry=1;entry<=int(N);entry++){reset();failWrite=entry;call();bytes(false);rx();assert(!properties.contains("NRedImmediateSyncApplied"));}
- reset();failProtect={int(computeScratch?3:(legacyFlag?2:1))+1,int(computeScratch?3:(legacyFlag?2:1))+2};call();bytes(false);rx();assert(properties.at("NRedImmediateSyncD13")==1 && !properties.contains("NRedImmediateSyncApplied"));
- reset();failProtect={int(computeScratch?3:(legacyFlag?2:1))+1};call();bytes(true);rx();assert(properties.at("NRedImmediateSyncApplied")==1 && properties.at("NRedImmediateSyncLastError")==42);
+ reset();failProtect={int(pageCount())+1,int(pageCount())+2};call();bytes(false);rx();assert(properties.at("NRedImmediateSyncD13")==1 && !properties.contains("NRedImmediateSyncApplied"));
+ reset();failProtect={int(pageCount())+1};call();bytes(true);rx();assert(properties.at("NRedImmediateSyncApplied")==1 && properties.at("NRedImmediateSyncLastError")==42);
  // 每一页的最大权限恢复失败都必须撤回补丁，不能发布成功状态。
- const int pageCount=int(computeScratch?3:(legacyFlag?2:1));
- for(int page=0;page<pageCount;page++){
-  reset();failProtect={pageCount+2+2*page};call();bytes(false);rx();
+ const int pagesToRestore=int(pageCount());
+ for(int page=0;page<pagesToRestore;page++){
+  reset();failProtect={pagesToRestore+2+2*page};call();bytes(false);rx();
   assert(properties.at("NRedImmediateSyncD13")==1 && !properties.contains("NRedImmediateSyncApplied"));
  }
- // UUID 变化本身不再决定兼容；未知布局仍必须通过动态解析器的内容核验。
+ // 破坏映像表元数据时，动态解析必须在任何写入前拒绝。
  reset();invalidCache=true;call();assert(protectCalls==0 && writeCalls==0);bytes(false);
  reset();code[1][0]^=1;call();assert(protectCalls==0 && writeCalls==0);
  for(const auto* other:{devicePatches->immediate,devicePatches->shared,devicePatches->blend,devicePatches->scratch}){
-  if(other==active())continue;reset();size_t otherN=other==devicePatches->scratch?BaseN:(other==devicePatches->blend?3:2);
+  if(other==activePatches())continue;reset();size_t otherN=other==devicePatches->scratch?BaseN:(other==devicePatches->blend?3:2);
+  uint64_t targets[3]{};
+  for(auto link:UserSurfaceSyncData::OriginalInitLinks)assert(UserSharedCache::relativeTarget(
+   base+fixture(0).offset,link.offset,code[0].data(),targets[link.target]));
   for(size_t i=0;i<otherN;i++)memcpy(code[i].data(),other[i].patched,other[i].size);
+  const auto* links=other==devicePatches->immediate?UserSurfaceSyncData::ImmediateInitLinks:UserSurfaceSyncData::SharedInitLinks;
+  for(unsigned i=0;i<3;i++)assert(UserSharedCache::setRelative(code[0].data(),links[i].offset,
+   base+fixture(0).offset,targets[links[i].target]));
+  assert(UserSharedCache::setRelative(code[1].data(),1,base+fixture(1).offset,
+   base+fixture(0).offset+UserSurfaceSyncData::OverrideEntryInInit));
+  if(other==devicePatches->scratch)memcpy(code[3].data(),fixture(3).patched,fixture(3).size);
   call();assert(protectCalls==0 && writeCalls==0);
-  assert(properties.contains("NRedImmediateSyncD06")||properties.contains("NRedImmediateSyncD08"));
+  if(properties.contains("NRedImmediateSyncDynamicRejected"))assert(property("NRedImmediateSyncD04")==1);
+  else assert(properties.contains("NRedImmediateSyncD06")||properties.contains("NRedImmediateSyncD08"));
  }
  reset();memcpy(code[0].data(),active()[0].patched,active()[0].size);call();assert(protectCalls==0 && properties.at("NRedImmediateSyncD08")==1);
  for(int mode=1;mode<=4;mode++){reset();regionMode=mode;call();assert(protectCalls==0);}

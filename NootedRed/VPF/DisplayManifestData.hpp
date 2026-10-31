@@ -204,11 +204,11 @@ inline constexpr DisplaySiteTemplate PageSites_MetalSubmitGuard_Darwin23[] = {
 };
 
 inline constexpr DisplaySiteTemplate PageSites_MetalSubmitGuard_Darwin24[] = {
-    {0x3087C3580ULL, 15, UserSubmitGuardData::MethodOriginal, SubmitGuardEntryTemplate, 6, 8, NoFunction, 0},
+    {0x0ULL, 15, UserSubmitGuardData::MethodOriginal, SubmitGuardEntryTemplate, 6, 8, NoFunction, 0},
 };
 
 inline constexpr DisplaySiteTemplate PageSites_MetalSubmitGuard_Darwin25[] = {
-    {0x310CE7240ULL, 15, UserSubmitGuardData::MethodOriginal, SubmitGuardEntryTemplate, 6, 8, NoFunction, 0},
+    {0x0ULL, 15, UserSubmitGuardData::MethodOriginal, SubmitGuardEntryTemplate, 6, 8, NoFunction, 0},
 };
 
 inline constexpr DisplayManifest Features[] = {
@@ -467,7 +467,7 @@ inline constexpr DisplayManifest Features[] = {
     {DisplayFeature::MetalSrdShared, DisplayDomain::MetalSharedCache, DisplayGroup::MetalRenderCore,
      OsDarwin25, 0x0000, DisplayEvidence::ExactStaticPayload, FeatureId::DisplaySRD,
      0x0, 0x0, 4, 215,
-     false, true, "/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", "UserSurfaceSyncData.hpp", "3137475689B434E8A34F56C5D57216A1",
+     false, true, "/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", "UserSurfaceSyncData.hpp", "21FB8708FC8E3765BE8C65D612CDF049",
      VPF::ManifestData::Sites_DisplaySRD_Darwin25.sites, 2, nullptr, 0,
      nullptr, 0, 0, 0},
     {DisplayFeature::MetalLegacyBlend, DisplayDomain::MetalSharedCache, DisplayGroup::MetalRenderCore,
@@ -479,13 +479,13 @@ inline constexpr DisplayManifest Features[] = {
     {DisplayFeature::MetalLegacyBlend, DisplayDomain::MetalSharedCache, DisplayGroup::MetalRenderCore,
      OsDarwin25, 0x0000, DisplayEvidence::ExactStaticPayload, FeatureId::DisplayLegacyBlend,
      0x0, 0x0, 3, 215,
-     false, true, "/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", "UserSurfaceSyncData.hpp", "3137475689B434E8A34F56C5D57216A1",
+     false, true, "/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", "UserSurfaceSyncData.hpp", "21FB8708FC8E3765BE8C65D612CDF049",
      VPF::ManifestData::Sites_DisplayLegacyBlend_Darwin25.sites, 3, nullptr, 0,
      nullptr, 0, 0, 0},
     {DisplayFeature::MetalComputeScratch, DisplayDomain::MetalSharedCache, DisplayGroup::MetalScratch,
      OsDarwin24 | OsDarwin25, 0x0000, DisplayEvidence::FullFunctionWithRefs, FeatureId::DisplayComputeScratch,
      0x0, 0x0, 4, 512,
-     false, true, "/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", "UserSurfaceSyncData.hpp", "3137475689B434E8A34F56C5D57216A1",
+     false, true, "/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", "UserSurfaceSyncData.hpp", "21FB8708FC8E3765BE8C65D612CDF049",
      nullptr, 0, nullptr, 0,
      nullptr, 0, 0, 0},
     {DisplayFeature::MetalPipelineConstructor, DisplayDomain::MetalSharedCache, DisplayGroup::MetalRenderCore,

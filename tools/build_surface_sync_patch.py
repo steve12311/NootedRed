@@ -53,7 +53,7 @@ def main():
             if hashlib.sha256(code).hexdigest() != digest:
                 raise ValueError(f"{label} 未核实，拒绝生成")
             originals[label] = {"address": address, "code": code.hex()}
-        if cache.read(0x7FFB10FBFDE8, 4) != struct.pack("<f", 3.0):
+        if cache.read(0x7FFB10FC1DE8, 4) != struct.pack("<f", 3.0):
             raise ValueError("原生常量不匹配")
         obj = WORK / "init.o"
         subprocess.run(["clang", "-c", str(ROOT / "tools/surface_sync_init.s"), "-o", str(obj)],
@@ -90,9 +90,9 @@ def main():
                           for device in supported_devices()]
         ctor_address, ctor_code = cache.function(
             "-[GFX9_MtlRenderPipelineState initWithDevice:pipelineStateDescriptor:vertexVariant:fragmentVariant:]")
-        if hashlib.sha256(ctor_code).hexdigest() != "9d78fd28bb509a95ce68fdb879d507388bf1625f54439da53622aa1097ee339b":
+        if hashlib.sha256(ctor_code).hexdigest() != "e0b58ef182e1ee4ffb5825d2dbd92a61686117f8af3a3fa6e9972135f296133d":
             raise ValueError("pipeline 构造函数未核实")
-        gate_address = 0x7ffb10c77708
+        gate_address = 0x7ffb10c79708
         gate_code = cache.read(gate_address, 2)
         if gate_code != bytes.fromhex("7428"):
             raise ValueError("RB+ 能力分支未核实")
@@ -115,18 +115,19 @@ def main():
         header += "struct Patch { UInt64 offset; const UInt8* original; const UInt8* patched; UInt32 size; };\n"
         for i, r in enumerate(records):
             header += array(f"Original{i}", bytes.fromhex(r["original"])) + array(f"Patched{i}", bytes.fromhex(r["patched"]))
-            header += array(f"SrdSharedPatched{i}", bytes.fromhex(candidate_records[i]["patched"]))
+            if i == 0:
+                header += array(f"SrdSharedPatched{i}", bytes.fromhex(candidate_records[i]["patched"]))
 
         header += "inline constexpr Patch Patches[] = {\n" + ",\n".join(
             f"    {{0x{r['address']-cache.base:X}ULL, Original{i}, Patched{i}, sizeof(Original{i})}}"
             for i, r in enumerate(records)) + "\n};\n"
         header += "inline constexpr Patch SrdSharedPatches[] = {\n" + ",\n".join(
-            f"    {{0x{r['address']-cache.base:X}ULL, Original{i}, SrdSharedPatched{i}, sizeof(Original{i})}}"
+            f"    {{0x{r['address']-cache.base:X}ULL, Original{i}, {'SrdSharedPatched0' if i == 0 else 'Patched1'}, sizeof(Original{i})}}"
             for i, r in enumerate(records)) + "\n};\n"
         header += array("BlendGateOriginal", gate_code) + array("BlendGatePatched", bytes.fromhex("9090"))
         header += "inline constexpr Patch LegacyBlendPatches[] = {\n" + ",\n".join(
             f"    {{0x{r['address']-cache.base:X}ULL, " +
-            (f"Original{i}, SrdSharedPatched{i}, sizeof(Original{i})" if i < 2 else
+            (f"Original{i}, {'SrdSharedPatched0' if i == 0 else 'Patched1'}, sizeof(Original{i})" if i < 2 else
              "BlendGateOriginal, BlendGatePatched, sizeof(BlendGateOriginal)") + "}"
             for i, r in enumerate(legacy_records)) + "\n};\n"
         header += array("ScratchOriginal", bytes.fromhex(scratch_record["original"]))
@@ -164,7 +165,7 @@ def main():
                    "    for (const auto& entry : DevicePatches) { if (entry.deviceID == deviceID) { return &entry; } }\n"
                    "    return nullptr;\n}\n")
         # 动态缓存解析只接受相同实现的完整函数；UUID 不参与兼容判定。
-        targets = [0x7FFB10FBFDE8, 0x7FFB10C5422B, 0x7FFB10C545C6]
+        targets = [0x7FFB10FC1DE8, 0x7FFB10C5622B, 0x7FFB10C565C6]
         init_address = originals['init']['address']
         variants = [('OriginalInitLinks', bytes.fromhex(records[0]['original'])),
                     ('ImmediateInitLinks', payload), ('SharedInitLinks', candidate_payload)]
@@ -192,7 +193,7 @@ def main():
         scratch_resolver.add(scratch_record['address'], bytes.fromhex(scratch_record['original']),
                              bytes.fromhex(scratch_record['patched']))
         header += 'namespace ScratchResolverData {\n' + scratch_resolver.header([(0, 0)]) + '}\n'
-        header += f"inline constexpr UInt32 MaxPatchSize = 452;\ninline constexpr UInt32 PageCount = {len(pages)};\n}}\n"
+        header += "inline constexpr UInt32 MaxPatchSize = 452;\n}\n"
         (WORK / "UserSurfaceSyncData.hpp").write_text(header)
         (ROOT / "NootedRed/UserSurfaceSyncData.hpp").write_text(header)
         (WORK / "patch-data.json").write_text(json.dumps({"originals": originals, "records": records,

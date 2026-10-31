@@ -157,7 +157,7 @@ namespace
     constexpr auto                    PatchCount   = arrsize(UserVideoDecodeData::Patches);
     constexpr UInt32                  Capacity     = PatchCount;
     constexpr UInt32                  MaxPageCount = Capacity * 2;
-    static_assert(PatchCount <= 32 && UserVideoDecodeData::PageCount <= 16);
+    static_assert(PatchCount <= 32);
     static_assert(arrsize(UserSequoiaVideoData::Patches) == PatchCount);
     static_assert(UserSequoiaVideoData::MaxPatchSize <= UserVideoDecodeData::MaxPatchSize);
 
@@ -469,12 +469,10 @@ namespace
     struct DynamicBuffer
     {
         UserVideoDecodeResolver::Plan* plan{nullptr};
-        explicit DynamicBuffer(bool enabled)
+        DynamicBuffer()
         {
-            if (enabled) {
-                plan = IONew(UserVideoDecodeResolver::Plan, 1);
-                if (plan) { memset(plan, 0, sizeof(*plan)); }
-            }
+            plan = IONew(UserVideoDecodeResolver::Plan, 1);
+            if (plan) { memset(plan, 0, sizeof(*plan)); }
         }
         ~DynamicBuffer()
         {
@@ -534,7 +532,6 @@ namespace
             error(KERN_RESOURCE_SHORTAGE);
             return result;
         }
-        const auto* patches         = devicePatches;
         UInt32      patchCount      = static_cast<UInt32>(PatchCount);
         auto*       selectedPatches = transaction.state->selected;
         UInt64      base{0};
@@ -563,8 +560,7 @@ namespace
             memcpy(&value, header + 88 + i * 4, sizeof(value));
             publish(published.uuid[i], uuidKeys[i], value);
         }
-        const bool    dynamic = sequoia || memcmp(header + 88, CacheUUID, sizeof(CacheUUID)) != 0;
-        DynamicBuffer dynamicBuffer(dynamic);
+        DynamicBuffer dynamicBuffer;
         auto&         input = transaction.state->input;
         input.reader        = readUser;
         input.scanBuffer    = transaction.state->scan;
@@ -578,25 +574,23 @@ namespace
         }
         const auto        mapKey = reinterpret_cast<UInt64>(map);
         MappingProbeState probeState{map, queryRegion};
-        if (dynamic) {
-            if (!dynamicBuffer.plan) {
-                error(KERN_RESOURCE_SHORTAGE);
-                return result;
-            }
-            auto& fast = transaction.state->fast;
-            fast.begin(&header[88], major, VPF::resolutionProfile(deviceID, sequoia ? 1U : 0U), 0, probeMapping,
-                       &probeState);
-            if (!UserVideoDecodeResolver::resolve(input, base, devicePatches, *dynamicBuffer.plan, sequoia, &fast)) {
-                stage(Stage::CacheMismatch, fairPlayPID);
-                NRed::singleton().setProp32("NRedVCNUserDynamicRejected", 1);
-                return result;
-            }
-            patches = dynamicBuffer.plan->patches;
-            publish(published.matched, "NRedVCNUserDynamicMatched", 1);
-            publish(published.reads, "NRedVCNUserDynamicReads", dynamicBuffer.plan->reads);
-            publish(published.fvrcDecode, "NRedFVRCDecodeHot", fast.hot ? 1 : 0);
-            publish(published.fvrcDecodeCold, "NRedFVRCDecodeCold", fast.hot ? 0 : 1);
+        if (!dynamicBuffer.plan) {
+            error(KERN_RESOURCE_SHORTAGE);
+            return result;
         }
+        auto& fast = transaction.state->fast;
+        fast.begin(&header[88], major, VPF::resolutionProfile(deviceID, sequoia ? 1U : 0U), 0, probeMapping,
+                   &probeState);
+        if (!UserVideoDecodeResolver::resolve(input, base, devicePatches, *dynamicBuffer.plan, sequoia, &fast)) {
+            stage(Stage::CacheMismatch, fairPlayPID);
+            NRed::singleton().setProp32("NRedVCNUserDynamicRejected", 1);
+            return result;
+        }
+        const auto* patches = dynamicBuffer.plan->patches;
+        publish(published.matched, "NRedVCNUserDynamicMatched", 1);
+        publish(published.reads, "NRedVCNUserDynamicReads", dynamicBuffer.plan->reads);
+        publish(published.fvrcDecode, "NRedFVRCDecodeHot", fast.hot ? 1 : 0);
+        publish(published.fvrcDecodeCold, "NRedFVRCDecodeCold", fast.hot ? 0 : 1);
 
         if (fairPlayDecode) {
             if (!selectFairPlayDecode(base, patches, patchCount, selectedPatches, fairPlayMask())) {
@@ -613,14 +607,13 @@ namespace
             error(KERN_INVALID_ARGUMENT);
             return result;
         }
-        const auto cache     = dynamic ? input.cache : UserSharedCache::Range{base, UserSharedCache::UserLimit - base};
+        const auto cache     = input.cache;
         auto&      workspace = *transaction.state;
         // FairPlay 只选择解码子集，站点顺序不再与 Manifest 一一对应。
         const bool aligned = !fairPlayDecode;
         if (!VPF::adaptPatches(workspace.decodePlan, *decodeManifest, base, cache, patches, patchCount,
-                               dynamic ? dynamicBuffer.plan->images : nullptr,
-                               dynamic ? UserVideoDecodeResolver::ImageCount : 0,
-                               dynamic ? dynamicBuffer.plan->reads : 0, VPF::PlanState::AllOriginal, aligned)
+                               dynamicBuffer.plan->images, UserVideoDecodeResolver::ImageCount,
+                               dynamicBuffer.plan->reads, VPF::PlanState::AllOriginal, aligned)
             || !planVideoFeatures(mask, deviceID, fairPlayDecode, workspace.decodePlan.valid(), workspace.planner))
         {
             NRed::singleton().setProp32("NRedVCNVPFPlannerRejected", 1);
@@ -752,7 +745,7 @@ namespace
         installedLedger(mapKey);
         stage(Stage::Applied, fairPlayPID);
         if (fairPlayDecode) { NRed::singleton().setProp32("NRedDRMVideoState", 2); }
-        if (dynamic) { NRed::singleton().setProp32("NRedVCNUserDynamicApplied", 1); }
+        NRed::singleton().setProp32("NRedVCNUserDynamicApplied", 1);
         if (process != nullptr) {
             const auto pid = proc_pid(process);
             char       name[32]{};

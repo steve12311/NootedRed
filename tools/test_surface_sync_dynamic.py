@@ -257,10 +257,24 @@ int main(){
  assert(!fastDirty.hot);
  for(unsigned i=0;i<3;i++)assert(fvrcFirst.patches[i].offset==fvrcDirty.patches[i].offset);
  mapShare=5;cases++;
+ // 执行整个生产 Hook，确认新进程复用提交与渲染位置后不再重复整段扫描。
+ VPF::resolutionCache={};VPF::resolutionCache.init();
+ reset();call();rx();assert(properties.at("NRedImmediateSyncDynamicApplied")==1);
+ assert(properties.at("NRedFVRCSubmitHot")==0&&properties.at("NRedFVRCDisplayHot")==0);
+ const auto coldHookReads=reads;
+ reset();call();rx();assert(properties.at("NRedImmediateSyncDynamicApplied")==1);
+ assert(properties.at("NRedFVRCSubmitHot")==1&&properties.at("NRedFVRCDisplayHot")==1);
+ assert(reads*2<coldHookReads);cases++;
+ printf("PASS production Hook cold/hot reads: %u -> %u\n",coldHookReads,reads);
  printf("PASS %u actual bridge cases: all Vega IDs; unknown UUID and relocated code; full function/target gates; six-page rollback; bounded reads; FVRC cross-slide reuse\n",cases);
 }
 '''.replace('BODY', body).replace('INIT', init)
     # 不依赖编译器的 C99 compound literal 扩展。
+    harness = harness.replace('static void reset(', 'static bool referenceUUID=false;\nstatic void reset(')
+    harness = harness.replace('memset(memory.data()+88,0xa7,16);',
+                              'if(referenceUUID)copy(88,CacheUUID,16);else memset(memory.data()+88,0xa7,16);')
+    harness = harness.replace('==0xa7a7a7a7', '==UserCacheResolver::word(memory.data()+88)')
+    harness = harness.replace('int main(){', 'int main(int argc,char**){referenceUUID=argc>1;')
     harness = harness.replace('rel(0x35000,OriginalInitLinks,(const uint64_t[]){base+constantOffset+100,base+settingsOffset,base+dumpOffset});',
                               '{const uint64_t targets[]={base+constantOffset+100,base+settingsOffset,base+dumpOffset};rel(0x35000,OriginalInitLinks,targets);}')
     file = WORK / 'test-dynamic.cpp'
@@ -270,7 +284,9 @@ int main(){
     subprocess.run(['clang++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-Wshadow', '-Werror', *flags,
                     '-I', str(WORK / 'stubs'), '-I', str(ROOT / 'NootedRed'), '-I', str(ROOT / 'tools/fixtures'),
                     str(file), '-o', str(exe)], check=True, timeout=60)
-    subprocess.run([str(exe)], check=True, timeout=60)
+    if '--known-uuid' not in sys.argv:
+        subprocess.run([str(exe)], check=True, timeout=60)
+    subprocess.run([str(exe), '--known-uuid'], check=True, timeout=60)
 
 
 if __name__ == '__main__':

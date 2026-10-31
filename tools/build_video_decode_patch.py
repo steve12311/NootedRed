@@ -14,13 +14,13 @@ from cache_resolver_data import ResolverData
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vcn"
-GVA_CHOICE_ADDRESS = 0x7FFA0C59BBAC
+GVA_CHOICE_ADDRESS = 0x7FFA0C59FBAC
 GVA_CHOICE_SIZE = 1136
-GVA_CHOICE_SHA256 = "b7c725552045a9db206ab2eed4edda7ea3d27a29de2feee782204c362764a33d"
+GVA_CHOICE_SHA256 = "e932f4a604b5510fb58f0b6211df8a683e7bea13e078b0e2d390dd5ead9dc6ea"
 HASHES = {
     "__ZN11VACPFactory8createCPEP11_VAHWConfigP11VAIOConnectPP4VACp":
         "e63a2259ad470bd088d623edc778be34f9f6630fc6156bf6cac808c381b15aa6",
-    "__ZN17VAAcceleratorInfo8identifyEjj": "d7c579bce55c5724ec241f7f9abece9d0f23b1c30178d2f539fc0cabf41dc0bd",
+    "__ZN17VAAcceleratorInfo8identifyEjj": "75d8727f3aaa4c61b001794812a84090a7e847c4f9cad3a4bd0318ede6a1bdee",
     "__ZN18VAAddrLibInterface4initEP11VAIOConnectP13sHardwareInfo":
         "b35bd96d6ca0b8bd9047af67fc3f0f77ef09242f684c65e17d4cee062af155ea",
     "__ZN4Addr2V27Gfx9Lib20HwlConvertChipFamilyEjj":

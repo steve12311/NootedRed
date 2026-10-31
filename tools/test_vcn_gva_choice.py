@@ -11,9 +11,9 @@ from metal_cache import CacheReader
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vcn"
-ADDRESS = 0x7FFA0C59BBAC
+ADDRESS = 0x7FFA0C59FBAC
 SIZE = 1136
-SHA256 = "b7c725552045a9db206ab2eed4edda7ea3d27a29de2feee782204c362764a33d"
+SHA256 = "e932f4a604b5510fb58f0b6211df8a683e7bea13e078b0e2d390dd5ead9dc6ea"
 
 
 def main():
@@ -57,9 +57,9 @@ def main():
                     assembly.append(f"callq _{calls[target]}")
                 elif "(%rip)" in instruction:
                     target = int(re.search(r"## 0x([0-9a-f]+)", instruction)[1], 16)
-                    if target == 0x33B0288C:
+                    if target == 0x33AFE8AC:
                         symbol = "guardPointer"
-                    elif target == 0x36E7DF94:
+                    elif target == 0x36E79FE4:
                         symbol = "gpuHead"
                     else:
                         if target not in strings:

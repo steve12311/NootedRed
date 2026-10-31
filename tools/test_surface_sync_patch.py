@@ -36,8 +36,8 @@ struct Executable{
   memcpy(p,code,size);unsigned linked=0;
   for(size_t i=0;i+5<=size;i++)if(code[i]==0xe8 || code[i]==0xe9){
    int32_t v;memcpy(&v,code+i+1,4);uint64_t target=base+i+5+v;
-   if(target==0x7ffb10c5422bULL || target==0x7ffb10c545c6ULL){
-    const unsigned t=target==0x7ffb10c5422bULL?1024:1040;
+   if(target==0x7ffb10c5622bULL || target==0x7ffb10c565c6ULL){
+    const unsigned t=target==0x7ffb10c5622bULL?1024:1040;
     p[t]=0x48;p[t+1]=0xb8;uintptr_t f=t==1024?reinterpret_cast<uintptr_t>(overrideSettings):reinterpret_cast<uintptr_t>(dump);
     memcpy(p+t+2,&f,8);p[t+10]=0xff;p[t+11]=0xe0;v=int32_t(t-i-5);memcpy(p+i+1,&v,4);linked++;
    }
@@ -55,12 +55,12 @@ struct Executable{
 using Init=void(*)(void*,void*);
 static void put32(void* p,unsigned o,uint32_t v){memcpy(static_cast<uint8_t*>(p)+o,&v,4);}
 int main(int argc,const char*[]){
- Executable a(old_init,sizeof(old_init),0x7ffb10d71a28ULL),b(new_init,sizeof(new_init),0x7ffb10d71a28ULL);
+ Executable a(old_init,sizeof(old_init),0x7ffb10d73a28ULL),b(new_init,sizeof(new_init),0x7ffb10d73a28ULL);
  // 新覆盖入口跳到同一页内部的 stub，保持真实相对位置。
  uint8_t* bridge=static_cast<uint8_t*>(mmap(nullptr,4096,3,MAP_PRIVATE|MAP_ANON,-1,0));assert(bridge!=MAP_FAILED);
  memcpy(bridge,b.p,4096);memcpy(bridge+215,new_override,10);
  assert(mprotect(bridge,4096,5)==0);
- Executable c(old_override,sizeof(old_override),0x7ffb10d71affULL);
+ Executable c(old_override,sizeof(old_override),0x7ffb10d73affULL);
  // 参数可用于先确认旧函数确实不能满足目标修复条件。
  if(argc>1){uint8_t settings[128]{},info[180]{};put32(info,12,0x1638);
   reinterpret_cast<Init>(a.p)(settings,info);ORIGINAL_ASSERT;return 0;}
@@ -101,7 +101,7 @@ int main(int argc,const char*[]){
     if sequoia:
         addresses = [sequoia['targets'][1], sequoia['targets'][2], sequoia['records'][0]['address'],
                      sequoia['records'][1]['address']]
-        for old, new in zip(['0x7ffb10c5422b', '0x7ffb10c545c6', '0x7ffb10d71a28', '0x7ffb10d71aff'], addresses):
+        for old, new in zip(['0x7ffb10c5622b', '0x7ffb10c565c6', '0x7ffb10d73a28', '0x7ffb10d73aff'], addresses):
             harness = harness.replace(old, hex(new))
     path = WORK / "test-native.cpp"
     path.write_text(harness)

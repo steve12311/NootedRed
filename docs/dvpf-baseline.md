@@ -23,7 +23,7 @@
 | `NootedRed/KernelDisplayEvidence.cpp` | `cfb1861b6ecf5d05363910c7e5157b0c977e29c784c1d364fb35675474589cea` |
 | `NootedRed/KernelDisplayEvidence.hpp` | `ccc2b6c1e0f006073bfe58909f088dd74a9c1e21e689be0561f389ac19591895` |
 | `NootedRed/NRed.cpp` | `f8e4a3d8ab191ae58f0ca55516771d8ccda270ddf092e6519acc417e016b4802` |
-| `NootedRed/UserCacheResolver.hpp` | `5c05233b1c306c16aed7c390319044a6d1ed4f66e2b7025f4959acc727abfa54` |
+| `NootedRed/UserCacheResolver.hpp` | `4c9f85bc2412bfc879a70446f295cd4f9e1e993e828e4b76b4b1f410b167aa6d` |
 | `NootedRed/UserLegacyData.hpp` | `487520bd0f1f0c1fdacad65ce9e92f6afd2c585f11530ec2fd90cee43ee8d808` |
 | `NootedRed/UserOpenGL.cpp` | `f756bf2b83757a27df358e16a59a6b286ac6010c5c03649442ef765e895ef446` |
 | `NootedRed/UserOpenGLData.hpp` | `052dbfa0e4c1576f2213dac592a795eff3038ec535289eeb1b0425cf10a4a67b` |
@@ -34,13 +34,13 @@
 | `NootedRed/UserPatchMemory.hpp` | `aed903b82c278a2a5eeac726f9eb39cda2877f8d74d1574cabf291e42571335b` |
 | `NootedRed/UserSequoiaSurfaceData.hpp` | `ae57ebe6b10ec20b00d25d2e6687b1c7e1339fdeda9be1556aa8c7e5728371dd` |
 | `NootedRed/UserSharedCache.hpp` | `b70f6bcf15a994ca010ef7c11bd667b0a2abed158c7672a00c6fb8964ec39aac` |
-| `NootedRed/UserSubmitGuardData.hpp` | `f23b65b31e472ffff19636960fe547dc8ad6dc32c1986ea48ed7f54030fc6077` |
+| `NootedRed/UserSubmitGuardData.hpp` | `d14c17a5348d86a894531ea894176a8515f593d817a9db9076a37fbe900c7d33` |
 | `NootedRed/UserSurfaceConstructorData.hpp` | `8a8b5a05c9b06c11f29a565b3c9096c5bbc9fc940e00e3c0c9af9be2d175bfd2` |
-| `NootedRed/UserSurfaceSync.cpp` | `bd9cc8d4c430f88633e71b5abf1a9cc7d8ac99fec8c43b82290caf7306fa8f27` |
-| `NootedRed/UserSurfaceSyncData.hpp` | `fc0bd13e1fa0d9b85feb5c2dc19ccb7f7071c9789095ecf34b4fc8f6bbc3c562` |
+| `NootedRed/UserSurfaceSync.cpp` | `ef343262f5cd725647b7e70968996a690d6808114348207fe7505b93bc036afe` |
+| `NootedRed/UserSurfaceSyncData.hpp` | `76e288923a8750cd9bfdf7a495d05c3211b785b1af071b81d10431fb2d033ea4` |
 | `NootedRed/UserSurfaceSyncResolver.hpp` | `b0420ef49547c647901b10b9f9834e52467809e8d310016cbc08917a5c2ffcb3` |
-| `NootedRed/UserVideoDecode.cpp` | `01754d2090bd56f60056ca6efc11116e0dc512746adf088aa7b531f24fa739c6` |
-| `NootedRed/VPF/DisplayManifestData.hpp` | `4c0c850e0fad1ec9402a7eabe9a1924964eb256c1f9feb671ba6f72fd802e196` |
+| `NootedRed/UserVideoDecode.cpp` | `4d1ee349ce36e5e799fc426b3c2768099eaa8b8c448c38ba72fc051d26056aeb` |
+| `NootedRed/VPF/DisplayManifestData.hpp` | `b4311c09578821c0803c0e23991a808d82920c809376417f4be0a53c339842cb` |
 | `NootedRed/VPF/DisplayPlan.hpp` | `58af326be437dcf0fcf0b5eebc2b815a07ad440f2dcd6d8ac1c82d5e726a7006` |
 | `NootedRed/VPF/DisplayPlanAdapters.hpp` | `c811f717d97356c911a9bdb8c8921ac0a57ea4d27eb9e9a335d12b9bbe60288a` |
 | `NootedRed/VPF/ExecutableTrampolineResource.hpp` | `b2a6737b7a4833802ac7ab67fefed436390a9ed61f03773a6b854ce93e5ca0d5` |
@@ -52,9 +52,9 @@
 | `NootedRed/X6000FB.cpp` | `aefd17aaf24fcfdad36b93e4401707fbbed3414544b5478c99075354b33e41e3` |
 | `tools/build_cache_section_targets.py` | `e227011183e39724a714d4bec0066da1ec098f5d90a8f1271f757b5c8de46b7e` |
 | `tools/build_opengl_patch.py` | `0427baa3682aafab4f7cd1601ba9965347cbd0e3b09c977cce54af35caf0f306` |
-| `tools/build_sequoia_surface.py` | `e1b9fba0a88ff00413f4971de09eb887602973ffe47a2acabe1827b21d4b6721` |
-| `tools/build_submit_guard.py` | `036c9d42416e68cc0b90e73e825f354c56367c538f5e4810b8184f934892807c` |
-| `tools/build_surface_sync_patch.py` | `1fab3e2c432b6dbea10e797a3649b9668f6046282e286fad193631484a4e114f` |
+| `tools/build_sequoia_surface.py` | `db0daa37df4e1a2db921aff0f2ae04485ba9f89b8757e089cb21ad30112b127b` |
+| `tools/build_submit_guard.py` | `4d88184f28aee811afcf1ad4809bc692638b7d1b33f232cbdc59619c3822c0e0` |
+| `tools/build_surface_sync_patch.py` | `1a2a4711105bf61ee186af5a0c0b642ca247375f4492e0e04c426e5f79589519` |
 | `tools/dvpf/gl_page_adapter_probe.cpp` | `0130b24c24a97eb65b74d4210137abeffc5e1cabc8e863a4a19a51e37a0d5e8c` |
 | `tools/fixtures/legacy-compat.json` | `e0b46680b6206a13e532bb6181c715acd89244da01f02a8ec259bdf402c9c19f` |
 | `tools/fixtures/opengl-compat.json` | `ed16a90f351d717a454f1c82ef60f42140680e0e8a1054163cce07040c6fad62` |
@@ -325,16 +325,16 @@
 | `MetalSrdShared` | 1 | `0x30886C933` | 10 | `580a055bd41ed3f1` | `5497793b124348f1` | 1 | `0x0` |  |
 | `MetalSrdShared` | 2 | `0x3087B3164` | 2 | `525cc8f73fc005eb` | `dfb779f77fa96bfb` | 2 | `0x11C4` |  |
 | `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `71cf0143fe4fe704` | `e4529baf973efc50` | 3 | `0x0` |  |
-| `MetalSrdShared` | 0 | `0x310D71A28` | 215 | `886322b1d50af710` | `8e8b5401b13b4cd2` | 4294967295 | `0x0` |  |
-| `MetalSrdShared` | 1 | `0x310D71AFF` | 10 | `8944785f90985578` | `5497793b124348f1` | 4294967295 | `0x0` |  |
+| `MetalSrdShared` | 0 | `0x310D73A28` | 215 | `886322b1d50af710` | `8e8b5401b13b4cd2` | 4294967295 | `0x0` |  |
+| `MetalSrdShared` | 1 | `0x310D73AFF` | 10 | `8944785f90985578` | `5497793b124348f1` | 4294967295 | `0x0` |  |
 | `MetalLegacyBlend` | 0 | `0x30354D1BC` | 2 | `525cc8f73fc005eb` | `dfb779f77fa96bfb` | 4294967295 | `0x0` | 0x30354D000+0x1BC |
-| `MetalLegacyBlend` | 0 | `0x310D71A28` | 215 | `886322b1d50af710` | `8e8b5401b13b4cd2` | 4294967295 | `0x0` |  |
-| `MetalLegacyBlend` | 1 | `0x310D71AFF` | 10 | `8944785f90985578` | `5497793b124348f1` | 4294967295 | `0x0` |  |
-| `MetalLegacyBlend` | 2 | `0x310C77708` | 2 | `71e11446bbd6b2c8` | `182003d5c37dc525` | 4294967295 | `0x0` |  |
+| `MetalLegacyBlend` | 0 | `0x310D73A28` | 215 | `886322b1d50af710` | `8e8b5401b13b4cd2` | 4294967295 | `0x0` |  |
+| `MetalLegacyBlend` | 1 | `0x310D73AFF` | 10 | `8944785f90985578` | `5497793b124348f1` | 4294967295 | `0x0` |  |
+| `MetalLegacyBlend` | 2 | `0x310C79708` | 2 | `71e11446bbd6b2c8` | `182003d5c37dc525` | 4294967295 | `0x0` |  |
 | `MetalPipelineConstructor` | 0 | `0x0` | 2 | `71e11446bbd6b2c8` | `182003d5c37dc525` | 0 | `0x101A` |  |
 | `MetalSubmitGuard` | 0 | `0x30355E210` | 15 | `e988027e1805ae2b` | `846cf88f544efa74` | 4294967295 | `0x0` |  |
-| `MetalSubmitGuard` | 0 | `0x3087C3580` | 15 | `e988027e1805ae2b` | `846cf88f544efa74` | 4294967295 | `0x0` |  |
-| `MetalSubmitGuard` | 0 | `0x310CE7240` | 15 | `e988027e1805ae2b` | `846cf88f544efa74` | 4294967295 | `0x0` |  |
+| `MetalSubmitGuard` | 0 | `0x0` | 15 | `e988027e1805ae2b` | `846cf88f544efa74` | 4294967295 | `0x0` |  |
+| `MetalSubmitGuard` | 0 | `0x0` | 15 | `e988027e1805ae2b` | `846cf88f544efa74` | 4294967295 | `0x0` |  |
 
 OpenGL 相对引用（原生/已修复）：
 

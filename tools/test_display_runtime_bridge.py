@@ -18,21 +18,25 @@ static void put(uint64_t address,const uint8_t* bytes,unsigned size){
  }
 }
 static uint64_t methodAddress(){
- return cacheBase+(hostMajor==23?UserLegacyData::submitOffset(23):UserSubmitGuardData::MethodOffset);
+ return hostMajor==23?cacheBase+UserLegacyData::submitOffset(23):MetalFixture::functionAddresses[1];
 }
 static void setup(){
  reset(legacyProfile);
  if(!legacyProfile){
-  for(unsigned i=0;i<arrsize(UserSurfaceSyncData::ComputeScratchPatches);i++){
-   const auto& patch=devicePatches->scratch[i];put(cacheBase+patch.offset,patch.original,patch.size);
+  MetalFixture::setup(NRed::singleton().device,true,true,true);
+  memory.clear();protections.clear();maximums.clear();
+  for(const auto& [address,bytes]:MetalFixture::blocks){
+   for(size_t i=0;i<bytes.size();i++)memory[(address+i)&~uint64_t(4095)][(address+i)&4095]=bytes[i];
   }
+  for(const auto& [page,bytes]:memory){(void)bytes;protections[page]=maximums[page]=5;}
+  memcpy(cacheHeader.data(),MetalFixture::blocks.at(cacheBase).data(),cacheHeader.size());
  }
  put(methodAddress(),UserSubmitGuardData::MethodOriginal,UserSubmitGuardData::MethodPatchSize);
 }
 static void renderBytes(bool patched){
  if(legacyProfile){check(legacyProfile,patched);return;}
  for(unsigned i=0;i<arrsize(UserSurfaceSyncData::ComputeScratchPatches);i++){
-  const auto& patch=devicePatches->scratch[i];uint8_t bytes[512];
+  const auto& patch=MetalFixture::plan.patches[i];uint8_t bytes[512];
   assert(reader(cacheBase+patch.offset,bytes,patch.size)==0);
   assert(memcmp(bytes,patched?patch.patched:patch.original,patch.size)==0);
  }
@@ -67,7 +71,7 @@ int main(){
   call();renderBytes(false);rx();assert(writes==0&&allocations==0);
   assert(properties.at("NRedDisplayPlannerRejected")!=0);
 
-  setup();const auto patch=legacyProfile?legacyProfile->patches[0].offset:devicePatches->scratch[0].offset;
+  setup();const auto patch=legacyProfile?legacyProfile->patches[0].offset:MetalFixture::plan.patches[0].offset;
   memory.at((cacheBase+patch)&~uint64_t(4095))[(cacheBase+patch)&4095]^=1;
   call();assert(writes==0&&allocations==0&&protects==0);
  }
@@ -97,12 +101,18 @@ def main():
                         'is_submap=0;unsigned object_id=0;unsigned char share_mode=0;unsigned short shadow_depth=0;};')
     text = text.replace('namespace UserSurfaceSync {void init(struct KernelPatcher&);}',
                         'struct KernelPatcher;namespace UserSurfaceSync {void init(KernelPatcher&);}')
+    text = text.replace('static constexpr uint64_t testSubmitOffset=0x500000;',
+                        '#include \"metal-dynamic-fixture.hpp\"\nstatic constexpr uint64_t testSubmitOffset=0x500000;')
+    text = text.replace('auto i=memory.find(a&~uint64_t(4095));if(a==failRead||i==memory.end()||n>4096-(a&4095))return 1;\n memcpy(p,i->second.data()+(a&4095),n);return 0;',
+                        'if(a==failRead)return 1;for(size_t j=0;j<n;j++){auto i=memory.find((a+j)&~uint64_t(4095));if(i==memory.end())return 1;static_cast<uint8_t*>(p)[j]=i->second[(a+j)&4095];}return 0;')
+    text = text.replace('writes++;assert(protections.at(a&~uint64_t(4095))==3);assert(n<=4096-(a&4095));\n auto& page=memory.at(a&~uint64_t(4095));\n memcpy(page.data()+(a&4095),p,failWrite.contains(writes)?std::min(n,size_t(2)):n);',
+                        'writes++;for(size_t j=0;j<n;j++)assert(protections.at((a+j)&~uint64_t(4095))==3);const auto length=failWrite.contains(writes)?std::min(n,size_t(2)):n;for(size_t j=0;j<length;j++)memory.at((a+j)&~uint64_t(4095))[(a+j)&4095]=static_cast<const uint8_t*>(p)[j];')
     text = text.replace('BODY', body).replace('INIT', init).replace('MAIN', MAIN)
     path, exe = WORK / 'bridge.cpp', WORK / 'bridge'
     path.write_text(text)
     flags = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if args.sanitize else []
     subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O2', *flags, '-I'+str(stubs),
-                    '-I'+str(ROOT / 'NootedRed'), str(path), '-o', str(exe)], check=True, timeout=60)
+                    '-I'+str(ROOT / 'NootedRed'), '-I'+str(ROOT / 'tools/fixtures'), str(path), '-o', str(exe)], check=True, timeout=60)
     subprocess.run([str(exe)], check=True, timeout=60)
 
 

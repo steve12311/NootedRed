@@ -88,6 +88,7 @@ static task_t current_task(){return reinterpret_cast<void*>(1);}
 static int proc_pid(proc_t){return 217;}
 static void proc_name(int,char* p,int n){snprintf(p,n,"WindowServer");}
 static constexpr uint64_t cacheBase=0x7ff800200000ULL;
+static constexpr uint64_t testSubmitOffset=0x500000;
 static std::array<uint8_t,104> cacheHeader;
 static std::map<uint64_t,std::array<uint8_t,4096>> memory;
 static std::map<uint64_t,int> protections,maximums;
@@ -141,7 +142,7 @@ static void reset(const UserLegacyCompat::Profile* profile){
   auto a=cacheBase+profile->pages[i].offset;memcpy(memory[a].data(),profile->pages[i].original,4096);protections[a]=maximums[a]=5;
  }
  const auto method=cacheBase+(profile?UserLegacyData::submitOffset(currentKernelVersion().major()):
-                                         UserSubmitGuardData::MethodOffset);
+                                         testSubmitOffset);
  const auto methodPage=method&~uint64_t(4095);
  memory[methodPage]={};protections[methodPage]=maximums[methodPage]=5;
  uint8_t payload[sizeof(UserSubmitGuardData::Payload)];memcpy(payload,UserSubmitGuardData::Payload,sizeof(payload));
@@ -195,7 +196,7 @@ GUARD = r'''
   hostMajor=major;wantRender=true;KernelPatcher kernel;UserSurfaceSync::init(kernel);
   assert(kernel.routes==1&&properties.at("NRedSubmitGuardEnabled")==1&&renderRequested);
   const auto* profile=UserLegacyData::metal(major);
-  const uint64_t method=cacheBase+(profile?UserLegacyData::submitOffset(major):UserSubmitGuardData::MethodOffset);
+  const uint64_t method=cacheBase+(profile?UserLegacyData::submitOffset(major):testSubmitOffset);
   const auto setup=[&]{reset(profile);auto a=method&~uint64_t(4095);memory[a]={};protections[a]=maximums[a]=5;
    memcpy(memory[a].data()+(method&4095),UserSubmitGuardData::MethodOriginal,UserSubmitGuardData::MethodPatchSize);};
   const auto entryOriginal=[&]{uint8_t b[15];assert(reader(method,b,15)==0);return memcmp(b,UserSubmitGuardData::MethodOriginal,15)==0;};

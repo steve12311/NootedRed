@@ -1,5 +1,7 @@
 """生成提交守卫数据：核验 AMD Metal 驱动方法入口，汇编守卫并嵌入头文件。"""
 from pathlib import Path
+import argparse
+import hashlib
 import subprocess
 import sys
 
@@ -10,8 +12,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 from metal_cache import CacheReader, macho  # noqa: E402
 
-# -[GFX9AMD_MtlCmdQueue submitCommandBuffers:count:] 的缓存内偏移与入口前 15 字节。
-METHOD_OFFSET = 0x310CE7240
+METHOD = '-[GFX9AMD_MtlCmdQueue submitCommandBuffers:count:]'
+METHOD_SHA256 = '5dafebcef79f820373dacf9998519ca35cdb87987805c150e15ee9eb0bb0886d'
 METHOD_ORIGINAL = bytes.fromhex("554889e54883ec10488d45f0488938")
 METHOD_PATCH_SIZE = len(METHOD_ORIGINAL)
 PLACEHOLDER = bytes.fromhex("49bb8877665544332211")  # movabs $0x1122334455667788,%r11
@@ -26,10 +28,17 @@ def array(name: str, data: bytes) -> str:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--check', action='store_true')
+    args = parser.parse_args()
     cache = CacheReader()
-    original = cache.read(0x7FF800000000 + METHOD_OFFSET, METHOD_PATCH_SIZE)
-    if original != METHOD_ORIGINAL:
-        raise SystemExit("AMD Metal 提交方法入口未核实，拒绝生成")
+    try:
+        address, code = cache.function(METHOD)
+        if hashlib.sha256(code).hexdigest() != METHOD_SHA256 or code[:METHOD_PATCH_SIZE] != METHOD_ORIGINAL:
+            raise SystemExit("AMD Metal 提交方法未核实，拒绝生成")
+        method_offset = address - cache.base
+    finally:
+        cache.close()
 
     WORK.mkdir(parents=True, exist_ok=True)
     obj = WORK / "submit_guard.o"
@@ -47,14 +56,17 @@ def main() -> None:
 
     header = "// 由 tools/build_submit_guard.py 生成，不手工编辑。\n#pragma once\n#include <IOKit/IOTypes.h>\n"
     header += "namespace UserSubmitGuardData {\n"
-    header += f"inline constexpr UInt64 MethodOffset = 0x{METHOD_OFFSET:X}ULL;\n"
     header += array("MethodOriginal", METHOD_ORIGINAL)
     header += f"inline constexpr UInt32 MethodPatchSize = {METHOD_PATCH_SIZE};\n"
     header += f"inline constexpr UInt32 PayloadJumpOffset = {jump_offset};\n"
     header += array("Payload", payload)
     header += "} // namespace UserSubmitGuardData\n"
-    OUT.write_text(header)
-    print(f"submit guard: method 0x{METHOD_OFFSET:X} payload {len(payload)} bytes "
+    if args.check:
+        if OUT.read_text() != header:
+            raise SystemExit("提交守卫生成数据未同步")
+    else:
+        OUT.write_text(header)
+    print(f"submit guard: method 0x{method_offset:X} payload {len(payload)} bytes "
           f"jump offset {jump_offset} -> {OUT}")
 
 

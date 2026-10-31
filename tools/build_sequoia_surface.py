@@ -42,7 +42,7 @@ def main():
         if targets[1] != functions[SETTINGS][0] or cache.read(targets[0], 4) != struct.pack('<f', 3.0):
             raise ValueError('初始化目标或常量未核实')
         assembly = (ROOT / 'tools/surface_sync_srd_shared_init.s').read_text()
-        for old, new in zip([0x7ffb10fbfde8, 0x7ffb10c5422b, 0x7ffb10c545c6, 0x7ffb10d71a28],
+        for old, new in zip([0x7ffb10fc1de8, 0x7ffb10c5622b, 0x7ffb10c565c6, 0x7ffb10d73a28],
                             [*targets, init]):
             assembly = assembly.replace(hex(old), hex(new))
         source, obj = WORK / 'init.s', WORK / 'init.o'

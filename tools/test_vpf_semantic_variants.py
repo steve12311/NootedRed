@@ -120,7 +120,7 @@ class ToolTests(unittest.TestCase):
         report = json.loads(first.read_text())
         self.assertEqual(report['kind'], 'vpf.semantic-report')
         self.assertEqual(report['emittedManifests'], 0)
-        self.assertEqual(report['totalFeatureCount'], 21)
+        self.assertEqual(report['totalFeatureCount'], 19)
         self.assertEqual(report['variantCount'], 12)
         self.assertEqual(report['disassembled'] + report['disassemblyRejected'], report['variantCount'])
         self.assertGreater(report['disassembled'], 0)

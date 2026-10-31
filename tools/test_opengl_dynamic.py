@@ -82,14 +82,28 @@ int main(int argc,char** argv){
    unsigned found[2]={};
    for(unsigned offset=0;offset+4096<=file.size();offset+=4096)for(unsigned k=0;k<2;k++){
     Resolved p{};if(!resolvePage(d,file.data()+offset,offset,k,p))continue;
-    assert(!p.alreadyPatched&&p.offset==d.pages[k].offset&&p.size==d.pages[k].size);
+    // 本机驱动可能已被根补丁工具写入同一修复块；只接受与清单完全一致的已补丁状态。
+    const bool patched=p.alreadyPatched;
+    assert(p.offset==d.pages[k].offset&&p.size==d.pages[k].size);
     assert(memcmp(p.patched,d.pages[k].patched,p.size)==0);found[k]++;
+    if(patched){assert(memcmp(file.data()+offset+p.offset,d.pages[k].patched,p.size)==0);
+     printf("NOTE real GL Darwin=%u PCI=%x kind=%u already patched on disk\n",major,d.deviceID,k);}
     // 改变补丁块外的字节，确认能脱离参考整页匹配。
     std::array<UInt8,4096> changed;memcpy(changed.data(),file.data()+offset,4096);
     changed[(p.offset+p.size)%4096]^=1;
-    assert(resolvePage(d,changed.data(),offset,k,p)&&p.dynamic&&!p.alreadyPatched);cases++;
+    assert(resolvePage(d,changed.data(),offset,k,p)&&p.dynamic&&p.alreadyPatched==patched);cases++;
    }
-   assert(found[0]==1&&found[1]==1);printf("PASS real page-local GL Darwin=%u PCI=%x\n",major,d.deviceID);cases++;
+   // 已被其它设备的修复块写入时，本设备必须拒绝该页；该块须正是某个同版本设备的已补丁字节。
+   for(unsigned k=0;k<2;k++){
+    const auto& patch=d.patches[k];const auto* disk=file.data()+patch.offset;
+    const bool own=memcmp(disk,patch.original,patch.size)==0||memcmp(disk,patch.patched,patch.size)==0;
+    bool foreign=false;
+    for(const auto& o:UserOpenGLData::Devices)if(o.major==major&&&o!=&d&&o.patches[k].size==patch.size
+       &&memcmp(disk,o.patches[k].patched,patch.size)==0)foreign=true;
+    assert(own?found[k]==1:(foreign&&found[k]==0));
+    if(!own)printf("NOTE real GL Darwin=%u PCI=%x kind=%u rejects other device's on-disk patch\n",major,d.deviceID,k);
+   }
+   printf("PASS real page-local GL Darwin=%u PCI=%x\n",major,d.deviceID);cases++;
   }
  }
  printf("PASS %u page-local resolver cases\n",cases);

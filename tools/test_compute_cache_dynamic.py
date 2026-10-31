@@ -135,6 +135,11 @@ int main(){
             '*page=0x600000;blocks[*page].resize(4096);protections[*page]=3;return 0;}')
         harness = harness.replace('static kern_return_t vm_deallocate(vm_map_t,vm_address_t,unsigned){return KERN_SUCCESS;}',
             'static kern_return_t vm_deallocate(vm_map_t,vm_address_t page,unsigned){blocks.erase(page);protections.erase(page);return 0;}')
+    uuid = 'UserSequoiaSurfaceData::CacheUUID' if '--sequoia' in sys.argv else 'UserSurfaceSyncData::CacheUUID'
+    harness = harness.replace('BODY', 'static bool referenceUUID=false;\nBODY')
+    harness = harness.replace('preinstallSubmitGuard();', f'preinstallSubmitGuard();if(referenceUUID)put(base+88,{uuid},16);')
+    harness = harness.replace('int main(){', 'int main(int argc,char**){referenceUUID=argc>1;')
+    harness = harness.replace('int main()\n{', 'int main(int argc,char**)\n{\n    referenceUUID=argc>1;')
     harness = harness.replace('BODY', body)
     if '--baseline' in sys.argv:
         harness = harness.replace('call();if(!properties.contains("NRedImmediateSyncDynamicApplied"))', 'call();assert(writes==0&&protects==0);puts("PASS baseline reproduces unknown-cache rejection");return 0;if(!properties.contains("NRedImmediateSyncDynamicApplied"))',1)
@@ -143,7 +148,9 @@ int main(){
     flags = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if '--sanitize' in sys.argv else []
     subprocess.run(['clang++', '-std=c++23', '-O2', *flags, '-I'+str(WORK/'stubs'),
                     '-I'+str(ROOT/'NootedRed'), '-I'+str(ROOT/'tools/fixtures'), str(file), '-o', str(exe)], check=True, timeout=60)
-    subprocess.run([str(exe)], check=True, timeout=60)
+    if '--known-uuid' not in sys.argv:
+        subprocess.run([str(exe)], check=True, timeout=60)
+    subprocess.run([str(exe), '--known-uuid'], check=True, timeout=60)
 
 
 if __name__ == '__main__':

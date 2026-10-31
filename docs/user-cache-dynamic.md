@@ -19,9 +19,10 @@ SrdShared、LegacyBlend、ComputeScratch 和视频补丁都复用这些基础能
 OpenGL 的独立驱动修复见 [OpenGL 修复](opengl-display-fix.md)。它复用公共相对位移工具及引用数据，
 只匹配当前校验页内的完整修复块，不执行文件准备或 Mach-O 扫描；跨页块和页内歧义均拒绝。
 
-参考 UUID `31374756-89B4-34E8-A34F-56C5D57216A1` 使用生成数据的静态快路径。
-Tahoe 其他 UUID、Sequoia 所有 UUID 均通过当前进程中的 dyld header、image table 与 Mach-O 解析定位映像，
-再匹配补丁所在的完整原生函数或本机设备已应用的完整载荷。UUID 不作为动态路径的兼容证明。
+Tahoe 和 Sequoia 的所有 UUID 均通过当前进程中的 dyld header、image table 与 Mach-O 解析定位映像，
+再匹配补丁所在的完整原生函数或本机设备已应用的完整载荷。参考 UUID 也不能跳过解析；
+生成数据中的函数 RVA 仅供匹配和重定位参考，提交守卫必须接收解析器核验的实际方法位置。
+FVRC 可复用已核验的位置，但仍检查映像身份、映射属性、完整函数和引用目标。
 解析器仅读取并生成计划；桥接完成所有字节与 RX 权限检查后才写入私有 COW 页。
 
 动态路径重新计算 rel32 调用与 RIP 位移。已完整核验的目标函数允许搬迁；
@@ -30,7 +31,7 @@ Tahoe 其他 UUID、Sequoia 所有 UUID 均通过当前进程中的 dyld header�
 这支持相同实现的缓存重排，不能自动适配任意新函数实现、外部符号 RVA 或驱动 ABI。
 
 Tahoe ComputeScratch 核验原生配置函数、完整 pipeline 构造函数和 452 字节 Scratch 函数，
-未知缓存不使用固定 Scratch 偏移；Scratch 只按该函数自身的完整字节与相对引用判定兼容。
+Scratch 只按该函数自身的完整字节与相对引用判定兼容，不按 UUID 切换固定偏移路径。
 Sequoia 核验原生配置函数、完整 pipeline 构造函数和 456 字节 Scratch 函数。
 SubmitGuard 独立匹配完整提交方法，核对相对引用；重复安装还核对整个已安装守卫及返回地址。
 生成器以 `LC_FUNCTION_STARTS` 确定该内部函数边界，使用 `LC_DATA_IN_CODE` 区分跳转表与指令。
@@ -52,3 +53,8 @@ SubmitGuard 独立匹配完整提交方法，核对相对引用；重复安装�
 离线回归包括六种 Scratch 设备、四种视频设备、重排映像／函数／GOT、跨页部分写入、
 权限失败与幂等，并提供 ASan/UBSan。只读参考缓存回归还核对动态计划
 与静态数据逐项一致。不同 Sequoia / Tahoe 缓存的实机启动、画面与持续视频播放仍需测试人员验收。
+
+`test_surface_sync_dynamic.py`、`test_compute_cache_dynamic.py` 和 `test_video_cache_dynamic.py`
+默认分别运行未知 UUID 和参考 UUID，在保留参考 UUID 时仍重排映像、函数与引用目标。
+`--known-uuid` 仅运行参考 UUID 用例，后两项还接受 `--sequoia`。
+两类 UUID 执行相同的写入、幂等、拒绝和回滚断言。
