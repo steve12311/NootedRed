@@ -40,10 +40,11 @@ struct NRed {
 unsigned kernelMinor=6;
 const PenguinWizardry::KernelVersion& currentKernelVersion(){static std::optional<PenguinWizardry::KernelVersion> current;return current.emplace(25,kernelMinor);}
 bool requested=true,loadCompleted=true,has5000=true,has6000=true,hooks=true,engineAllocated=false;
+struct Object {unsigned releases=0;void release(){releases++;}};
 struct OSMetaClass {
-    unsigned size=64;void* object=nullptr;
+    unsigned size=64,allocations=0;Object* object=nullptr;
     unsigned getClassSize()const{return size;}
-    void* alloc(){return object;}
+    Object* alloc(){allocations++;return object;}
 };
 struct OSMetaClassBase {const OSMetaClass* meta;const OSMetaClass* getMetaClass(){return meta;}};
 struct Pair {const OSMetaClass* oldClass;const OSMetaClass* newClass;};
@@ -73,7 +74,7 @@ int main(){
     safeCastOriginal=reinterpret_cast<uintptr_t>(stockCast);
     sml5000=reinterpret_cast<uintptr_t>(stockSML);sml6000=reinterpret_cast<uintptr_t>(nativeSML);
     signalOriginal=reinterpret_cast<uintptr_t>(nativeSignal);notifyAccess=notify;
-    unsigned engineObject=1,pm4Object=2,sdmaObject=3;
+    Object engineObject,pm4Object,sdmaObject;
     auto& x=X5000::singleton();x.pm4.object=&pm4Object;x.sdma.object=&sdmaObject;
     for(unsigned minor:{0U,1U,6U,7U,99U})for(unsigned id:{0x15E7U,0x1636U,0x1638U,0x164CU}){
         kernelMinor=minor;
@@ -108,6 +109,20 @@ int main(){
         createSML(1);assert(selected==5000&&configuration==1);
         signalWork(object.data());assert(nativeSignals==1);
         assert(safeCast(&newObject,&oldClass)==nullptr);
+        // 核心引擎失败：返回 false 让原生 init 中止，且不写入 free 会释放的槽位。
+        loadCompleted=true;engine.object=&engineObject;
+        for(bool failPM4:{true,false}){
+            alignas(8) std::array<uint8_t,0x408> failed{};
+            x.pm4.allocations=x.sdma.allocations=engine.allocations=0;pm4Object.releases=sdmaObject.releases=0;
+            (failPM4?x.pm4.object:x.sdma.object)=nullptr;
+            assert(!x.allocateHWEngines(failed.data()));
+            assert(x.pm4.allocations==1&&x.sdma.allocations==(failPM4?0U:1U)&&engine.allocations==0);
+            assert(pm4Object.releases==(failPM4?0U:1U)&&sdmaObject.releases==0);
+            assert(failed==decltype(failed){});
+            assert(NRed::singleton().properties.at("NRedHWEngineAllocFailed")==(failPM4?1U:2U));
+            x.pm4.object=&pm4Object;x.sdma.object=&sdmaObject;
+        }
+        pm4Object.releases=sdmaObject.releases=0;NRed::singleton().properties.erase("NRedHWEngineAllocFailed");
     }
     for(unsigned id:{0x15D8U,0x15DDU,0x6863U,0x731FU,0xFFFF1638U}){
         NRed::singleton().device=id;loadCompleted=has5000=has6000=hooks=true;
@@ -117,7 +132,7 @@ int main(){
     for(bool* state:{&requested,&loadCompleted,&has5000,&has6000,&hooks}){
         *state=false;assert(!VCN::ready());*state=true;
     }
-    puts("PASS: four VCN2 engine slots, allocation failure, SML selection, cast size checks and GFX access routing");
+    puts("PASS: four VCN2 engine slots, core and VCN allocation failure, SML selection, cast size checks and GFX access routing");
 }
 '''.replace('FUNCTIONS', functions).replace('ALLOCATION', allocation)
     util = WORK / "stubs/Headers"

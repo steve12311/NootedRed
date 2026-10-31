@@ -315,8 +315,23 @@ void X5000::processKext(KernelPatcher& patcher, const size_t id, const mach_vm_a
 
 bool X5000::allocateHWEngines(void* const self)
 {
-    [[clang::suppress]] singleton().pm4EngineField(self)   = singleton().pm4EngineMC->alloc();
-    [[clang::suppress]] singleton().sdma0EngineField(self) = singleton().sdmaEngineMC->alloc();
+    // 原生 init 在返回 false 时中止，free 释放引擎槽内的对象；核心引擎全部成功后才写入槽位。
+    [[clang::suppress]]
+    auto* const pm4 = singleton().pm4EngineMC->alloc();
+    if (!pm4) {
+        NRed::singleton().setProp32("NRedHWEngineAllocFailed", 1);
+        return false;
+    }
+    [[clang::suppress]]
+    auto* const sdma0 = singleton().sdmaEngineMC->alloc();
+    if (!sdma0) {
+        // PM4 尚未写入槽位，free 不会再次释放。
+        pm4->release();
+        NRed::singleton().setProp32("NRedHWEngineAllocFailed", 2);
+        return false;
+    }
+    singleton().pm4EngineField(self)   = pm4;
+    singleton().sdma0EngineField(self) = sdma0;
 
     if (VCN::ready()) {
         auto* engine = VCN::allocateEngine();
