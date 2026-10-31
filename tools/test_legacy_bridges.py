@@ -2,6 +2,7 @@
 import argparse
 from pathlib import Path
 from user_patch_memory_harness import with_memory_helpers
+from import_legacy_compat import write_fixture
 import re
 import subprocess
 
@@ -183,7 +184,6 @@ int main(){
   reset(profile);cacheHeader[88]^=1;call();assert(writes==0&&protects==0);
   reset(profile);memory.begin()->second[0]^=1;call();assert(writes==0&&protects==0);
   reset(profile);failRead=cacheBase+profile->pages[0].offset+256;call();assert(writes==0&&protects==0);
-  FAIRPLAY
  }
  puts("PASS actual MODULE Sonoma bridge: full pages, every write/page failure, rollback and idempotency");
  GUARD
@@ -226,41 +226,6 @@ GUARD = r'''
  puts("PASS actual SubmitGuard: Sonoma/Tahoe transaction; Sequoia dynamic mode entry; full trampoline identity, failure rollback, RX/max, allocation lifetime");
 '''
 
-FAIRPLAY = r'''
-  // 独立预期：13 项 AMD 解码补丁（含 PSP 工厂），最后一项 AppleGVA 保持原样。
-  assert(profile->patchCount==14&&profile->fairPlayMask==0x1FFF);
-  assert(profile->patches[12].offset==(major==23?0x3033A69FAULL:0x30860FEC7ULL));
-  auto checkSelected=[&](bool patched){for(unsigned i=0;i<14;i++){
-   const auto& p=profile->patches[i];uint8_t b[512];assert(reader(cacheBase+p.offset,b,p.size)==0);
-   assert(memcmp(b,patched&&i<13?p.patched:p.original,p.size)==0);
-  }};
-  std::set<uint64_t> selectedPages;
-  for(unsigned i=0;i<13;i++)selectedPages.insert((cacheBase+profile->patches[i].offset)&~uint64_t(4095));
-  reset(profile);fairPlay=true;call();assert(writes==13&&protects==3*selectedPages.size());
-  checkSelected(true);rx();assert(properties.at("NRedDRMVideoPatchCount")==13&&properties.at("NRedDRMVideoState")==2);
-  before=writes;call();assert(writes==before&&properties.at("NRedDRMVideoState")==3);
-  for(unsigned failure=1;failure<=13;failure++){
-   reset(profile);fairPlay=true;auto original=memory;failWrite={failure};call();assert(memory==original);
-   checkSelected(false);rx();assert(properties.at("NRedDRMVideoState")==1);
-  }
-  for(unsigned failure=1;failure<=selectedPages.size();failure++){
-   reset(profile);fairPlay=true;auto original=memory;failProtect={failure};call();assert(memory==original&&writes==0);rx();
-  }
-  reset(profile);fairPlay=true;auto pristine=memory;
-  failProtect={unsigned(selectedPages.size())+1,unsigned(selectedPages.size())+2};call();assert(memory==pristine);rx();
-  for(unsigned page=0;page<selectedPages.size();page++){
-   reset(profile);fairPlay=true;auto original=memory;
-   failProtect={unsigned(selectedPages.size())+2+2*page};call();assert(memory==original);rx();
-   assert(properties.at("NRedDRMVideoState")==1);
-  }
-  for(unsigned i=0;i<14;i++){
-   reset(profile);fairPlay=true;const auto& p=profile->patches[i];
-   memcpy(memory.at((cacheBase+p.offset)&~uint64_t(4095)).data()+((cacheBase+p.offset)&4095),p.patched,p.size);
-   auto mixed=memory;call();assert(memory==mixed&&writes==0&&protects==0);
-  }
-'''
-
-
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--sanitize', action='store_true')
@@ -271,20 +236,18 @@ def main():
     util = WORK / 'stubs/Headers'
     util.mkdir(parents=True, exist_ok=True)
     (util / 'kern_util.hpp').write_text('#pragma once\n#include <IOKit/IOTypes.h>\n')
+    fixture = write_fixture()
     for module in ['UserSurfaceSync', 'UserVideoDecode']:
         source = (ROOT / f'NootedRed/{module}.cpp').read_text()
         body = re.split(r'namespace\s*\{', source, maxsplit=1)[1]
         body = re.split(r'}\s*// namespace', body, maxsplit=1)[0]
         body = with_memory_helpers(body)
         init = source[source.index(f'void {module}::init('):]
-        main_code = RENDER.replace('MODULE', module).replace('PROFILE',
-            'UserLegacyData::metal(major)' if module == 'UserSurfaceSync' else 'UserLegacyData::video(major,device)')
-        main_code = main_code.replace('DEVICES', '{0x15D8U,0x15DDU,0x15E7U,0x1636U,0x1638U,0x164CU}'
-                                     if module == 'UserSurfaceSync' else '{0x15E7U,0x1636U,0x1638U,0x164CU}')
-        main_code = main_code.replace('FAIRPLAY', '' if module == 'UserSurfaceSync' else FAIRPLAY)
-        main_code = main_code.replace('GUARD', GUARD if module == 'UserSurfaceSync' else '')
-        main_code = main_code.replace('SUBMIT_OFF', 'submitGuard=true;' if module == 'UserSurfaceSync' else '')
-        if module == 'UserVideoDecode':
+        if module == 'UserSurfaceSync':
+            main_code = RENDER.replace('MODULE', module).replace('PROFILE', 'UserLegacyData::metal(major)')
+            main_code = main_code.replace('DEVICES', '{0x15D8U,0x15DDU,0x15E7U,0x1636U,0x1638U,0x164CU}')
+            main_code = main_code.replace('GUARD', GUARD).replace('SUBMIT_OFF', 'submitGuard=true;')
+        else:
             main_code = r'''
 int main(){
  hostMajor=23;
@@ -292,13 +255,15 @@ int main(){
   NRed::singleton().device=device;KernelPatcher kernel;UserVideoDecode::init(kernel);
   assert(kernel.routes==0&&!devicePatches&&properties.at("NRedVCNUserRejected")==6);
   assert(properties.at("NRedVCNUserUnsupportedOS")==1);
-  auto* profile=UserLegacyData::video(23,device);reset(profile);fairPlay=drm;
+  // 离线历史 Profile 只用于布置真实 Sonoma 页面；生产入口必须在安装 Hook 前拒绝。
+  auto* profile=UserLegacyFixture::video(23,device);assert(profile);reset(profile);fairPlay=drm;
   auto pristine=memory;call();assert(memory==pristine&&writes==0&&protects==0&&allocations==0);
   assert(!properties.contains("NRedVCNUserApplied"));
  }
  puts("PASS actual Sonoma video entry: all four devices and both FairPlay states reject the unsupported OS without memory writes");
 }
 '''
+            body = '#include <UserLegacyVideoFixture.hpp>\n' + body
         text = COMMON.replace('BODY', body).replace('INIT', init).replace('MAIN', main_code)
         text = text.replace('struct vm_region_submap_short_info_data_64_t {int protection=0,max_protection=0,is_submap=0;};',
                             'struct vm_region_submap_short_info_data_64_t {int protection=0,max_protection=0,is_submap=0;'
@@ -308,8 +273,10 @@ int main(){
         path, exe = WORK / f'{module}.cpp', WORK / module
         path.write_text(text)
         flags = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if args.sanitize else []
+        # 只有 Video 桥接需要离线历史头；Metal 桥接只能看到生产数据。
+        include = ['-I'+str(fixture)] if module == 'UserVideoDecode' else []
         subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O2', *flags, '-I'+str(WORK / 'stubs'),
-                        '-I'+str(ROOT / 'NootedRed'), str(path), '-o', str(exe)], check=True, timeout=60)
+                        '-I'+str(ROOT / 'NootedRed'), *include, str(path), '-o', str(exe)], check=True, timeout=60)
         subprocess.run([str(exe)], check=True, timeout=60)
 
 

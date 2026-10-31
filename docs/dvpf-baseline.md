@@ -24,7 +24,7 @@
 | `NootedRed/KernelDisplayEvidence.hpp` | `ccc2b6c1e0f006073bfe58909f088dd74a9c1e21e689be0561f389ac19591895` |
 | `NootedRed/NRed.cpp` | `f8e4a3d8ab191ae58f0ca55516771d8ccda270ddf092e6519acc417e016b4802` |
 | `NootedRed/UserCacheResolver.hpp` | `5c05233b1c306c16aed7c390319044a6d1ed4f66e2b7025f4959acc727abfa54` |
-| `NootedRed/UserLegacyData.hpp` | `34d4ee4238ad37c300cc86773c2fae7d10005a283e98bfcf01b9dbceecab329c` |
+| `NootedRed/UserLegacyData.hpp` | `487520bd0f1f0c1fdacad65ce9e92f6afd2c585f11530ec2fd90cee43ee8d808` |
 | `NootedRed/UserOpenGL.cpp` | `f756bf2b83757a27df358e16a59a6b286ac6010c5c03649442ef765e895ef446` |
 | `NootedRed/UserOpenGLData.hpp` | `052dbfa0e4c1576f2213dac592a795eff3038ec535289eeb1b0425cf10a4a67b` |
 | `NootedRed/UserOpenGLResolver.hpp` | `42acd20b12135ec57e4a1d30b9be6b21802d0785f709b7a5c9b2c55895ee3f3d` |
@@ -39,7 +39,7 @@
 | `NootedRed/UserSurfaceSync.cpp` | `bd9cc8d4c430f88633e71b5abf1a9cc7d8ac99fec8c43b82290caf7306fa8f27` |
 | `NootedRed/UserSurfaceSyncData.hpp` | `fc0bd13e1fa0d9b85feb5c2dc19ccb7f7071c9789095ecf34b4fc8f6bbc3c562` |
 | `NootedRed/UserSurfaceSyncResolver.hpp` | `b0420ef49547c647901b10b9f9834e52467809e8d310016cbc08917a5c2ffcb3` |
-| `NootedRed/UserVideoDecode.cpp` | `7f886ddcd895dd3591e02e8f130e262d4ca03b47329922e5ac8ec7870ee8818b` |
+| `NootedRed/UserVideoDecode.cpp` | `01754d2090bd56f60056ca6efc11116e0dc512746adf088aa7b531f24fa739c6` |
 | `NootedRed/VPF/DisplayManifestData.hpp` | `7865d9fdf3eeb753cdaa029de18b125f4512c3681370cf8ebd8b1b24ab7c2761` |
 | `NootedRed/VPF/DisplayPlan.hpp` | `58af326be437dcf0fcf0b5eebc2b815a07ad440f2dcd6d8ac1c82d5e726a7006` |
 | `NootedRed/VPF/DisplayPlanAdapters.hpp` | `c811f717d97356c911a9bdb8c8921ac0a57ea4d27eb9e9a335d12b9bbe60288a` |
@@ -48,7 +48,7 @@
 | `NootedRed/VPF/MetalTransactionExecutor.hpp` | `db17db74348da5cf6603d2807fc11c7f9d88f307e4cd344b954cbc190e8936ca` |
 | `NootedRed/VPF/ValidatedPageBackend.hpp` | `7a8fbf89f88a4952a4fa6f710986d356320660d8054e0593567648de72e16bf3` |
 | `NootedRed/VPF/VerifiedPatchPlan.hpp` | `f21f84aff90a12f02c0af3157dafde7a9956f51af30d58a916a435bd62b5d7d4` |
-| `NootedRed/X5000.cpp` | `13967daf8ea58447fc1c3482e05ac91f81430861585bc4cc73f1f946eb07ebb5` |
+| `NootedRed/X5000.cpp` | `963ce24cf28faf5a11ea2c1e839ae2aaeb64b5791346227a28d8352c27c43787` |
 | `NootedRed/X6000FB.cpp` | `aefd17aaf24fcfdad36b93e4401707fbbed3414544b5478c99075354b33e41e3` |
 | `tools/build_cache_section_targets.py` | `e227011183e39724a714d4bec0066da1ec098f5d90a8f1271f757b5c8de46b7e` |
 | `tools/build_opengl_patch.py` | `0427baa3682aafab4f7cd1601ba9965347cbd0e3b09c977cce54af35caf0f306` |
@@ -59,7 +59,7 @@
 | `tools/fixtures/legacy-compat.json` | `e0b46680b6206a13e532bb6181c715acd89244da01f02a8ec259bdf402c9c19f` |
 | `tools/fixtures/opengl-compat.json` | `ed16a90f351d717a454f1c82ef60f42140680e0e8a1054163cce07040c6fad62` |
 | `tools/fixtures/sequoia-compat.json` | `2e6ab11f6a7c9c10394978c980168ebb1b01c79113c788b712468bb4b5a59bfd` |
-| `tools/import_legacy_compat.py` | `ecea0e4e7f3ab37471fb471fbaa872f618111f5753c7b07684ee28aa541b1d99` |
+| `tools/import_legacy_compat.py` | `a8d0c46a950ee55b16a0c475d896bad56045a985489d244650113bc7305b3890` |
 | `tools/vpf/analyze_display_variants.py` | `7b2d181b25f423758da3d93b852de38c29b93b599a91cdd90ef470941484e0d9` |
 | `tools/vpf/build_gl_evidence.py` | `63d8f97b22f422ca94ce6e2168dd40ebcd391d27c0cb1a587ca0ee6ba2f96fb1` |
 | `tools/vpf/display_semantics.py` | `5ea732fdaefa26bd432213bad5b71eea72e9733493ab31fa31245774efcfc91e` |

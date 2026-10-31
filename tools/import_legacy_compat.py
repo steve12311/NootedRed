@@ -11,6 +11,7 @@ from legacy_cp_factory import factory
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / 'tools/fixtures/legacy-compat.json'
+FIXTURE_HEADER = ROOT / 'build/legacy-compat/UserLegacyVideoFixture.hpp'
 REVISION = '3b37dfc6282016608962b2746d7809765ad121f4'
 SOURCE_HASHES = {
     'VDAVADataSonoma.hpp': '597dd472a7ddc7cd9155d9632f1338558721a063e919d9bf57ac0f041d110f97',
@@ -103,17 +104,28 @@ def generate():
               '// 参考提交：' + REVISION + ' (weachy/NootedRed)。\n'
               '// ' + data['attribution'] + '\n#pragma once\n#include <UserLegacyCompat.hpp>\n'
               'namespace UserLegacyData {\n')
+    # 历史 Video Profile 与 Darwin 24 Metal 只作离线参考；生产头仅保留 Darwin 23 Metal 与提交守卫入口偏移。
+    fixture = ('// 由 tools/import_legacy_compat.py 生成，仅供离线测试；不得加入 kext 编译或打包输入。\n'
+               '// 参考提交：' + REVISION + ' (weachy/NootedRed)。\n'
+               '// ' + data['attribution'] + '\n#pragma once\n#include <UserLegacyData.hpp>\n'
+               'namespace UserLegacyFixture {\n')
     for profile in data['profiles']:
         major = profile['major']
         prefix = f'OS{major}'
-        header += array(prefix + 'UUID', bytes.fromhex(profile['uuid']))
+        production = major == 23
+        # Darwin 23 的 UUID 位于生产头；离线 Video Profile 引用同一份数组。
+        uuid = f'UserLegacyData::{prefix}UUID' if production else f'{prefix}UUID'
+        if production:
+            header += array(prefix + 'UUID', bytes.fromhex(profile['uuid']))
+        else:
+            fixture += array(prefix + 'UUID', bytes.fromhex(profile['uuid']))
         pages = profile['pages'] + [{'address': profile['gva']['address'] & ~4095, 'bytes': profile['gva']['page']}]
         for i, page in enumerate(pages):
-            header += array(f'{prefix}Page{i}', bytes.fromhex(page['bytes']))
-        header += f'inline constexpr UserLegacyCompat::Page {prefix}Pages[] = {{\n'
+            fixture += array(f'{prefix}Page{i}', bytes.fromhex(page['bytes']))
+        fixture += f'inline constexpr UserLegacyCompat::Page {prefix}Pages[] = {{\n'
         for i, page in enumerate(pages):
-            header += f'    {{0x{page["address"] - 0x7FF800000000:X}ULL, {prefix}Page{i}}},\n'
-        header += '};\n'
+            fixture += f'    {{0x{page["address"] - 0x7FF800000000:X}ULL, {prefix}Page{i}}},\n'
+        fixture += '};\n'
         def read(address, size):
             page = next(p for p in pages if p['address'] <= address and address + size <= p['address'] + 4096)
             offset = address - page['address']
@@ -149,42 +161,49 @@ def generate():
         originals.append((gva['address'], bytes.fromhex(gva['find'])))
         replacements.append(bytes.fromhex(gva['replace']))
         for i, ((address, old), new) in enumerate(zip(originals, replacements)):
-            header += array(f'{prefix}Original{i}', old)
+            fixture += array(f'{prefix}Original{i}', old)
             if new is not None:
                 assert len(old) == len(new)
-                header += array(f'{prefix}Patched{i}', new)
+                fixture += array(f'{prefix}Patched{i}', new)
         for device, family in capabilities:
             variant = f'{prefix}D{device:X}'
-            header += array(variant + 'Identify', identify_payload(identify_original, device, family))
-            header += f'inline constexpr UserLegacyCompat::Patch {variant}Patches[] = {{\n'
+            fixture += array(variant + 'Identify', identify_payload(identify_original, device, family))
+            fixture += f'inline constexpr UserLegacyCompat::Patch {variant}Patches[] = {{\n'
             for i, (address, old) in enumerate(originals):
                 patched = variant + 'Identify' if i == 0 else f'{prefix}Patched{i}'
-                header += f'    {{0x{address - 0x7FF800000000:X}ULL, {prefix}Original{i}, {patched}, {len(old)}}},\n'
-            header += '};\n'
-            header += (f'inline constexpr UserLegacyCompat::Profile {variant} = {{{major}, {prefix}UUID, {prefix}Pages, '
-                       f'9, {variant}Patches, {len(originals)}, 0x{fairplay_mask:X}U}};\n')
+                fixture += f'    {{0x{address - 0x7FF800000000:X}ULL, {prefix}Original{i}, {patched}, {len(old)}}},\n'
+            fixture += '};\n'
+            fixture += (f'inline constexpr UserLegacyCompat::Profile {variant} = {{{major}, {uuid}, {prefix}Pages, '
+                        f'9, {variant}Patches, {len(originals)}, 0x{fairplay_mask:X}U}};\n')
         metal = profile['metal']
         page = bytes.fromhex(metal['page'])
         gate = metal['gate'] & 4095
         assert page[gate:gate + 2] == b'\x75\x0b'
-        header += array(prefix + 'MetalPage', page)
-        header += array(prefix + 'Gate', page[gate:gate + 2]) + array(prefix + 'GatePatched', b'\xeb\x0b')
-        header += f'inline constexpr UserLegacyCompat::Page {prefix}MetalPages[] = {{{{0x{(metal["gate"] & ~4095) - 0x7FF800000000:X}ULL, {prefix}MetalPage}}}};\n'
-        header += f'inline constexpr UserLegacyCompat::Patch {prefix}MetalPatches[] = {{\n'
+        text = array(prefix + 'MetalPage', page)
+        text += array(prefix + 'Gate', page[gate:gate + 2]) + array(prefix + 'GatePatched', b'\xeb\x0b')
+        text += f'inline constexpr UserLegacyCompat::Page {prefix}MetalPages[] = {{{{0x{(metal["gate"] & ~4095) - 0x7FF800000000:X}ULL, {prefix}MetalPage}}}};\n'
+        text += f'inline constexpr UserLegacyCompat::Patch {prefix}MetalPatches[] = {{\n'
         for name, size in [('Gate', 2)]:
             address = metal['gate' if name == 'Gate' else 'allow'] - 0x7FF800000000
-            header += f'    {{0x{address:X}ULL, {prefix}{name}, {prefix}{name}Patched, {size}}},\n'
-        header += '};\n'
-        header += f'inline constexpr UserLegacyCompat::Profile {prefix}Metal = {{{major}, {prefix}UUID, {prefix}MetalPages, 1, {prefix}MetalPatches, 1}};\n'
-    header += 'inline const UserLegacyCompat::Profile* metal(UInt32 major) {\n'
-    header += '    return major == 23 ? &OS23Metal : (major == 24 ? &OS24Metal : nullptr);\n}\n'
-    header += 'inline const UserLegacyCompat::Profile* video(UInt32 major, UInt32 device) {\n'
+            text += f'    {{0x{address:X}ULL, {prefix}{name}, {prefix}{name}Patched, {size}}},\n'
+        text += '};\n'
+        text += f'inline constexpr UserLegacyCompat::Profile {prefix}Metal = {{{major}, {prefix}UUID, {prefix}MetalPages, 1, {prefix}MetalPatches, 1}};\n'
+        if production:
+            header += text
+        else:
+            fixture += text
+    header += 'inline const UserLegacyCompat::Profile* metal(UInt32 major) { return major == 23 ? &OS23Metal : nullptr; }\n'
+    fixture += 'inline const UserLegacyCompat::Profile* metal(UInt32 major) {\n'
+    fixture += '    return major == 23 ? UserLegacyData::metal(23) : (major == 24 ? &OS24Metal : nullptr);\n}\n'
+    fixture += 'inline const UserLegacyCompat::Profile* video(UInt32 major, UInt32 device) {\n'
     for major in [23, 24]:
-        header += f'    if (major == {major}) {{ switch (device) {{\n'
+        fixture += f'    if (major == {major}) {{ switch (device) {{\n'
         for device, _ in capabilities:
-            header += f'        case 0x{device:X}: return &OS{major}D{device:X};\n'
-        header += '        default: return nullptr;\n    } }\n'
-    header += '    return nullptr;\n}\n'
+            fixture += f'        case 0x{device:X}: return &OS{major}D{device:X};\n'
+        fixture += '        default: return nullptr;\n    } }\n'
+    fixture += '    return nullptr;\n}\n'
+    fixture += '}\n'
+    # 提交守卫入口偏移仍是 Darwin 23/24 DVPF Manifest 的生产输入。
     header += 'inline UInt64 submitOffset(UInt32 major) {\n'
     for profile in data['profiles']:
         header += f"    if (major == {profile['major']}) {{ return 0x{profile['submit']:X}ULL; }}\n"
@@ -214,7 +233,16 @@ def generate():
             kernel_header += f'    {{"{patch["symbol"]}", 0x{patch["offset"]:X}, {{{raw}}}, 0x{patch["slot"]:X}}},\n'
         kernel_header += '};\n'
     kernel_header += '}\n'
-    return {'UserLegacyData.hpp': header, 'VCNLegacyKernelData.hpp': kernel_header}
+    return {'UserLegacyData.hpp': header, 'VCNLegacyKernelData.hpp': kernel_header}, fixture
+
+
+def write_fixture():
+    """生成离线历史 Profile 头并返回其目录；只供测试的 -I 搜索路径使用。"""
+    _, fixture = generate()
+    FIXTURE_HEADER.parent.mkdir(parents=True, exist_ok=True)
+    if not FIXTURE_HEADER.exists() or FIXTURE_HEADER.read_text() != fixture:
+        FIXTURE_HEADER.write_text(fixture)
+    return FIXTURE_HEADER.parent
 
 
 def main():
@@ -224,13 +252,16 @@ def main():
     args = parser.parse_args()
     if args.import_reference:
         extract(args.import_reference)
-    for name, content in generate().items():
+    production, _ = generate()
+    for name, content in production.items():
         path = ROOT / 'NootedRed' / name
         if args.check:
             assert path.read_text() == content, f'生成数据过期：{path}'
         else:
             path.write_text(content)
-    print('PASS legacy compatibility data: exact pages, PCI-specific identify, RV address path and ABI tables')
+    write_fixture()
+    print('PASS legacy compatibility data: exact pages, PCI-specific identify, RV address path and ABI tables; '
+          'historical video profiles generated to ' + str(FIXTURE_HEADER.relative_to(ROOT)))
 
 
 if __name__ == '__main__':

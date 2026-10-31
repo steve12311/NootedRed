@@ -143,7 +143,7 @@ int main(){
   Version::majorValue=major;Version::minorValue=minor;KernelPatcher checked;UserVideoDecode::init(checked);
   assert(checked.routes==2*int(major>=23 && major<=25));
   if(major>=23&&major<=25){
-   assert(fairPlayDriverOnly&&properties.at("NRedDRMVideoEnabled")==1&&properties.at("NRedDRMVideoRevision")==4);
+   assert(properties.at("NRedDRMVideoEnabled")==1&&properties.at("NRedDRMVideoRevision")==4);
    assert(properties.at("NRedDRMVideoMask")==unsigned(major==25?0x7F87FE:(major==24?0x7FE1FE:0x1FFF)));
   }
  }
@@ -173,7 +173,7 @@ int main(){
  assert(properties.at("NRedDRMVideoState")==2&&properties.at("NRedDRMVideoPID")==969);
  assert(entitlementQueries==1&&trueEntitlement.releases==1);
  reset();clientEntitlement=kOSBooleanFalse;call();bytes(true);rx();
- assert(writeCalls==N&&!properties.contains("NRedVCNFairPlaySkipped")&&falseEntitlement.releases==1);
+ assert(writeCalls==N&&falseEntitlement.releases==1);
  }
  // 独立预期：只写驱动侧解码项，AppleGVA 与四项编码修正保持原始字节，且不改变这些页的权限。
  constexpr unsigned decodeMask=0x7F87FE;
@@ -240,7 +240,7 @@ int main(){
   for(const char* name:{"Music","TV","Other"}){
    reset();processName=name;clientEntitlement=kOSBooleanTrue;call(reinterpret_cast<void*>(970));
    assert(writeCalls==0&&protectCalls==0&&properties.at("NRedDRMVideoState")==1);
-   assert(properties.at(major==23?"NRedVCNUserLegacyRejected":"NRedVCNUserDynamicRejected")==1&&!properties.contains("NRedVCNFairPlaySkipped"));bytes(false);rx();
+   assert(properties.at(major==23?"NRedVCNUserLegacyRejected":"NRedVCNUserDynamicRejected")==1);bytes(false);rx();
   }
  }
  Version::majorValue=25;flag=false;{KernelPatcher disabled;UserVideoDecode::init(disabled);assert(disabled.solves==0&&disabled.routes==0);}

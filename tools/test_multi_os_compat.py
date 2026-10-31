@@ -1,6 +1,12 @@
-"""执行真实版本入口、原始页面核验和设备识别，不提交 GPU 命令。"""
+"""执行真实版本入口、原始页面核验和设备识别，不提交 GPU 命令。
+
+历史 Video Profile 与 Darwin 24 Metal 只从离线头读取，仅证明参考数据可复现；
+生产头只能提供 Darwin 23 Metal。
+"""
 from pathlib import Path
 import subprocess
+
+from import_legacy_compat import write_fixture
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / 'build/multi-os-compat'
@@ -19,7 +25,7 @@ def main():
 #include <cstdio>
 #include <map>
 #include <vector>
-#include <UserLegacyData.hpp>
+#include <UserLegacyVideoFixture.hpp>
 #include <VCNCapabilities.hpp>
 using namespace UserLegacyCompat;
 static constexpr uint64_t base=0x7ff800100000ULL;
@@ -39,7 +45,7 @@ int main(){
  }
  for(unsigned major:{22U,26U})assert(VCNCapabilities::rejection(0x1638,PenguinWizardry::KernelVersion(major,0))==4);
  for(unsigned major:{23U,24U})for(unsigned device:{0x15E7U,0x1636U,0x1638U,0x164CU}){
-  for(const auto* profile:{UserLegacyData::metal(major),UserLegacyData::video(major,device)}){
+  for(const auto* profile:{UserLegacyFixture::metal(major),UserLegacyFixture::video(major,device)}){
    assert(profile);memory.clear();reads=0;
    for(unsigned i=0;i<profile->pageCount;i++)memcpy(memory[base+profile->pages[i].offset].data(),profile->pages[i].original,4096);
    assert(matches(reader,base,profile->uuid,*profile));assert(reads==16*profile->pageCount);
@@ -54,15 +60,20 @@ int main(){
    memory.erase(memory.begin());assert(!matches(reader,base,profile->uuid,*profile));
   }
  }
- assert(!UserLegacyData::video(25,0x1638)&&!UserLegacyData::video(23,0x15DD)&&!UserLegacyData::metal(26));
- puts("PASS: Darwin 23/24/25 entry; exact UUID/full pages; every PCI plan; patched pages, tampering and read failures");
+ assert(!UserLegacyFixture::video(25,0x1638)&&!UserLegacyFixture::video(23,0x15DD)&&!UserLegacyFixture::metal(26));
+ // 生产头只保留 Darwin 23 Metal；Darwin 24 走动态解析，历史 Video Profile 不进入生产数据。
+ assert(UserLegacyData::metal(23)==&UserLegacyData::OS23Metal&&UserLegacyFixture::metal(23)==UserLegacyData::metal(23));
+ assert(!UserLegacyData::metal(24)&&!UserLegacyData::metal(25));
+ assert(UserLegacyData::submitOffset(23)==0x30355E210ULL&&UserLegacyData::submitOffset(24)==0x3087C3580ULL&&!UserLegacyData::submitOffset(25));
+ puts("PASS: Darwin 23/24/25 entry; historical reference profiles reproduce exact UUID/full pages; production header limited to Darwin 23 Metal");
 }
 '''
+    fixture = write_fixture()
     source = WORK / 'test.cpp'
     source.write_text(src)
     exe = WORK / 'test'
     subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O2', '-Wall', '-Wextra', '-Werror',
-                    '-I'+str(WORK / 'stubs'), '-I'+str(ROOT / 'NootedRed'), str(source), '-o', str(exe)],
+                    '-I'+str(WORK / 'stubs'), '-I'+str(ROOT / 'NootedRed'), '-I'+str(fixture), str(source), '-o', str(exe)],
                    check=True, timeout=60)
     subprocess.run([str(exe)], check=True, timeout=60)
 

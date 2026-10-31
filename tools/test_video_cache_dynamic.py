@@ -77,9 +77,6 @@ static void setup(unsigned id){
  devicePatches=findDevice(id);assert(devicePatches);
  VPF::ResolutionDiagnostics::setEnabled(true);VPF::resolutionCache.init();
  drmClient=false;clientEntitlement=nullptr;drmTouchedPages.clear();maxima.clear();
-#ifndef BASELINE
- fairPlayDriverOnly=false;
-#endif
  published={};seenStages=appliedCount=errorCount=0;originalCheck=reinterpret_cast<uint64_t>(original);readUser=reader;writeUser=writer;getTaskMap=map;queryRegion=query;
 }
 static void call(){SharedRegionCheckArgs args{0x1000};int value=0;assert(wrappedSharedRegionCheck(drmClient?reinterpret_cast<void*>(217):nullptr,&args,&value)==0&&value==123);}
@@ -125,7 +122,7 @@ int main(){
   clientName=name;
   setup(id);UserVideoDecodeResolver::Plan plan;
   assert(UserVideoDecodeResolver::resolve(reader,base,devicePatches,plan));
-  auto enable=[&]{fairPlayDriverOnly=drmClient=true;clientEntitlement=kOSBooleanTrue;pages(plan.patches,PatchCount);};
+  auto enable=[&]{drmClient=true;clientEntitlement=kOSBooleanTrue;pages(plan.patches,PatchCount);};
   std::set<uint64_t> selectedPages;
   constexpr unsigned selectedMask=0x7F87FE;
   for(unsigned i=0;i<PatchCount;i++)if(selectedMask&(1U<<i)){

@@ -3,7 +3,9 @@
 本轮参考 [weachy/NootedRed 固定提交 3b37dfc](https://github.com/weachy/NootedRed/tree/3b37dfc6282016608962b2746d7809765ad121f4)，
 将对应的旧系统数据接入现有的私有 COW 页面事务与 VCN 内核桥接。
 参考数据、来源文件 SHA256 和版权记录保存在 `tools/fixtures/legacy-compat.json`；
-`tools/import_legacy_compat.py` 生成两个数据头，`--check` 检查可复现性。
+`tools/import_legacy_compat.py` 生成 `UserLegacyData.hpp`（Darwin 23 Metal 与提交守卫入口偏移）和
+`VCNLegacyKernelData.hpp`，`--check` 检查可复现性。14/15 的历史视频 Profile 与 15 的旧 Metal Profile
+只生成到 `build/legacy-compat/UserLegacyVideoFixture.hpp`，供离线测试使用，不进入 kext。
 
 ## 版本与参数
 

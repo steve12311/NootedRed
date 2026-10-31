@@ -41,7 +41,7 @@ static MapDestroy originalMapDestroy = nullptr;
 MAP_DESTROY
 MAP_TARGET
 
-static bool fairPlayDriverOnly = false, sequoia = false;
+static bool sequoia = false;
 static const int* devicePatches = nullptr;
 namespace UserVideoDecodeData { static const int* findDevice(UInt32) { static int value; return &value; } }
 namespace UserSequoiaVideoData { static const int* findDevice(UInt32 id) { return UserVideoDecodeData::findDevice(id); } }

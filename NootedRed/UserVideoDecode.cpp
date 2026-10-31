@@ -152,7 +152,6 @@ namespace
         }
     };
     VideoLedger                       videoLedger;
-    bool                              fairPlayDriverOnly{false};
     bool                              sequoia{false};
     const UserVideoDecodeData::Patch* devicePatches{nullptr};
     constexpr auto                    PatchCount   = arrsize(UserVideoDecodeData::Patches);
@@ -518,11 +517,6 @@ namespace
         UInt32 fairPlayPID{0};
         if (UserPatchPolicy::isFairPlayClient(current_task())) {
             const auto pid = process != nullptr ? proc_pid(process) : -1;
-            if (!fairPlayDriverOnly) {
-                if (pid > 0) { NRed::singleton().setProp32("NRedVCNFairPlaySkipPID", static_cast<UInt32>(pid)); }
-                NRed::singleton().setProp32("NRedVCNFairPlaySkipped", 1);
-                return result;
-            }
             fairPlayDecode = true;
             if (pid > 0) { fairPlayPID = static_cast<UInt32>(pid); }
         }
@@ -871,8 +865,7 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         NRed::singleton().setProp32("NRedFVRCCacheReady", VPF::resolutionCache.ready ? 1 : 0);
     }
     NRed::singleton().setProp32("NRedVCNSharedRegionStackRevision", 1);
-    fairPlayDriverOnly = false;
-    devicePatches      = nullptr;
+    devicePatches = nullptr;
     if (!checkKernelArgument("-NRedVideoFix")) { return; }
     NRed::singleton().setProp32("NRedVCNUserEnabled", 0);
     NRed::singleton().setProp32("NRedDRMVideoEnabled", 0);
@@ -903,8 +896,7 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         NRed::singleton().setProp32("NRedVCNUserRejected", 3);
         return;
     }
-    fairPlayDriverOnly = true;
-    getTaskMap         = reinterpret_cast<GetTaskMap>(patcher.solveSymbol(KernelPatcher::KernelID, "_get_task_map"));
+    getTaskMap = reinterpret_cast<GetTaskMap>(patcher.solveSymbol(KernelPatcher::KernelID, "_get_task_map"));
     patcher.clearError();
     queryRegion =
         reinterpret_cast<RegionRecurse>(patcher.solveSymbol(KernelPatcher::KernelID, "_mach_vm_region_recurse"));
@@ -966,11 +958,10 @@ void UserVideoDecode::init(KernelPatcher& patcher)
     NRed::singleton().setProp32("NRedVCNUserEnabled", 1);
     NRed::singleton().setProp32("NRedVCNUserMapGateRevision", 1);
     NRed::singleton().setProp32("NRedVCNRegionQueryVersion", 1);
-    if (fairPlayDriverOnly) {
-        NRed::singleton().setProp32("NRedDRMVideoEnabled", 1);
-        NRed::singleton().setProp32("NRedDRMVideoRevision", 4);
-        NRed::singleton().setProp32("NRedDRMVideoMask", fairPlayMask());
-    }
+    // FairPlay 诊断只在视频 Hook 安装成功后发布。
+    NRed::singleton().setProp32("NRedDRMVideoEnabled", 1);
+    NRed::singleton().setProp32("NRedDRMVideoRevision", 4);
+    NRed::singleton().setProp32("NRedDRMVideoMask", fairPlayMask());
     // 显示模块也成功注册时，协调器成为最外层 Hook；否则继续使用本模块的旧 lease。
     UserPatchCoordinator::registerVideo(
         [](void* process, void* args, const int result)
