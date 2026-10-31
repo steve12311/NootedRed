@@ -32,6 +32,7 @@ namespace Patch {} // 模拟 Lilu 的同名命名空间，防止独立测试遗�
 #include <UserLegacyData.hpp>
 #include <UserSubmitGuardData.hpp>
 #include <coordinator-inactive.hpp>
+#include <VPF/DisplayRuntime.hpp>
 #include <VPF/ExecutableTrampolineResource.hpp>
 #include <VPF/MetalTransactionExecutor.hpp>
 #include <VPF/TransactionExecutor.hpp>
@@ -62,6 +63,7 @@ struct NRed{static NRed& singleton(){static NRed n;return n;}void setProp32(cons
  unsigned getDeviceID(){return device;}static unsigned device;};unsigned NRed::device=0x15e7;
 struct Version{unsigned major(){return 25;}unsigned minor(){return 0;}bool majorMatches(unsigned v){return v==25;}};
 constexpr unsigned MACOS_26=25;static Version currentKernelVersion(){return {};}
+namespace UserPatchCoordinator {inline UInt32 requestedDisplayGroups(){return VPF::MetalDisplayGroups;}}
 static bool noFvrc=false;
 static bool checkKernelArgument(const char*s){
  if(strcmp(s,"-NRedNoFVRC")==0)return noFvrc;
@@ -84,8 +86,10 @@ static constexpr uint64_t unslid=0x7ff900000000ULL;static uint64_t slide=0x12340
 static uint64_t base=unslid+slide;
 static constexpr unsigned imageOffset=0x20000,textOffset=0x21000,textSize=0x20000,constantOffset=0x42000;
 static constexpr unsigned initOffset=0x21f80,overrideOffset=0x23ff8,settingsOffset=0x26000,dumpOffset=0x27000;
-static constexpr unsigned constructorOffset=0x28fe5,scratchOffset=0x2d000;
+static constexpr unsigned constructorOffset=0x28fe5,scratchOffset=0x2d000,submitOffset=0x30000;
+static constexpr uint64_t guardAddress=0x600000;
 static std::vector<uint8_t> memory(0x60000),initial;
+static std::array<uint8_t,4096> guardPage;
 static unsigned reads=0;static uint64_t failedRead=0;static unsigned originalCalls=0;
 static void put32(unsigned o,uint32_t v){memcpy(memory.data()+o,&v,4);}
 static void put64(unsigned o,uint64_t v){memcpy(memory.data()+o,&v,8);}
@@ -95,6 +99,7 @@ static void rel(unsigned function,const RelativeField* fields,const uint64_t* ta
                                                                   base+function,targets[fields[i].target]));}
 static int reader(uint64_t a,void*p,size_t n){
  reads++;if(a==0x1000){assert(n==8);memcpy(p,&base,8);return 0;}
+ if(a==guardAddress){assert(n<=guardPage.size());memcpy(p,guardPage.data(),n);return 0;}
  if(a==failedRead || a<base || a-base>memory.size() || n>memory.size()-(a-base))return 1;
  memcpy(p,memory.data()+a-base,n);return 0;}
 static int writer(const void*p,uint64_t a,size_t n){
@@ -115,27 +120,49 @@ static void reset(unsigned device=0x15e7){
  properties.clear();pageProtections.clear();failedProtect.clear();protects=writes=failWrite=regionFail=reads=originalCalls=0;
  failedRead=0;noMap=false;published={};seenStages=appliedCount=errorCount=windowServerCount=weatherCount=0;
  NRed::device=device;KernelPatcher patcher;UserSurfaceSync::init(patcher);assert(properties.at("NRedImmediateSyncRevision")==4);
- assert(devicePatches);legacyBlend=srdShared=true;computeScratch=submitGuard=false;
+ assert(devicePatches);legacyBlend=srdShared=true;computeScratch=false;submitGuard=true;
  memset(memory.data(),0,memory.size());copy(0,CacheMagic,16);put32(16,0x300);put32(20,1);
  // 改变 UUID、缓存 slide、映像位置及三个补丁入口，代码仍为相同驱动实现。
- memset(memory.data()+88,0xa7,16);put64(224,unslid);put64(232,memory.size());put64(240,slide);
+ memset(memory.data()+88,0xa7,16);put64(224,unslid);put64(232,0x40000000ULL);put64(240,slide);
  put32(448,0x1000);put32(452,1);put64(0x300,unslid);put64(0x308,memory.size());put64(0x310,0);put32(0x31c,1);
  put64(0x1000,unslid+imageOffset);put32(0x1018,0x1800);copy(0x1800,DriverPath,sizeof(DriverPath));
- put32(imageOffset,0xfeedfacf);put32(imageOffset+4,0x1000007);put32(imageOffset+12,8);put32(imageOffset+16,1);put32(imageOffset+20,232);
+ put32(imageOffset,0xfeedfacf);put32(imageOffset+4,0x1000007);put32(imageOffset+12,8);put32(imageOffset+16,3);put32(imageOffset+20,1176);
  unsigned c=imageOffset+32;put32(c,0x19);put32(c+4,232);copy(c+8,"__TEXT",7);put64(c+24,unslid+imageOffset);
  put64(c+32,0x24000);put32(c+56,5);put32(c+60,5);put32(c+64,2);
  unsigned s=c+72;copy(s,"__text",7);copy(s+16,"__TEXT",7);put64(s+32,unslid+textOffset);put64(s+40,textSize);
  s+=80;copy(s,"__const",8);copy(s+16,"__TEXT",7);put64(s+32,unslid+constantOffset);put64(s+40,4096);
+ // 提交方法的两个 objc 引用需要真实的节目标；第三个引用落在 __DATA 段内。
+ unsigned d=c+232;put32(d,0x19);put32(d+4,872);copy(d+8,"__DATA_CONST",13);
+ put64(d+24,unslid+0x33000000ULL);put64(d+32,0x100000);put32(d+56,3);put32(d+60,3);put32(d+64,10);
+ for(unsigned j=0;j<10;j++){unsigned sec=d+72+j*80;
+  const char* name=j==7?"__objc_selrefs":(j==9?"__objc_superrefs":"__pad");
+  copy(sec,name,unsigned(strlen(name)+1));copy(sec+16,"__DATA_CONST",13);
+  put64(sec+32,unslid+0x33000000ULL+(j==9?0x1000:0));put64(sec+40,0x1000);}
+ unsigned e=d+872;put32(e,0x19);put32(e+4,72);copy(e+8,"__DATA",7);
+ put64(e+24,unslid+0x360000ULL);put64(e+32,0x100000);put32(e+56,3);put32(e+60,3);put32(e+64,0);
  copy(initOffset,Original0,sizeof(Original0));copy(overrideOffset,Original1,sizeof(Original1));
  copy(settingsOffset,NativeOverride,sizeof(NativeOverride));copy(dumpOffset,NativeDump,sizeof(NativeDump));
  copy(constructorOffset,BlendConstructor,sizeof(BlendConstructor));copy(scratchOffset,ScratchOriginal,sizeof(ScratchOriginal));
  put32(constantOffset+100,0x40400000);
  const uint64_t targets[]={base+constantOffset+100,base+settingsOffset,base+dumpOffset};rel(initOffset,OriginalInitLinks,targets);
  assert(UserSurfaceSyncResolver::setRelative(memory.data()+overrideOffset,6,base+overrideOffset,base+settingsOffset));
+ copy(submitOffset,UserSurfaceConstructorData::Submit::ResolverOriginal0,
+      sizeof(UserSurfaceConstructorData::Submit::ResolverOriginal0));
+ const auto& submitRefs=UserSurfaceConstructorData::Submit::ResolverOriginalRefs0;
+ const uint64_t submitTargets[]={base+0x33001090ULL,base+0x33000A98ULL,base+0x389828ULL};
+ for(unsigned i=0;i<3;i++)assert(UserSurfaceSyncResolver::setRelative(memory.data()+submitOffset,
+  submitRefs[i].offset,base+submitOffset,submitTargets[i]));
+ uint8_t payload[sizeof(UserSubmitGuardData::Payload)];memcpy(payload,UserSubmitGuardData::Payload,sizeof(payload));
+ const uint64_t continuation=base+submitOffset+UserSubmitGuardData::MethodPatchSize;
+ memcpy(payload+UserSubmitGuardData::PayloadJumpOffset,&continuation,sizeof(continuation));
+ guardPage.fill(0);memcpy(guardPage.data(),payload,sizeof(payload));
+ uint8_t entry[15]={0xff,0x25,0,0,0,0};memcpy(entry+6,&guardAddress,sizeof(guardAddress));entry[14]=0x90;
+ copy(submitOffset,entry,sizeof(entry));
  const unsigned positions[]={initOffset,overrideOffset,constructorOffset+BlendGateInConstructor};
  const unsigned sizes[]={sizeof(Original0),sizeof(Original1),sizeof(BlendGateOriginal)};
  for(unsigned i=0;i<3;i++)for(uint64_t p=(base+positions[i])&~uint64_t(4095);p<=((base+positions[i]+sizes[i]-1)&~uint64_t(4095));p+=4096)pageProtections[p]=5;
- assert(pageProtections.size()==6);initial=memory;
+ pageProtections[guardAddress]=5;
+ assert(pageProtections.size()==7);initial=memory;
  originalCheck=reinterpret_cast<uint64_t>(original);getTaskMap=map;queryRegion=query;readUser=reader;writeUser=writer;
 }
 static void call(){SharedRegionCheckArgs a{0x1000};int v=0;assert(wrappedSharedRegionCheck(reinterpret_cast<void*>(217),&a,&v)==0&&v==123);}

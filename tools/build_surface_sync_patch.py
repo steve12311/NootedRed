@@ -6,7 +6,7 @@ import struct
 import subprocess
 from metal_cache import CacheReader, macho, array, IMAGE
 from build_compute_scratch_patch import generate as generate_scratch, supported_devices
-from cache_resolver_data import ResolverData, containing_function
+from cache_resolver_data import ResolverData
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/user-surface-sync"
@@ -99,13 +99,6 @@ def main():
         legacy_records = [dict(r) for r in candidate_records]
         legacy_records.append({"label": "blend-capability-gate", "address": gate_address,
                                "original": gate_code.hex(), "patched": "9090"})
-        # 仅保留旧实验的原始字节检查；不生成已撤回的 VT 替换代码。
-        withdrawn_guards = []
-        for address, expected in [(0x7FF81585FD97, "7428"), (0x7FF815861D17, "0f8482040000")]:
-            original = cache.read(address, len(bytes.fromhex(expected)))
-            if original != bytes.fromhex(expected):
-                raise ValueError("VideoToolbox 原始选择分支不匹配")
-            withdrawn_guards.append({"address": address, "original": original.hex()})
         device_scratch_records = [
             {"device_id": device, "records": [*legacy_records, generate_scratch(cache, device)]}
             for device in supported_devices()
@@ -136,12 +129,6 @@ def main():
             (f"Original{i}, SrdSharedPatched{i}, sizeof(Original{i})" if i < 2 else
              "BlendGateOriginal, BlendGatePatched, sizeof(BlendGateOriginal)") + "}"
             for i, r in enumerate(legacy_records)) + "\n};\n"
-        header += "struct Guard { UInt64 offset; const UInt8* original; UInt32 size; };\n"
-        for i, r in enumerate(withdrawn_guards):
-            header += array(f"WithdrawnOriginal{i}", bytes.fromhex(r["original"]))
-        header += "inline constexpr Guard WithdrawnTransferGuards[] = {\n" + ",\n".join(
-            f"    {{0x{r['address']-cache.base:X}ULL, WithdrawnOriginal{i}, sizeof(WithdrawnOriginal{i})}}"
-            for i, r in enumerate(withdrawn_guards)) + "\n};\n"
         header += array("ScratchOriginal", bytes.fromhex(scratch_record["original"]))
         # 各设备共享原始代码、覆盖跳转与混合分支；仅初始化比较立即数不同。
         for entry in device_records[1:]:
@@ -204,12 +191,6 @@ def main():
         scratch_resolver = ResolverData(cache, WORK / 'scratch')
         scratch_resolver.add(scratch_record['address'], bytes.fromhex(scratch_record['original']),
                              bytes.fromhex(scratch_record['patched']))
-        # 撤回策略的 VT 跳转仍需按完整原生函数核验，不能沿用参考缓存的固定偏移。
-        _, vt_base = scratch_resolver.owner(withdrawn_guards[0]['address'])
-        vt_address, vt_code = containing_function(cache, vt_base, withdrawn_guards[0]['address'])
-        if not vt_address <= withdrawn_guards[1]['address'] < vt_address + len(vt_code):
-            raise ValueError('撤回跳转的原生函数范围变化')
-        scratch_resolver.add(vt_address, vt_code, vt_code)
         header += 'namespace ScratchResolverData {\n' + scratch_resolver.header([(0, 0)]) + '}\n'
         header += f"inline constexpr UInt32 MaxPatchSize = 452;\ninline constexpr UInt32 PageCount = {len(pages)};\n}}\n"
         (WORK / "UserSurfaceSyncData.hpp").write_text(header)
@@ -218,7 +199,6 @@ def main():
                                                          "srd_shared_records": candidate_records,
                                                          "device_records": device_records,
                                                          "legacy_blend_records": legacy_records,
-                                                         "withdrawn_guards": withdrawn_guards,
                                                          "compute_scratch_records": scratch_records,
                                                          "device_compute_scratch_records": device_scratch_records,
                                                          "cache_base": cache.base}, indent=2) + "\n")

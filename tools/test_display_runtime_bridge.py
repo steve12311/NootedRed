@@ -26,9 +26,6 @@ static void setup(){
   for(unsigned i=0;i<arrsize(UserSurfaceSyncData::ComputeScratchPatches);i++){
    const auto& patch=devicePatches->scratch[i];put(cacheBase+patch.offset,patch.original,patch.size);
   }
-  for(const auto& guard:UserSurfaceSyncData::WithdrawnTransferGuards){
-   put(cacheBase+guard.offset,guard.original,guard.size);
-  }
  }
  put(methodAddress(),UserSubmitGuardData::MethodOriginal,UserSubmitGuardData::MethodPatchSize);
 }
@@ -98,10 +95,6 @@ def main():
     text = COMMON.replace('#include <VPF/CapabilityState.hpp>', '#include <VPF/DisplayRuntime.hpp>')
     text = text.replace('is_submap=0;};',
                         'is_submap=0;unsigned object_id=0;unsigned char share_mode=0;unsigned short shadow_depth=0;};')
-    text = text.replace('struct KernelPatcher{', '''namespace UserPatchCoordinator {
-inline UInt32 requestedDisplayGroups(){return VPF::requestedGroupsForDisplayFix(wantRender,hostMajor);}
-}
-struct KernelPatcher{''')
     text = text.replace('namespace UserSurfaceSync {void init(struct KernelPatcher&);}',
                         'struct KernelPatcher;namespace UserSurfaceSync {void init(KernelPatcher&);}')
     text = text.replace('BODY', body).replace('INIT', init).replace('MAIN', MAIN)

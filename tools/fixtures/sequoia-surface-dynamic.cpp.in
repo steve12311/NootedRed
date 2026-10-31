@@ -1,7 +1,30 @@
+static void preinstallSequoiaSubmit()
+{
+    using namespace UserSequoiaSurfaceData::Submit;
+    const auto method = imageAddresses[0] + 0x68000;
+    put(method, ResolverOriginal0, sizeof(ResolverOriginal0));
+    for (unsigned r = 0; r < 3; ++r) {
+        const auto& ref = ResolverOriginalRefs0[r];
+        rel(method, ref.offset, imageAddresses[ref.image] + ref.rva);
+    }
+    constexpr uint64_t guardAddress = 0x600000;
+    uint8_t          payload[sizeof(UserSubmitGuardData::Payload)];
+    memcpy(payload, UserSubmitGuardData::Payload, sizeof(payload));
+    const uint64_t continuation = method + UserSubmitGuardData::MethodPatchSize;
+    memcpy(payload + UserSubmitGuardData::PayloadJumpOffset, &continuation, sizeof(continuation));
+    blocks[guardAddress].resize(4096);
+    put(guardAddress, payload, sizeof(payload));
+    protections[guardAddress] = 5;
+    uint8_t entry[15] = {0xff, 0x25, 0, 0, 0, 0};
+    memcpy(entry + 6, &guardAddress, sizeof(guardAddress));
+    entry[14] = 0x90;
+    put(method, entry, sizeof(entry));
+}
 static void setup(unsigned id)
 {
     using namespace UserSequoiaSurfaceData;
     cache(ResolverImages, ResolverFunctions);
+    preinstallSequoiaSubmit();
     const auto constant = destination(ResolverFunctions[0].originalRefs[0], ResolverFunctions, 5);
     blocks[constant].resize(16);
     word32(constant, 0x40400000);
@@ -10,7 +33,7 @@ static void setup(unsigned id)
     NRed::device = id;
     sequoia = renderRequested = computeScratch = legacyBlend = srdShared = true;
     legacyProfile                                                        = nullptr;
-    submitGuard                                                          = false;
+    submitGuard                                                          = true;
     devicePatches                                                        = UserSurfaceSyncData::findDevice(id);
     assert(devicePatches);
     published = {};
@@ -35,7 +58,8 @@ int main()
         UserSurfaceSyncResolver::Plan plan;
         assert(UserSurfaceSyncResolver::resolveSequoia(reader, base, device.deviceID, plan));
         pages(plan.patches, 4);
-        const unsigned pageCount = protections.size();
+        // 预装提交守卫页不属于显示补丁页，排除后再计算保护失败序号。
+        const unsigned pageCount = protections.size() - 1;
         auto           initial   = blocks;
         call();
         rx();
@@ -111,7 +135,7 @@ int main()
         assert(blocks == initial && writes == 0 && protects == 0);
         ++cases;
     }
-    // SubmitGuard 也使用完整函数动态定位；已安装入口必须同时核验守卫载荷。
+    // SubmitGuard 使用完整函数动态定位；直接走生产守卫安装以核对载荷与回滚。
     const auto guardSetup = []
     {
         setup(0x1638);
@@ -122,25 +146,41 @@ int main()
         UserSurfaceSyncData::Patch entry{functionAddresses[0] - base, nullptr, nullptr, 15};
         pages(&entry, 1);
     };
+    const auto installGuard = [](uint64_t offset, bool& fresh)
+    {
+        SubmitGuardWorkspace workspace{};
+        VPF::DisplayRuntime<> runtime;
+        runtime.reset(reinterpret_cast<UInt64>(map(nullptr)), 24, 0x1638,
+                      VPF::displayGroupBit(VPF::DisplayGroup::MetalSubmitSafety));
+        // 守卫安装前由桥接提供 Metal 证据，安装入口再补充 SubmitResolver。
+        runtime.verify(0, VPF::ExternalMetalBridge);
+        return installSubmitGuard(map(nullptr), base, fresh, workspace, runtime, offset);
+    };
     guardSetup();
     uint64_t offset = 0;
     assert(UserSurfaceSyncResolver::resolveSequoiaSubmit(reader, base, offset));
     assert(offset + base == functionAddresses[0]);
-    call();
+    bool fresh = false;
+    assert(installGuard(offset, fresh) == KERN_SUCCESS && fresh);
     rx();
-    assert(writes == 2 && properties.at("NRedSubmitGuardApplied") == 1);
+    assert(writes == 2);
     auto before = writes;
-    call();
+    fresh       = true;
+    assert(installGuard(offset, fresh) == KERN_SUCCESS && !fresh);
     assert(writes == before);
     blocks.at(0x600000)[100] ^= 1;
-    call();
-    assert(writes == before && properties.contains("NRedSubmitGuardRejected"));
+    fresh = false;
+    assert(installGuard(offset, fresh) != KERN_SUCCESS && !fresh);
+    assert(writes == before);
     ++cases;
     for (unsigned failure = 1; failure <= 2; ++failure) {
         guardSetup();
         auto initial = blocks;
         failWrite    = failure;
-        call();
+        uint64_t failedOffset = 0;
+        assert(UserSurfaceSyncResolver::resolveSequoiaSubmit(reader, base, failedOffset));
+        bool failedFresh = false;
+        assert(installGuard(failedOffset, failedFresh) != KERN_SUCCESS);
         assert(blocks == initial);
         rx();
         ++cases;

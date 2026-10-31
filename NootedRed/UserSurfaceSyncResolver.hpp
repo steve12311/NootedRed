@@ -109,7 +109,7 @@ namespace UserSurfaceSyncResolver
             anchored ? &anchor : nullptr);
     }
 
-    // Scratch 子解析器：10 个映像、2 个完整函数、1 个补丁位置。
+    // Scratch 子解析器：4 个映像、1 个完整函数、1 个补丁位置。
     inline bool resolveScratch(Input& input, UInt64 base, const DevicePatchSet& device, Plan& plan,
                                VPF::FastResolution* fast)
     {
@@ -197,7 +197,7 @@ namespace UserSurfaceSyncResolver
     {
         auto& image = plan.image;
         memset(&image, 0, sizeof(image));
-        // Scratch 与撤回的 VT 策略按完整函数和实际相对引用核验。
+        // Scratch 按完整函数和实际相对引用核验。
         if (scratchMode && !resolveScratch(input, base, device, plan, fast)) { return false; }
         if (!imageForCache(input, base, image)) { return false; }
 

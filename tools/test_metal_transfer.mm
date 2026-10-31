@@ -210,13 +210,6 @@ int main(int argc, char** argv)
         uint8_t header[104];
         if (!readBytes(base, header, sizeof(header)) || memcmp(header, UserSurfaceSyncData::CacheMagic, 16)
             || memcmp(header + 88, UserSurfaceSyncData::CacheUUID, 16)) { fprintf(stderr, "缓存版本不匹配\n"); return 4; }
-        // 原始 kernel 选择必须保持；拒绝与撤回的 1x1 策略混用。
-        for (const auto& old : UserSurfaceSyncData::WithdrawnTransferGuards) {
-            uint8_t bytes[6];
-            if (!readBytes(base + old.offset, bytes, old.size) || memcmp(bytes, old.original, old.size)) {
-                fprintf(stderr, "检测到旧 1x1 策略，拒绝混用\n"); return 4;
-            }
-        }
         int state = patchState(base);
         printf("device=%s computeScratch=%d\n", device.name.UTF8String, state);
         if (state < 0) { return 4; }

@@ -22,24 +22,24 @@
 | `NootedRed/AMDGFX9DCNDisplay.cpp` | `ba9837256a05d4c2c12bdd986c6e061fb143404a59806fccec274f97d81db149` |
 | `NootedRed/KernelDisplayEvidence.cpp` | `cfb1861b6ecf5d05363910c7e5157b0c977e29c784c1d364fb35675474589cea` |
 | `NootedRed/KernelDisplayEvidence.hpp` | `ccc2b6c1e0f006073bfe58909f088dd74a9c1e21e689be0561f389ac19591895` |
-| `NootedRed/NRed.cpp` | `c7f8814f66bba6b9e74ca291fd50d2b1b24b7246ee6a2e4edddd405e368c0224` |
-| `NootedRed/UserCacheResolver.hpp` | `bf96aaffa72ede4462ca95a3b1dca57c47e79d25f8598ce84eb24ab5112643d0` |
+| `NootedRed/NRed.cpp` | `f8e4a3d8ab191ae58f0ca55516771d8ccda270ddf092e6519acc417e016b4802` |
+| `NootedRed/UserCacheResolver.hpp` | `5c05233b1c306c16aed7c390319044a6d1ed4f66e2b7025f4959acc727abfa54` |
 | `NootedRed/UserLegacyData.hpp` | `34d4ee4238ad37c300cc86773c2fae7d10005a283e98bfcf01b9dbceecab329c` |
-| `NootedRed/UserOpenGL.cpp` | `6c51c630aff84526fec2232609f3173c0575177e39acbdd261bd3df8b905aff5` |
+| `NootedRed/UserOpenGL.cpp` | `f756bf2b83757a27df358e16a59a6b286ac6010c5c03649442ef765e895ef446` |
 | `NootedRed/UserOpenGLData.hpp` | `052dbfa0e4c1576f2213dac592a795eff3038ec535289eeb1b0425cf10a4a67b` |
 | `NootedRed/UserOpenGLResolver.hpp` | `42acd20b12135ec57e4a1d30b9be6b21802d0785f709b7a5c9b2c55895ee3f3d` |
-| `NootedRed/UserPatchCoordinator.cpp` | `bceade48bdfaa078d325c2ec87008c3b5fe710d0e2e2363c07381890e72476af` |
-| `NootedRed/UserPatchCoordinator.hpp` | `c7296b2be88c511773a1117e5347b12b350fd0e25ce4073349c9d8d3902a7c47` |
+| `NootedRed/UserPatchCoordinator.cpp` | `9e66dff011181c36d84ebe161b0e19335adf56e561cdd9ce867a696d0d33f9d2` |
+| `NootedRed/UserPatchCoordinator.hpp` | `172c98dad7b33954f65fcf16bed9dabf75f11cdcbbf8b6b7bc42b9e45f8c4df5` |
 | `NootedRed/UserPatchMapGate.hpp` | `6d0b86ad16a7453f85f4e03a087eeb6e7ee6c557deaa51648a951e492f8144c0` |
 | `NootedRed/UserPatchMemory.hpp` | `aed903b82c278a2a5eeac726f9eb39cda2877f8d74d1574cabf291e42571335b` |
 | `NootedRed/UserSequoiaSurfaceData.hpp` | `ae57ebe6b10ec20b00d25d2e6687b1c7e1339fdeda9be1556aa8c7e5728371dd` |
-| `NootedRed/UserSharedCache.hpp` | `9b9dc85b3b6c829847b57f1a41b641182852c4d4536f6aa5ef3918ebb2a6966d` |
+| `NootedRed/UserSharedCache.hpp` | `b70f6bcf15a994ca010ef7c11bd667b0a2abed158c7672a00c6fb8964ec39aac` |
 | `NootedRed/UserSubmitGuardData.hpp` | `f23b65b31e472ffff19636960fe547dc8ad6dc32c1986ea48ed7f54030fc6077` |
 | `NootedRed/UserSurfaceConstructorData.hpp` | `8a8b5a05c9b06c11f29a565b3c9096c5bbc9fc940e00e3c0c9af9be2d175bfd2` |
-| `NootedRed/UserSurfaceSync.cpp` | `04e715c14b2ac22d985cfad1f6d04a440643cd196f552a6b4d7280443f1936ac` |
-| `NootedRed/UserSurfaceSyncData.hpp` | `a7a39e004aa0f0e8f787de913abeaab2c08ff60023ea7f61e34391b80cf179a3` |
-| `NootedRed/UserSurfaceSyncResolver.hpp` | `845ec4417ec13455f6b032df6755f0ed99399575461218106600c3cfd5e0594e` |
-| `NootedRed/UserVideoDecode.cpp` | `567213057f72a61afead4e21eb3ca26b32ccb4e0c0ffb9fa9f735864299f6e1d` |
+| `NootedRed/UserSurfaceSync.cpp` | `bd9cc8d4c430f88633e71b5abf1a9cc7d8ac99fec8c43b82290caf7306fa8f27` |
+| `NootedRed/UserSurfaceSyncData.hpp` | `fc0bd13e1fa0d9b85feb5c2dc19ccb7f7071c9789095ecf34b4fc8f6bbc3c562` |
+| `NootedRed/UserSurfaceSyncResolver.hpp` | `b0420ef49547c647901b10b9f9834e52467809e8d310016cbc08917a5c2ffcb3` |
+| `NootedRed/UserVideoDecode.cpp` | `7f886ddcd895dd3591e02e8f130e262d4ca03b47329922e5ac8ec7870ee8818b` |
 | `NootedRed/VPF/DisplayManifestData.hpp` | `7865d9fdf3eeb753cdaa029de18b125f4512c3681370cf8ebd8b1b24ab7c2761` |
 | `NootedRed/VPF/DisplayPlan.hpp` | `58af326be437dcf0fcf0b5eebc2b815a07ad440f2dcd6d8ac1c82d5e726a7006` |
 | `NootedRed/VPF/DisplayPlanAdapters.hpp` | `c811f717d97356c911a9bdb8c8921ac0a57ea4d27eb9e9a335d12b9bbe60288a` |
@@ -47,14 +47,14 @@
 | `NootedRed/VPF/GLManifestData.hpp` | `ade5ab25a92be138695a3933891be4767388c7ebd9ab161ed600cc60098a17c2` |
 | `NootedRed/VPF/MetalTransactionExecutor.hpp` | `db17db74348da5cf6603d2807fc11c7f9d88f307e4cd344b954cbc190e8936ca` |
 | `NootedRed/VPF/ValidatedPageBackend.hpp` | `7a8fbf89f88a4952a4fa6f710986d356320660d8054e0593567648de72e16bf3` |
-| `NootedRed/VPF/VerifiedPatchPlan.hpp` | `b45e79d2102f73843ab66f1b9aa37b95558a1d9a293b8605a04e49913c0b2954` |
+| `NootedRed/VPF/VerifiedPatchPlan.hpp` | `f21f84aff90a12f02c0af3157dafde7a9956f51af30d58a916a435bd62b5d7d4` |
 | `NootedRed/X5000.cpp` | `13967daf8ea58447fc1c3482e05ac91f81430861585bc4cc73f1f946eb07ebb5` |
 | `NootedRed/X6000FB.cpp` | `aefd17aaf24fcfdad36b93e4401707fbbed3414544b5478c99075354b33e41e3` |
 | `tools/build_cache_section_targets.py` | `e227011183e39724a714d4bec0066da1ec098f5d90a8f1271f757b5c8de46b7e` |
 | `tools/build_opengl_patch.py` | `0427baa3682aafab4f7cd1601ba9965347cbd0e3b09c977cce54af35caf0f306` |
 | `tools/build_sequoia_surface.py` | `e1b9fba0a88ff00413f4971de09eb887602973ffe47a2acabe1827b21d4b6721` |
 | `tools/build_submit_guard.py` | `036c9d42416e68cc0b90e73e825f354c56367c538f5e4810b8184f934892807c` |
-| `tools/build_surface_sync_patch.py` | `29fd166cbb88bd050abaaa755f68decd9e79f0cfd97175400b8c20690ebc84fb` |
+| `tools/build_surface_sync_patch.py` | `1fab3e2c432b6dbea10e797a3649b9668f6046282e286fad193631484a4e114f` |
 | `tools/dvpf/gl_page_adapter_probe.cpp` | `0130b24c24a97eb65b74d4210137abeffc5e1cabc8e863a4a19a51e37a0d5e8c` |
 | `tools/fixtures/legacy-compat.json` | `e0b46680b6206a13e532bb6181c715acd89244da01f02a8ec259bdf402c9c19f` |
 | `tools/fixtures/opengl-compat.json` | `ed16a90f351d717a454f1c82ef60f42140680e0e8a1054163cce07040c6fad62` |
@@ -81,6 +81,10 @@
 - `NRedComputeScratchWeatherPID`
 - `NRedDisplayFixEnabled`
 - `NRedDisplayFixVersion`
+- `NRedDisplayPlannerRequested`
+- `NRedDisplayPlannerRevision`
+- `NRedFVRCCacheReady`
+- `NRedFVRCEnabled`
 - `NRedImmediateSyncApplied`
 - `NRedImmediateSyncDisabled`
 - `NRedImmediateSyncDynamicApplied`
@@ -150,8 +154,10 @@
 - `NRedLegacyBlendWindowServerPID`
 - `NRedOpenGLBackends`
 - `NRedOpenGLDualQuadApplied`
+- `NRedOpenGLDualQuadGroupState`
 - `NRedOpenGLDynamicApplied`
 - `NRedOpenGLEnabled`
+- `NRedOpenGLHwInfoGroupState`
 - `NRedOpenGLPageLocal`
 - `NRedOpenGLRejected`
 - `NRedOpenGLRestoreFailed`

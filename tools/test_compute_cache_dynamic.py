@@ -1,4 +1,4 @@
-"""编译真实 Metal 桥接，验证六种核显的动态 Scratch 及撤回策略拒绝。"""
+"""编译真实 Metal 桥接，验证六种核显的动态 Scratch。"""
 from pathlib import Path
 from user_patch_memory_harness import with_memory_helpers
 import subprocess
@@ -27,10 +27,31 @@ def main():
     template = (ROOT / 'tools/fixtures/vcn-user-bridge.cpp.in').read_text()
     preamble = template[:template.index('static bool isWindowServer')]
     preamble = preamble.replace('#include "UserVideoDecodeData.hpp"\n#include "UserVideoDecodeResolver.hpp"',
-                               '#include <vector>\n#include "UserSurfaceSyncData.hpp"\n#include "UserSurfaceSyncResolver.hpp"')
+                               '#include <vector>\n#include <VPF/DisplayRuntime.hpp>\n'
+                               '#include "UserSurfaceSyncData.hpp"\n#include "UserSurfaceSyncResolver.hpp"')
+    # 提交守卫闸门由协调器请求组驱动；测试直接请求 Tahoe 的 Metal 组。
+    preamble += ('namespace UserPatchCoordinator { inline UInt32 requestedDisplayGroups()'
+                 '{return VPF::requestedGroupsForDisplayFix(true,25);} }\n')
     harness = preamble + r'''
 #include "user-cache-dynamic.hpp"
 #include <UserSubmitGuardData.hpp>
+// 同时写入 Scratch 与原生提交方法；后者用于满足提交守卫闸门。
+static constexpr UserCacheResolver::Function ScratchAndSubmitFunctions[] = {
+    UserSurfaceSyncData::ScratchResolverData::ResolverFunctions[0],
+    UserSurfaceConstructorData::Submit::ResolverFunctions[0],
+};
+static void preinstallSubmitGuard(){
+ const auto method=functionAddresses[1];
+ constexpr uint64_t guardAddress=0x600000;
+ uint8_t payload[sizeof(UserSubmitGuardData::Payload)];
+ memcpy(payload,UserSubmitGuardData::Payload,sizeof(payload));
+ const uint64_t continuation=method+UserSubmitGuardData::MethodPatchSize;
+ memcpy(payload+UserSubmitGuardData::PayloadJumpOffset,&continuation,sizeof(continuation));
+ blocks[guardAddress].resize(4096);put(guardAddress,payload,sizeof(payload));
+ protections[guardAddress]=5;
+ uint8_t entry[15]={0xff,0x25,0,0,0,0};memcpy(entry+6,&guardAddress,sizeof(guardAddress));entry[14]=0x90;
+ put(method,entry,sizeof(entry));
+}
 namespace Buffer {
 template<class T>T* create(size_t count){return new T[count];}
 template<class T>void deleter(T* pointer){delete[] pointer;}
@@ -53,8 +74,8 @@ static kern_return_t query(vm_map_t,uint64_t* a,uint64_t* size,unsigned*,int* p,
 static uint64_t initAddress,overrideAddress,constructorAddress,settingsAddress,dumpAddress;
 static void setup(unsigned id){
  using namespace UserSurfaceSyncData;
- cache(ScratchResolverData::ResolverImages,ScratchResolverData::ResolverFunctions,true);
- devicePatches=findDevice(id);assert(devicePatches);renderRequested=computeScratch=legacyBlend=srdShared=true;
+ cache(ScratchResolverData::ResolverImages,ScratchAndSubmitFunctions,true);preinstallSubmitGuard();
+ devicePatches=findDevice(id);assert(devicePatches);renderRequested=computeScratch=legacyBlend=srdShared=true;submitGuard=true;
  auto image=imageAddresses[0];initAddress=image+0x21f80;overrideAddress=image+0x23ff8;constructorAddress=image+0x28fe5;
  settingsAddress=image+0x26000;dumpAddress=image+0x27000;
  put(initAddress,Original0,sizeof(Original0));put(overrideAddress,Original1,sizeof(Original1));
@@ -68,11 +89,16 @@ static void setup(unsigned id){
 static void call(){SharedRegionCheckArgs args{0x1000};int value=0;assert(wrappedSharedRegionCheck(reinterpret_cast<void*>(217),&args,&value)==0&&value==123);}
 int main(){
  unsigned cases=0;
+ // 已撤回的 VT 完整函数不再是 Scratch 解析输入；正例只依赖 AMD Scratch。
+ assert(sizeof(UserSurfaceSyncData::ScratchResolverData::ResolverImages)/
+        sizeof(UserSurfaceSyncData::ScratchResolverData::ResolverImages[0])==4);
+ assert(sizeof(UserSurfaceSyncData::ScratchResolverData::ResolverFunctions)/
+        sizeof(UserSurfaceSyncData::ScratchResolverData::ResolverFunctions[0])==1);
  for(auto device:UserSurfaceSyncData::DevicePatches){
   setup(device.deviceID);UserSurfaceSyncResolver::Plan plan;
   assert(UserSurfaceSyncResolver::resolve(reader,base,device,true,true,plan,true));
   assert(plan.patches[3].offset+base==functionAddresses[0]);
-  pages(plan.patches,4);assert(protections.size()==8);auto initial=blocks;
+  pages(plan.patches,4);assert(protections.size()==9);auto initial=blocks;
   call();if(!properties.contains("NRedImmediateSyncDynamicApplied")){for(auto[k,v]:properties)fprintf(stderr,"%s=%u\n",k.c_str(),v);}assert(properties.contains("NRedImmediateSyncDynamicApplied")&&properties.at("NRedComputeScratchWeatherApplied")==1);assert(properties.at("NRedDisplayVPFPlanVerified")==1&&properties.at("NRedDisplayVPFPlanSites")==4);rx();assert(writes==4);
   for(unsigned i=0;i<4;i++){uint8_t b[UserSurfaceSyncData::MaxPatchSize];assert(reader(base+plan.patches[i].offset,b,plan.patches[i].size)==0);assert(memcmp(b,plan.patches[i].patched,plan.patches[i].size)==0);}
   auto before=writes;call();assert(writes==before&&properties.at("NRedImmediateSyncD07")==1);cases++;
@@ -84,29 +110,21 @@ int main(){
   }
   setup(device.deviceID);pages(plan.patches,4);initial=blocks;failedProtectCalls={9,10};call();assert(blocks==initial);rx();cases++;
  }
- for(unsigned kind=0;kind<9;kind++){
+ for(unsigned kind=0;kind<8;kind++){
   setup(0x15e7);using namespace UserSurfaceSyncData::ScratchResolverData;
   switch(kind){
    case 0:word32(functionAddresses[0]+100,0);break;
-   case 1:word32(functionAddresses[1]+100,0);break;
-   case 2:word64(base+0x7000000,0);break;
-   case 3:rel(functionAddresses[0],ResolverFunctions[0].originalRefs[0].offset,base+0x7100000);break;
-   case 4:word32(base+452,8193);break;
-   case 5:{std::vector<uint8_t>b(ResolverFunctions[0].size);assert(reader(functionAddresses[0],b.data(),b.size())==0);put(imageAddresses[0]+0x60000,b.data(),b.size());}break;
-   case 6:word32(constructorAddress+UserSurfaceSyncData::BlendGateInConstructor,0);break;
-   case 7:word32(base+0x3000,0);break;
-   case 8:failedRead=functionAddresses[0];break;
+   case 1:word64(base+0x7000000,0);break;
+   case 2:rel(functionAddresses[0],ResolverFunctions[0].originalRefs[0].offset,base+0x7100000);break;
+   case 3:word32(base+452,8193);break;
+   case 4:{std::vector<uint8_t>b(ResolverFunctions[0].size);assert(reader(functionAddresses[0],b.data(),b.size())==0);put(imageAddresses[0]+0x60000,b.data(),b.size());}break;
+   case 5:word32(constructorAddress+UserSurfaceSyncData::BlendGateInConstructor,0);break;
+   case 6:word32(base+0x3000,0);break;
+   case 7:failedRead=functionAddresses[0];break;
   }
   auto initial=blocks;call();assert(blocks==initial&&writes==0&&protects==0);cases++;
  }
- // 两处已撤回 VT 跳转，逐一破坏原生完整函数中的原始分支。
- for(auto guard:UserSurfaceSyncData::WithdrawnTransferGuards){
-  setup(0x15e7);const auto& fn=UserSurfaceSyncData::ScratchResolverData::ResolverFunctions[1];
-  auto address=functionAddresses[1]+UserSurfaceSyncData::CacheBase+guard.offset-
-    (0x7ff81524f000ULL+fn.rva);
-  uint8_t b=0x90;put(address,&b,1);auto initial=blocks;call();assert(blocks==initial&&writes==0&&protects==0);cases++;
- }
- printf("PASS %u compute dynamic bridge cases: six devices; relocated scratch/GOT/VT; eight-page rollback; withdrawn strategy guards\n",cases);
+ printf("PASS %u compute dynamic bridge cases: six devices; relocated scratch/GOT; eight-page rollback\n",cases);
 }
 '''
     if '--sequoia' in sys.argv:

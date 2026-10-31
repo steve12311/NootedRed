@@ -29,8 +29,9 @@ Tahoe 其他 UUID、Sequoia 所有 UUID 均通过当前进程中的 dyld header�
 核对目标映像与 RVA，保留同一绑定的不同引用位置，不能把所有引用改到第一个 GOT 槽。
 这支持相同实现的缓存重排，不能自动适配任意新函数实现、外部符号 RVA 或驱动 ABI。
 
-Tahoe ComputeScratch 同时核验已撤回 VT 跳转所在的完整原生函数，未知缓存不使用固定 VT 偏移。
-Sequoia 不含该撤回候选；它核验原生配置函数、完整 pipeline 构造函数和 456 字节 Scratch 函数，
+Tahoe ComputeScratch 核验原生配置函数、完整 pipeline 构造函数和 452 字节 Scratch 函数，
+未知缓存不使用固定 Scratch 偏移；Scratch 只按该函数自身的完整字节与相对引用判定兼容。
+Sequoia 核验原生配置函数、完整 pipeline 构造函数和 456 字节 Scratch 函数。
 SubmitGuard 独立匹配完整提交方法，核对相对引用；重复安装还核对整个已安装守卫及返回地址。
 生成器以 `LC_FUNCTION_STARTS` 确定该内部函数边界，使用 `LC_DATA_IN_CODE` 区分跳转表与指令。
 参考文件中的链式指针按 [Apple dyld 缓存格式](https://github.com/apple-oss-distributions/dyld/blob/main/include/mach-o/dyld_cache_format.h)
@@ -49,5 +50,5 @@ SubmitGuard 独立匹配完整提交方法，核对相对引用；重复安装�
 `NRedDisplayFixVersion=2`、`NRedImmediateSyncDisabled=1` 标识。
 
 离线回归包括六种 Scratch 设备、四种视频设备、重排映像／函数／GOT、跨页部分写入、
-权限失败、幂等与撤回策略拒绝，并提供 ASan/UBSan。只读参考缓存回归还核对动态计划
+权限失败与幂等，并提供 ASan/UBSan。只读参考缓存回归还核对动态计划
 与静态数据逐项一致。不同 Sequoia / Tahoe 缓存的实机启动、画面与持续视频播放仍需测试人员验收。

@@ -183,31 +183,3 @@ class ResolverData:
         if len(self.images) > 16 or len(self.functions) > 32:
             raise ValueError('映像或函数预算超限')
         return out
-
-
-def containing_function(cache, image, address):
-    # 内部函数采用 LC_FUNCTION_STARTS，而非剥离符号之间的大区间。
-    segments, _, _ = macho(cache.read, image)
-    link = next(s for s in segments if s[0] == '__LINKEDIT')
-    commands = cache.read(image + 32, struct.unpack_from('<I', cache.read(image, 32), 20)[0])
-    cursor, starts = 0, []
-    while cursor < len(commands):
-        kind, length = struct.unpack_from('<II', commands, cursor)
-        if kind == 0x26:
-            offset, size = struct.unpack_from('<II', commands, cursor + 8)
-            data = cache.read(link[1] + offset - link[3], size)
-            value, shift, current = 0, 0, image
-            for byte in data:
-                value |= (byte & 127) << shift
-                if byte & 128:
-                    shift += 7
-                    continue
-                if not value:
-                    break
-                current += value
-                starts.append(current)
-                value = shift = 0
-        cursor += length
-    start = max(a for a in starts if a <= address)
-    end = min(a for a in starts if a > start)
-    return start, cache.read(start, end - start)

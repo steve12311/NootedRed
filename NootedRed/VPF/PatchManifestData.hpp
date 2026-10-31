@@ -74,7 +74,7 @@ inline constexpr FeatureManifest Features[] = {
      {UserSequoiaSurfaceData::ResolverImages, 5, UserSequoiaSurfaceData::ResolverFunctions, 5, UserSequoiaSurfaceData::ResolverLocations, 4, Sites_DisplaySRD_Darwin24_164C.sites, 4},
      "UserSequoiaSurfaceData.hpp", "42EC2890BC40317EBB2745142BFF7F26"},
     {FeatureId::DisplayComputeScratch, OsDarwin24 | OsDarwin25, 0x0000, EvidenceKind::RelocationAwareFullFunction,
-     {UserSurfaceSyncData::ScratchResolverData::ResolverImages, 10, UserSurfaceSyncData::ScratchResolverData::ResolverFunctions, 2, UserSurfaceSyncData::ScratchResolverData::ResolverLocations, 1, nullptr, 0},
+     {UserSurfaceSyncData::ScratchResolverData::ResolverImages, 4, UserSurfaceSyncData::ScratchResolverData::ResolverFunctions, 1, UserSurfaceSyncData::ScratchResolverData::ResolverLocations, 1, nullptr, 0},
      "UserSurfaceSyncData.hpp", "3137475689B434E8A34F56C5D57216A1"},
     {FeatureId::DisplayPipelineConstructor, OsDarwin24 | OsDarwin25, 0x0000, EvidenceKind::RelocationAwareFullFunction,
      {UserSurfaceConstructorData::ResolverImages, 4, UserSurfaceConstructorData::ResolverFunctions, 1, UserSurfaceConstructorData::ResolverLocations, 1, Sites_DisplayPipelineConstructor_Darwin24_25.sites, 1},

@@ -42,6 +42,7 @@ def main():
 #include <UserSurfaceSyncResolver.hpp>
 #include <UserLegacyData.hpp>
 #include <coordinator-inactive.hpp>
+#include <VPF/DisplayRuntime.hpp>
 #include <VPF/ExecutableTrampolineResource.hpp>
 #include <VPF/MetalTransactionExecutor.hpp>
 #include <VPF/TransactionExecutor.hpp>
@@ -73,6 +74,10 @@ struct NRed {static NRed& singleton(){static NRed n;return n;}void setProp32(con
 struct Version{static unsigned majorValue,minorValue;};unsigned Version::majorValue=25;unsigned Version::minorValue=6;
 const PenguinWizardry::KernelVersion& currentKernelVersion(){static std::optional<PenguinWizardry::KernelVersion> current;return current.emplace(Version::majorValue,Version::minorValue);}
 static bool flag=true,candidateFlag=false,legacyFlag=false,transferFlag=false,scratchFlag=false;
+namespace UserPatchCoordinator {
+// 本测试直接请求 Metal 组，以便单独核对 UserSurfaceSync 的 Darwin/设备拒绝路径。
+inline UInt32 requestedDisplayGroups(){return flag?VPF::MetalDisplayGroups:0;}
+}
 static bool checkKernelArgument(const char* s){
  assert(strcmp(s,"-NRedDisplayFix")==0||strcmp(s,"-NRedNoFVRC")==0);
  return strcmp(s,"-NRedDisplayFix")==0&&flag;}
@@ -95,8 +100,10 @@ constexpr auto BaseN=arrsize(UserSurfaceSyncData::ComputeScratchPatches);
 constexpr auto MaxN=BaseN;
 static size_t N=2;
 static std::array<std::array<uint8_t,512>,MaxN> code;
-static bool withdrawnCode=false;
 static std::vector<size_t> writeOrder;
+static constexpr uint64_t guardAddress=0x600000;
+static std::array<uint8_t,UserSubmitGuardData::MethodPatchSize> methodEntry;
+static std::array<uint8_t,4096> guardPage;
 static kern_return_t vm_allocate(vm_map_t,vm_address_t* page,unsigned,int){*page=0;return KERN_FAILURE;}
 static kern_return_t vm_deallocate(vm_map_t,vm_address_t,unsigned){return KERN_SUCCESS;}
 static kern_return_t vm_protect(vm_map_t,uint64_t address,unsigned,int setMax,vm_prot_t flags){
@@ -125,10 +132,10 @@ static int reader(uint64_t address,void* p,size_t size){
  if(address==0x1000){memcpy(p,&base,8);return 0;}
  if(address==base){memset(p,0,size);memcpy(p,UserSurfaceSyncData::CacheMagic,16);memcpy(static_cast<uint8_t*>(p)+88,UserSurfaceSyncData::CacheUUID,16);
   if(invalidCache)static_cast<uint8_t*>(p)[88]^=1;return 0;}
+ if(address==base+UserSubmitGuardData::MethodOffset){assert(size==methodEntry.size());memcpy(p,methodEntry.data(),size);return 0;}
+ if(address==guardAddress){assert(size<=guardPage.size());memcpy(p,guardPage.data(),size);return 0;}
  for(size_t i=0;i<MaxN;i++){auto record=fixture(i);const auto start=base+record.offset;
   if(address>=start && address-start<record.size && size<=record.size-(address-start)){memcpy(p,code[i].data()+(address-start),size);return 0;}}
- for(auto& entry:UserSurfaceSyncData::WithdrawnTransferGuards){
-  if(address==base+entry.offset){assert(size==entry.size);memcpy(p,entry.original,size);if(withdrawnCode)static_cast<uint8_t*>(p)[0]^=1;return 0;}}
  return 1;
 }
 static int writer(const void* p,uint64_t address,size_t size){
@@ -143,8 +150,16 @@ static void reset(){
  assert(liveWorkspaces==0);failWorkspaceAllocation=false;
  protection.clear();maxProtection.clear();properties.clear();failProtect.clear();protectCalls=writeCalls=failWrite=originalResult=regionMode=0;
  writeOrder.clear();
- invalidCache=noMap=withdrawnCode=false;published={};seenStages=appliedCount=errorCount=windowServerCount=weatherCount=0;isWindowServer=isWeather=false;
+ invalidCache=noMap=false;published={};seenStages=appliedCount=errorCount=windowServerCount=weatherCount=0;isWindowServer=isWeather=false;
  for(size_t i=0;i<MaxN;i++){auto p=fixture(i);memcpy(code[i].data(),p.original,p.size);if(i<N){const auto page=(base+p.offset)&~uint64_t(4095);protection[page]=5;maxProtection[page]=5;}}
+ const auto method=base+UserSubmitGuardData::MethodOffset;
+ uint8_t payload[sizeof(UserSubmitGuardData::Payload)];memcpy(payload,UserSubmitGuardData::Payload,sizeof(payload));
+ const uint64_t continuation=method+UserSubmitGuardData::MethodPatchSize;
+ memcpy(payload+UserSubmitGuardData::PayloadJumpOffset,&continuation,sizeof(continuation));
+ guardPage.fill(0);memcpy(guardPage.data(),payload,sizeof(payload));
+ methodEntry.fill(0x90);methodEntry[0]=0xff;methodEntry[1]=0x25;memset(methodEntry.data()+2,0,4);
+ memcpy(methodEntry.data()+6,&guardAddress,sizeof(guardAddress));methodEntry[14]=0x90;
+ protection[guardAddress]=5;maxProtection[guardAddress]=5;
  originalCheck=reinterpret_cast<uint64_t>(original);getTaskMap=map;queryRegion=query;readUser=reader;writeUser=writer;
 }
 static void call(proc_t process=nullptr){SharedRegionCheckArgs args{0x1000};int value=0;assert(wrappedSharedRegionCheck(process,&args,&value)==originalResult && value==123);assert(liveWorkspaces==0);}
@@ -180,7 +195,7 @@ int main(int argc,char** argv){
   assert((UserSurfaceSyncData::findDevice(id)!=nullptr)==supported);
  }
  KernelPatcher missing;missing.missing=true;UserSurfaceSync::init(missing);assert(missing.routes==0 && properties.at("NRedImmediateSyncRejected")==1);
- submitGuard=false;
+ submitGuard=true;
 scratchFlag=argc>1&&strcmp(argv[1],"--scratch")==0;candidateFlag=argc>1&&strcmp(argv[1],"--immediate")!=0;transferFlag=argc>1&&strcmp(argv[1],"--transfer")==0;legacyFlag=transferFlag||scratchFlag||(argc>1&&strcmp(argv[1],"--legacy")==0);srdShared=candidateFlag;legacyBlend=legacyFlag;computeScratch=transferFlag||scratchFlag;N=computeScratch?BaseN:(legacyFlag?3:2);
  NRed::device=argc>2?unsigned(strtoul(argv[2],nullptr,0)):0x1638;devicePatches=UserSurfaceSyncData::findDevice(NRed::device);assert(devicePatches);
  reset();failWorkspaceAllocation=true;call();bytes(false);rx();assert(writeCalls==0 && protectCalls==0);assert(properties.at("NRedImmediateSyncLastError")==KERN_RESOURCE_SHORTAGE);
@@ -221,7 +236,6 @@ scratchFlag=argc>1&&strcmp(argv[1],"--scratch")==0;candidateFlag=argc>1&&strcmp(
  if(legacyFlag){assert(properties.at("NRedLegacyBlendWindowServerPID")==220 && properties.at("NRedLegacyBlendApplied")>0);}
  reset();isWindowServer=true;failWrite=1;call(reinterpret_cast<void*>(217));assert(!properties.contains("NRedImmediateSyncWindowServerPID"));
  if(computeScratch){
-  reset();withdrawnCode=true;call();assert(protectCalls==0 && writeCalls==0);
   reset();isWeather=true;call(reinterpret_cast<void*>(1062));assert(properties.at("NRedComputeScratchWeatherPID")==1062 && properties.at("NRedComputeScratchApplied")==1);
   reset();isWeather=true;failWrite=4;call(reinterpret_cast<void*>(1062));assert(!properties.contains("NRedComputeScratchWeatherPID"));bytes(false);rx();
  }

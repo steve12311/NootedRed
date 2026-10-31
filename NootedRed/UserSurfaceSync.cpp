@@ -493,18 +493,6 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
             }
         }
     }
-    // 旧候选的两处全局 VT 跳转已撤回；不把混合策略误报为新模式已生效。
-    if (computeScratch && !dynamic) {
-        for (const auto& withdrawn : WithdrawnTransferGuards) {
-            UInt8 bytes[6];
-            if (readUser(base + withdrawn.offset, bytes, withdrawn.size) != 0
-                || memcmp(bytes, withdrawn.original, withdrawn.size) != 0)
-            {
-                stage(Stage::CodeMismatch);
-                return result;
-            }
-        }
-    }
     auto& saved = workspace.value->saved;
     auto& pages = workspace.value->pages;
     const auto cache = dynamic ? input.cache : UserSharedCache::Range{base, UserSharedCache::UserLimit - base};

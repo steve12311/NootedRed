@@ -27,6 +27,7 @@ COMMON = r'''
 #include <VCNCapabilities.hpp>
 #include <VPF/CapabilityState.hpp>
 #include <VPF/DependencyPlanner.hpp>
+#include <VPF/DisplayRuntime.hpp>
 #include <VPF/PatchManifestData.hpp>
 #include <VPF/ExecutableTrampolineResource.hpp>
 #include <VPF/MetalTransactionExecutor.hpp>
@@ -68,6 +69,9 @@ struct NRed {unsigned device=0x1638;static NRed& singleton(){static NRed n;retur
 static unsigned hostMajor=23;
 const PenguinWizardry::KernelVersion& currentKernelVersion(){static std::optional<PenguinWizardry::KernelVersion> v;return v.emplace(hostMajor,6);}
 static bool wantRender=true,fairPlay=false;
+namespace UserPatchCoordinator {
+inline UInt32 requestedDisplayGroups(){return VPF::requestedGroupsForDisplayFix(wantRender,hostMajor);}
+}
 static bool checkKernelArgument(const char* s){
  return strcmp(s,"-NRedVideoFix")==0 || (wantRender && strcmp(s,"-NRedDisplayFix")==0);
 }
@@ -91,9 +95,12 @@ static unsigned protects=0,writes=0,allocations=0,deallocations=0;
 static bool failAllocate=false;
 static uint64_t failRead=0;
 static constexpr uint64_t allocatedPage=0x600000;
+static constexpr uint64_t guardAddress=0x500000;
+static std::array<uint8_t,4096> guardPage;
 static int reader(uint64_t a,void* p,size_t n){
  if(a==0x1000){memcpy(p,&cacheBase,n);return 0;}
  if(a==cacheBase&&n==cacheHeader.size()){memcpy(p,cacheHeader.data(),n);return 0;}
+ if(a==guardAddress){assert(n<=guardPage.size());memcpy(p,guardPage.data(),n);return 0;}
  auto i=memory.find(a&~uint64_t(4095));if(a==failRead||i==memory.end()||n>4096-(a&4095))return 1;
  memcpy(p,i->second.data()+(a&4095),n);return 0;
 }
@@ -132,6 +139,17 @@ static void reset(const UserLegacyCompat::Profile* profile){
  if(profile)for(unsigned i=0;i<profile->pageCount;i++){
   auto a=cacheBase+profile->pages[i].offset;memcpy(memory[a].data(),profile->pages[i].original,4096);protections[a]=maximums[a]=5;
  }
+ const auto method=cacheBase+(profile?UserLegacyData::submitOffset(currentKernelVersion().major()):
+                                         UserSubmitGuardData::MethodOffset);
+ const auto methodPage=method&~uint64_t(4095);
+ memory[methodPage]={};protections[methodPage]=maximums[methodPage]=5;
+ uint8_t payload[sizeof(UserSubmitGuardData::Payload)];memcpy(payload,UserSubmitGuardData::Payload,sizeof(payload));
+ const uint64_t continuation=method+UserSubmitGuardData::MethodPatchSize;
+ memcpy(payload+UserSubmitGuardData::PayloadJumpOffset,&continuation,sizeof(continuation));
+ guardPage.fill(0);memcpy(guardPage.data(),payload,sizeof(payload));
+ uint8_t entry[15]={0xff,0x25,0,0,0,0};memcpy(entry+6,&guardAddress,sizeof(guardAddress));entry[14]=0x90;
+ memcpy(memory[methodPage].data()+(method&4095),entry,sizeof(entry));
+ protections[guardAddress]=maximums[guardAddress]=5;
  originalCheck=reinterpret_cast<uint64_t>(original);getTaskMap=map;queryRegion=query;readUser=reader;writeUser=writer;
 }
 static void call(){SharedRegionCheckArgs a{0x1000};int v=0;assert(wrappedSharedRegionCheck(reinterpret_cast<void*>(217),&a,&v)==0&&v==123);}
@@ -176,20 +194,32 @@ GUARD = r'''
  for(unsigned major:{23U,25U}){
   hostMajor=major;wantRender=true;KernelPatcher kernel;UserSurfaceSync::init(kernel);
   assert(kernel.routes==1&&properties.at("NRedSubmitGuardEnabled")==1&&renderRequested);
-  renderRequested=false;
   const auto* profile=UserLegacyData::metal(major);
   const uint64_t method=cacheBase+(profile?UserLegacyData::submitOffset(major):UserSubmitGuardData::MethodOffset);
   const auto setup=[&]{reset(profile);auto a=method&~uint64_t(4095);memory[a]={};protections[a]=maximums[a]=5;
    memcpy(memory[a].data()+(method&4095),UserSubmitGuardData::MethodOriginal,UserSubmitGuardData::MethodPatchSize);};
   const auto entryOriginal=[&]{uint8_t b[15];assert(reader(method,b,15)==0);return memcmp(b,UserSubmitGuardData::MethodOriginal,15)==0;};
-  setup();call();assert(allocations==1&&deallocations==0&&!entryOriginal());rx();auto before=writes;call();assert(writes==before&&allocations==1);
-  memory.at(allocatedPage)[100]^=1;call();assert(writes==before&&properties.contains("NRedSubmitGuardRejected"));
-  setup();cacheHeader[88]^=1;call();assert(allocations==0&&writes==0);
-  setup();failAllocate=true;call();assert(allocations==0&&entryOriginal());rx();
-  for(unsigned failure:{1U,2U}){setup();failWrite={failure};call();assert(entryOriginal()&&allocations==deallocations);rx();}
-  for(unsigned failure:{1U,2U,3U,5U}){setup();failProtect={failure};call();assert(entryOriginal()&&allocations==deallocations);rx();}
-  setup();failProtect={4,5};call();assert(entryOriginal()&&allocations==deallocations);rx();
-  setup();failWrite={2,3,4};call();assert(allocations==1&&deallocations==0&&properties.at("NRedSubmitGuardRollbackFailed")==1);rx();
+  const auto installGuard=[&](uint64_t offset,bool& fresh){
+   SubmitGuardWorkspace workspace{};VPF::DisplayRuntime<> runtime;
+   runtime.reset(reinterpret_cast<UInt64>(map(nullptr)),major,NRed::singleton().getDeviceID(),
+                 VPF::displayGroupBit(VPF::DisplayGroup::MetalSubmitSafety));
+   runtime.verify(0,VPF::ExternalMetalBridge);
+   return installSubmitGuard(map(nullptr),cacheBase,fresh,workspace,runtime,offset);};
+  setup();bool fresh=false;assert(installGuard(method-cacheBase,fresh)==KERN_SUCCESS&&fresh);
+  rx();assert(allocations==1&&deallocations==0&&!entryOriginal());auto before=writes;
+  fresh=true;assert(installGuard(method-cacheBase,fresh)==KERN_SUCCESS&&!fresh);assert(writes==before&&allocations==1);
+  memory.at(allocatedPage)[100]^=1;fresh=false;assert(installGuard(method-cacheBase,fresh)!=KERN_SUCCESS&&!fresh);
+  assert(writes==before);
+  setup();failAllocate=true;fresh=false;assert(installGuard(method-cacheBase,fresh)!=KERN_SUCCESS);
+  assert(allocations==0&&entryOriginal());rx();
+  for(unsigned failure:{1U,2U}){setup();failWrite={failure};fresh=false;
+   assert(installGuard(method-cacheBase,fresh)!=KERN_SUCCESS);assert(entryOriginal()&&allocations==deallocations);rx();}
+  for(unsigned failure:{1U,2U,3U,5U}){setup();failProtect={failure};fresh=false;
+   assert(installGuard(method-cacheBase,fresh)!=KERN_SUCCESS);assert(entryOriginal()&&allocations==deallocations);rx();}
+  setup();failProtect={4,5};fresh=false;assert(installGuard(method-cacheBase,fresh)!=KERN_SUCCESS);
+  assert(entryOriginal()&&allocations==deallocations);rx();
+  setup();failWrite={2,3,4};fresh=false;assert(installGuard(method-cacheBase,fresh)!=KERN_SUCCESS);
+  assert(allocations==1&&deallocations==0&&properties.at("NRedSubmitGuardRollbackFailed")==1);rx();
  }
  hostMajor=24;KernelPatcher sequoiaKernel;UserSurfaceSync::init(sequoiaKernel);
  assert(sequoia&&computeScratch&&srdShared&&!legacyProfile&&sequoiaKernel.routes==1);
@@ -253,7 +283,7 @@ def main():
                                      if module == 'UserSurfaceSync' else '{0x15E7U,0x1636U,0x1638U,0x164CU}')
         main_code = main_code.replace('FAIRPLAY', '' if module == 'UserSurfaceSync' else FAIRPLAY)
         main_code = main_code.replace('GUARD', GUARD if module == 'UserSurfaceSync' else '')
-        main_code = main_code.replace('SUBMIT_OFF', 'submitGuard=false;' if module == 'UserSurfaceSync' else '')
+        main_code = main_code.replace('SUBMIT_OFF', 'submitGuard=true;' if module == 'UserSurfaceSync' else '')
         if module == 'UserVideoDecode':
             main_code = r'''
 int main(){
@@ -270,6 +300,9 @@ int main(){
 }
 '''
         text = COMMON.replace('BODY', body).replace('INIT', init).replace('MAIN', main_code)
+        text = text.replace('struct vm_region_submap_short_info_data_64_t {int protection=0,max_protection=0,is_submap=0;};',
+                            'struct vm_region_submap_short_info_data_64_t {int protection=0,max_protection=0,is_submap=0;'
+                            'unsigned object_id=0;unsigned char share_mode=0;unsigned short shadow_depth=0;};')
         text = text.replace('namespace UserSurfaceSync {void init(struct KernelPatcher&);}',
                             f'struct KernelPatcher;namespace {module} {{void init(KernelPatcher&);}}')
         path, exe = WORK / f'{module}.cpp', WORK / module
