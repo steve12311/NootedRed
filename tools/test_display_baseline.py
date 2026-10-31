@@ -33,7 +33,7 @@ class DisplayBaselineTests(unittest.TestCase):
         self.assertEqual(self.baseline['schemaVersion'], schema.SCHEMA_VERSION)
         self.assertEqual(self.baseline['baselineCommit'], freeze.BASELINE_COMMIT)
         self.assertEqual(self.baseline['designBaselineCommit'], freeze.DESIGN_COMMIT)
-        self.assertEqual(len(self.baseline['features']), 55)
+        self.assertEqual(len(self.baseline['features']), 54)
         self.assertEqual(sum(len(feature['sites']) + len(feature['sharedSites'])
                              for feature in self.baseline['features']), 70)
 

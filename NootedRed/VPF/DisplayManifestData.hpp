@@ -536,12 +536,6 @@ inline constexpr DisplayManifest Features[] = {
      false, false, "AMDRadeonX5000", "AMDGFX9DCNDisplay.cpp", nullptr,
      nullptr, 0, nullptr, 0,
      nullptr, 0, 0, 0},
-    {DisplayFeature::HDRResearch, DisplayDomain::GPUObservation, DisplayGroup::HDRResearch,
-     OsDarwin23 | OsDarwin24 | OsDarwin25, 0x0000, DisplayEvidence::DescriptiveOnly, FeatureId::Count,
-     0x0, 0x0, 0, 0,
-     false, false, "diagnostic", "docs/dvpf-architecture.md", nullptr,
-     nullptr, 0, nullptr, 0,
-     nullptr, 0, 0, 0},
 };
 inline constexpr UInt32 FeatureCount = sizeof(Features) / sizeof(Features[0]);
 static_assert(FeatureCount <= 64);

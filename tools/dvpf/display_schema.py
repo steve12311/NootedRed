@@ -33,7 +33,6 @@ FEATURES = (
     'KernelGFX9Capabilities',
     'KernelDCNScanout',
     'KernelFramebuffer',
-    'HDRResearch',
 )
 
 GROUPS = (
@@ -44,7 +43,6 @@ GROUPS = (
     'MetalSubmitSafety',
     'KernelGFX9',
     'KernelScanout',
-    'HDRResearch',
 )
 
 EVIDENCE = (
@@ -66,7 +64,6 @@ GROUP_MEMBERS = {
     'MetalSubmitSafety': ('MetalSubmitGuard', 'MetalSubmit'),
     'KernelGFX9': ('KernelGFX9Capabilities',),
     'KernelScanout': ('KernelDCNScanout', 'KernelFramebuffer'),
-    'HDRResearch': ('HDRResearch',),
 }
 
 FEATURE_ORDER = {name: index for index, name in enumerate(FEATURES)}

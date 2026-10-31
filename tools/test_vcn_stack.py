@@ -67,10 +67,10 @@ def measure(configuration,work):
              if name.split('::',1)[1].startswith('_ZZN3VPF8evaluate')
              and 'EEN8Resolver7resolveENS_9FeatureIdE' in name
              and name in edges.get(name,set())}
-    # GroupClosure::resolve 用 8 个显示组的访问状态截断递归，最多 8 层加一次环检测。
+    # GroupClosure::resolve 用 7 个显示组的访问状态截断递归，最多 7 层加一次环检测。
     manifest=(ROOT/'NootedRed/VPF/DisplayManifest.hpp').read_text()
-    assert 'constexpr UInt32 DisplayGroupCount = 8;' in manifest
-    bounded.update({name:9 for name in nodes
+    assert 'constexpr UInt32 DisplayGroupCount = 7;' in manifest
+    bounded.update({name:8 for name in nodes
                     if 'DisplayPlannerDetail12GroupClosure7resolve' in name
                     and name in edges.get(name,set())})
     memo={}

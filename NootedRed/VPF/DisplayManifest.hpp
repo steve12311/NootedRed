@@ -29,7 +29,6 @@ namespace VPF
         KernelGFX9Capabilities,
         KernelDCNScanout,
         KernelFramebuffer,
-        HDRResearch,
     };
 
     // 安装和回滚的组边界；SubmitGuard 不并入普通渲染核心组。
@@ -42,10 +41,9 @@ namespace VPF
         MetalSubmitSafety,
         KernelGFX9,
         KernelScanout,
-        HDRResearch,
     };
 
-    constexpr UInt32 DisplayGroupCount = 8;
+    constexpr UInt32 DisplayGroupCount = 7;
 
     constexpr UInt32 displayGroupBit(const DisplayGroup group) { return 1U << static_cast<UInt32>(group); }
 

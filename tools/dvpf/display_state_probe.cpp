@@ -32,22 +32,21 @@ static void expectReason(const DisplayGroupResult& result, const DisplayGroup gr
 
 static void testPlanner()
 {
-    constexpr UInt32 allGroups = allDisplayGroupBits & ~displayGroupBit(DisplayGroup::HDRResearch);
+    constexpr UInt32 allGroups = allDisplayGroupBits;
     check(requestedGroupsForDisplayFix(false, 25) == 0, "policy disabled");
     check((requestedGroupsForDisplayFix(true, 25) & allGroups) == allGroups, "policy darwin25");
     check((requestedGroupsForDisplayFix(true, 23) & displayGroupBit(DisplayGroup::MetalScratch)) == 0,
           "policy darwin23 scratch");
-    check((requestedGroupsForDisplayFix(true, 25) & displayGroupBit(DisplayGroup::HDRResearch)) == 0,
-          "policy no hdr");
+    check((requestedGroupsForDisplayFix(true, 25) & ~allDisplayGroupBits) == 0, "policy group bits");
     constexpr UInt32 displayExternal =
         ExternalOpenGLPageHook | ExternalMetalBridge | ExternalSubmitResolver | ExternalKernelDisplay;
 
-    const auto darwin25 =
-        planDisplay(input(OsDarwin25, 0x1638, allGroups | displayGroupBit(DisplayGroup::HDRResearch), displayExternal));
+    // 越界组位不对应任何组，必须被忽略，不能启用或报告为某个现有组。
+    const auto darwin25 = planDisplay(input(OsDarwin25, 0x1638, allGroups | ~allDisplayGroupBits, displayExternal));
     check(!darwin25.cycle, "darwin25 cycle");
-    check((darwin25.enabled & allGroups) == allGroups, "darwin25 enabled");
-    check((darwin25.rejected & displayGroupBit(DisplayGroup::HDRResearch)) != 0, "hdr rejected");
-    expectReason(darwin25, DisplayGroup::HDRResearch, DisplayRejectReason::ExperimentalDisabled, "hdr reason");
+    check(darwin25.enabled == allGroups && darwin25.rejected == 0, "darwin25 enabled");
+    const auto invalidOnly = planDisplay(input(OsDarwin25, 0x1638, ~allDisplayGroupBits, displayExternal));
+    check(invalidOnly.enabled == 0 && invalidOnly.rejected == 0 && invalidOnly.orderCount == 0, "invalid group bits");
     check(orderedBefore(darwin25, DisplayGroup::MetalRenderCore, DisplayGroup::MetalScratch), "render before scratch");
     check(orderedBefore(darwin25, DisplayGroup::MetalSubmitSafety, DisplayGroup::MetalRenderCore),
           "submit before render");
@@ -93,9 +92,26 @@ static void testPlanner()
     check(orderedBefore(scratchOnly, DisplayGroup::MetalRenderCore, DisplayGroup::MetalScratch),
           "scratch closure order");
 
-    const auto hdr = planDisplay(input(OsDarwin25, 0x1638, displayGroupBit(DisplayGroup::HDRResearch),
-                                       displayExternal | ExternalHDRResearch, allFeatureBits, true));
-    check((hdr.enabled & displayGroupBit(DisplayGroup::HDRResearch)) != 0, "hdr experimental enabled");
+    // 不可安装组默认拒绝；仅显式实验模式才进入规划。
+    constexpr DisplayGroupSpec experimental[] = {
+        {DisplayGroup::GLHwInfo, "A", featureBit(FeatureId::DisplayOpenGLHwInfo), 0, 0, false},
+    };
+    const auto locked = evaluateDisplayGroups(
+        input(OsDarwin25, 0x1638, displayGroupBit(DisplayGroup::GLHwInfo), displayExternal), experimental, 1);
+    check(locked.enabled == 0 && (locked.rejected & displayGroupBit(DisplayGroup::GLHwInfo)) != 0,
+          "experimental rejected");
+    expectReason(locked, DisplayGroup::GLHwInfo, DisplayRejectReason::ExperimentalDisabled, "experimental reason");
+    const auto unlocked = evaluateDisplayGroups(
+        input(OsDarwin25, 0x1638, displayGroupBit(DisplayGroup::GLHwInfo), displayExternal, allFeatureBits, true),
+        experimental, 1);
+    check((unlocked.enabled & displayGroupBit(DisplayGroup::GLHwInfo)) != 0, "experimental enabled");
+    // 组表长度超过组数或为空必须失败闭合。
+    check(evaluateDisplayGroups(input(OsDarwin25, 0x1638, allGroups, displayExternal), DefaultDisplayGroups,
+                                DisplayGroupCount + 1)
+              .cycle,
+          "group table overflow");
+    check(evaluateDisplayGroups(input(OsDarwin25, 0x1638, allGroups, displayExternal), nullptr, 0).cycle,
+          "group table empty");
 
     // 组级环必须失败闭合，不允许部分成功。
     constexpr DisplayGroupSpec cyclic[] = {
@@ -122,7 +138,7 @@ static void testPlanner()
     const auto                     conflicted = evaluateDisplayGroups(
         input(OsDarwin25, 0x1638, displayGroupBit(DisplayGroup::GLHwInfo) | displayGroupBit(DisplayGroup::GLDualQuad),
                                   displayExternal),
-        DefaultDisplayGroups, 8, conflict, 1);
+        DefaultDisplayGroups, DisplayGroupCount, conflict, 1);
     check((conflicted.enabled & displayGroupBit(DisplayGroup::GLHwInfo)) != 0, "conflict winner");
     check((conflicted.rejected & displayGroupBit(DisplayGroup::GLDualQuad)) != 0, "conflict loser");
     expectReason(conflicted, DisplayGroup::GLDualQuad, DisplayRejectReason::GroupConflict, "conflict reason");

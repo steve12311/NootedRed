@@ -32,13 +32,13 @@ class DisplayManifestTests(unittest.TestCase):
         self.assertEqual(generate.emit_cpp(display_data.build_all()), generate.emit_cpp(display_data.build_all()))
 
     def test_feature_and_site_counts(self):
-        self.assertEqual(len(self.features), 55)
+        self.assertEqual(len(self.features), 54)
         self.assertEqual(len([f for f in self.features if f['domain'] == 'OpenGLValidatedPage']), 36)
         self.assertEqual(len([f for f in self.features if f['domain'] == 'MetalSharedCache']), 15)
         self.assertEqual(len([f for f in self.features if f['feature'] == 'MetalSubmitGuard']), 3)
         self.assertEqual(len([f for f in self.features if f['domain'] in
                               ('KernelGraphics', 'KernelFramebuffer')]), 3)
-        self.assertEqual(len([f for f in self.features if f['feature'] == 'HDRResearch']), 1)
+        self.assertNotIn('HDRResearch', [f['feature'] for f in self.features])
         self.assertEqual(sum(len(f['sites']) + len(f['sharedSites']) for f in self.features), 70)
 
     def test_manifest_json_schema(self):
@@ -140,7 +140,7 @@ class DisplayManifestTests(unittest.TestCase):
                 'int main() {\n'
                 '    const auto* entry = VPF::DisplayManifestData::findOpenGL(25, 0x1638, 0);\n'
                 '    if (!entry || entry->pageSiteCount != 1) { return 1; }\n'
-                '    if (VPF::DisplayManifestData::FeatureCount != 55) { return 2; }\n'
+                '    if (VPF::DisplayManifestData::FeatureCount != 54) { return 2; }\n'
                 '    return 0;\n'
                 '}\n'
             )

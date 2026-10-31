@@ -40,7 +40,7 @@
 | `NootedRed/UserSurfaceSyncData.hpp` | `fc0bd13e1fa0d9b85feb5c2dc19ccb7f7071c9789095ecf34b4fc8f6bbc3c562` |
 | `NootedRed/UserSurfaceSyncResolver.hpp` | `b0420ef49547c647901b10b9f9834e52467809e8d310016cbc08917a5c2ffcb3` |
 | `NootedRed/UserVideoDecode.cpp` | `01754d2090bd56f60056ca6efc11116e0dc512746adf088aa7b531f24fa739c6` |
-| `NootedRed/VPF/DisplayManifestData.hpp` | `7865d9fdf3eeb753cdaa029de18b125f4512c3681370cf8ebd8b1b24ab7c2761` |
+| `NootedRed/VPF/DisplayManifestData.hpp` | `4c0c850e0fad1ec9402a7eabe9a1924964eb256c1f9feb671ba6f72fd802e196` |
 | `NootedRed/VPF/DisplayPlan.hpp` | `58af326be437dcf0fcf0b5eebc2b815a07ad440f2dcd6d8ac1c82d5e726a7006` |
 | `NootedRed/VPF/DisplayPlanAdapters.hpp` | `c811f717d97356c911a9bdb8c8921ac0a57ea4d27eb9e9a335d12b9bbe60288a` |
 | `NootedRed/VPF/ExecutableTrampolineResource.hpp` | `b2a6737b7a4833802ac7ab67fefed436390a9ed61f03773a6b854ce93e5ca0d5` |
@@ -256,7 +256,6 @@
 | `KernelGFX9Capabilities` | KernelGraphics | KernelGFX9 | 23/24/25 | 0x0000 | KernelSymbolAndABI | 0 | 0 | `X5000.cpp` |
 | `KernelDCNScanout` | KernelFramebuffer | KernelScanout | 23/24/25 | 0x0000 | KernelSymbolAndABI | 0 | 0 | `X6000FB.cpp` |
 | `KernelFramebuffer` | KernelFramebuffer | KernelScanout | 23/24/25 | 0x0000 | KernelSymbolAndABI | 0 | 0 | `AMDGFX9DCNDisplay.cpp` |
-| `HDRResearch` | GPUObservation | HDRResearch | 23/24/25 | 0x0000 | DescriptiveOnly | 0 | 0 | `docs/dvpf-architecture.md` |
 
 ## 6. 补丁站点与字节摘要
 

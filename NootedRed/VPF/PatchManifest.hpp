@@ -25,7 +25,6 @@ namespace VPF
         KernelGFX9Capabilities,
         KernelDCNScanout,
         KernelFramebuffer,
-        DisplayHDRResearch,
         Count,
     };
 

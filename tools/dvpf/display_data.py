@@ -402,16 +402,6 @@ def load_kernel() -> list[dict]:
             source='AMDGFX9DCNDisplay.cpp',
             **common,
         ),
-        _feature(
-            key='HDRResearch',
-            feature='HDRResearch',
-            domain='GPUObservation',
-            group='HDRResearch',
-            evidence='DescriptiveOnly',
-            imagePath='diagnostic',
-            source='docs/dvpf-architecture.md',
-            **common,
-        ),
     ]
 
 

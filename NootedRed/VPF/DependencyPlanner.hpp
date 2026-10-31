@@ -22,7 +22,6 @@ namespace VPF
     constexpr UInt32 ExternalSubmitResolver   = 1U << 3;
     constexpr UInt32 ExternalOpenGLPageHook   = 1U << 4;
     constexpr UInt32 ExternalKernelDisplay    = 1U << 5;
-    constexpr UInt32 ExternalHDRResearch      = 1U << 6;
 
     constexpr UInt32 deviceBit(const UInt32 deviceID)
     {
@@ -113,8 +112,6 @@ namespace VPF
         {FeatureId::KernelGFX9Capabilities, OsAll, DisplayDeviceMask, ExternalKernelDisplay, nullptr, 0, nullptr, 0},
         {FeatureId::KernelDCNScanout, OsAll, DisplayDeviceMask, ExternalKernelDisplay, nullptr, 0, nullptr, 0},
         {FeatureId::KernelFramebuffer, OsAll, DisplayDeviceMask, ExternalKernelDisplay, nullptr, 0, nullptr, 0},
-        // 仅允许隔离诊断显式请求；默认策略不会置位 ExternalHDRResearch。
-        {FeatureId::DisplayHDRResearch, OsAll, 0, ExternalHDRResearch, nullptr, 0, nullptr, 0},
     };
 
     inline constexpr ConflictRule DefaultConflicts[] = {

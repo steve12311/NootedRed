@@ -32,7 +32,6 @@ namespace VPF
         {DisplayGroup::KernelGFX9, "Kernel_GFX9", featureBit(FeatureId::KernelGFX9Capabilities), 0, 0, true},
         {DisplayGroup::KernelScanout, "Kernel_Scanout",
          featureBit(FeatureId::KernelDCNScanout) | featureBit(FeatureId::KernelFramebuffer), 0, 0, true},
-        {DisplayGroup::HDRResearch, "HDR_Research", featureBit(FeatureId::DisplayHDRResearch), 0, 0, false},
     };
 
     enum class DisplayRejectReason : UInt8
@@ -199,7 +198,7 @@ namespace VPF
         }
 
         UInt32 requested = input.requestedGroups & allDisplayGroupBits;
-        // HDR 只在显式诊断模式下进入闭包；默认组不得被无意启用。
+        // 不可安装组只在显式实验模式下进入闭包；默认组不得被无意启用。
         for (UInt32 i = 0; i < groupCount; ++i) {
             const auto bit = displayGroupBit(groups[i].group);
             if ((requested & bit) != 0 && !groups[i].installable && !input.allowExperimental) {
