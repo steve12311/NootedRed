@@ -5,7 +5,9 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-WORK = ROOT / ('build/dynamic-cache/sequoia-compute' if '--sequoia' in sys.argv else 'build/dynamic-cache/compute')
+SONOMA = '--sonoma' in sys.argv
+LEGACY = SONOMA or '--sequoia' in sys.argv
+WORK = ROOT / ('build/dynamic-cache/sonoma-compute' if SONOMA else 'build/dynamic-cache/sequoia-compute' if '--sequoia' in sys.argv else 'build/dynamic-cache/compute')
 
 
 def main():
@@ -25,7 +27,7 @@ def main():
     body = source.split('namespace {', 1)[1].split('} // namespace', 1)[0]
     body = with_memory_helpers(body)
     template = (ROOT / 'tools/fixtures/vcn-user-bridge.cpp.in').read_text()
-    preamble = template[:template.index('static bool isWindowServer')]
+    preamble = template
     preamble = preamble.replace('#include "UserVideoDecodeData.hpp"\n#include "UserVideoDecodeResolver.hpp"',
                                '#include <vector>\n#include <VPF/DisplayRuntime.hpp>\n'
                                '#include "UserSurfaceSyncData.hpp"\n#include "UserSurfaceSyncResolver.hpp"')
@@ -75,7 +77,7 @@ static uint64_t initAddress,overrideAddress,constructorAddress,settingsAddress,d
 static void setup(unsigned id){
  using namespace UserSurfaceSyncData;
  cache(ScratchResolverData::ResolverImages,ScratchAndSubmitFunctions,true);preinstallSubmitGuard();
- devicePatches=findDevice(id);assert(devicePatches);renderRequested=computeScratch=legacyBlend=srdShared=true;submitGuard=true;
+ NRed::device=id;devicePatches=findDevice(id);assert(devicePatches);renderRequested=computeScratch=legacyBlend=srdShared=true;submitGuard=true;
  auto image=imageAddresses[0];initAddress=image+0x21f80;overrideAddress=image+0x23ff8;constructorAddress=image+0x28fe5;
  settingsAddress=image+0x26000;dumpAddress=image+0x27000;
  put(initAddress,Original0,sizeof(Original0));put(overrideAddress,Original1,sizeof(Original1));
@@ -127,7 +129,7 @@ int main(){
  printf("PASS %u compute dynamic bridge cases: six devices; relocated scratch/GOT; eight-page rollback\n",cases);
 }
 '''
-    if '--sequoia' in sys.argv:
+    if LEGACY:
         start = harness.index('static uint64_t initAddress')
         harness = harness[:start] + (ROOT / 'tools/fixtures/sequoia-surface-dynamic.cpp.in').read_text()
         harness = harness.replace('static kern_return_t vm_allocate(vm_map_t,vm_address_t* page,unsigned,int){*page=0;return KERN_FAILURE;}',
@@ -135,7 +137,20 @@ int main(){
             '*page=0x600000;blocks[*page].resize(4096);protections[*page]=3;return 0;}')
         harness = harness.replace('static kern_return_t vm_deallocate(vm_map_t,vm_address_t,unsigned){return KERN_SUCCESS;}',
             'static kern_return_t vm_deallocate(vm_map_t,vm_address_t page,unsigned){blocks.erase(page);protections.erase(page);return 0;}')
-    uuid = 'UserSequoiaSurfaceData::CacheUUID' if '--sequoia' in sys.argv else 'UserSurfaceSyncData::CacheUUID'
+    if LEGACY:
+        harness = harness.replace('renderRequested = computeScratch', f'Version::majorValue={23 if SONOMA else 24}; renderRequested = computeScratch')
+    if SONOMA:
+        harness = harness.replace('UserSequoiaSurfaceData', 'UserSonomaSurfaceData')
+        harness = harness.replace('UserSurfaceSyncResolver::resolveSequoia(reader, base, device.deviceID, plan)',
+            '([&]{plan.input={reader,{}};plan.input.scanBuffer=plan.scan;return UserSurfaceSyncResolver::resolveMetal(plan.input,base,device.deviceID,plan,23);}())')
+    if SONOMA:
+        for value in ('offset', 'failedOffset'):
+            harness = harness.replace(f'UserSurfaceSyncResolver::resolveSequoiaSubmit(reader, base, {value})',
+                f'([&]{{UserSharedCache::Input in{{reader,{{}}}};return UserSurfaceSyncResolver::resolveSubmitForOS(in,base,{value},23);}}())')
+        harness = harness.replace(')), 24, 0x1638', ')), 23, 0x1638')
+    if SONOMA:
+        harness = harness.replace('Sequoia display cases', 'Sonoma display cases')
+    uuid = ('UserSonomaSurfaceData::CacheUUID' if SONOMA else 'UserSequoiaSurfaceData::CacheUUID') if LEGACY else 'UserSurfaceSyncData::CacheUUID'
     harness = harness.replace('BODY', 'static bool referenceUUID=false;\nBODY')
     harness = harness.replace('preinstallSubmitGuard();', f'preinstallSubmitGuard();if(referenceUUID)put(base+88,{uuid},16);')
     harness = harness.replace('int main(){', 'int main(int argc,char**){referenceUUID=argc>1;')

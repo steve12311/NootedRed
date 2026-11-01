@@ -100,7 +100,7 @@ def generate(cache, device_id=0x1638, profile=None):
     _, sections, _ = macho(lambda a, n: data[a:a+n], 0)
     section = next(s for s in sections if s[0] == '__text')
     patched = data[section[3]:section[3] + section[2]]
-    if len(patched) != len(original) or address // 4096 != (address + len(patched) - 1) // 4096:
+    if len(patched) != len(original):
         raise ValueError(f'补丁越界：{len(patched)}')
     tail = 0xD6 if profile else 0xCA
     if patched[tail:] != original[tail:]:

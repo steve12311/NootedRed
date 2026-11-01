@@ -23,9 +23,11 @@ OUTPUT = ROOT / 'NootedRed/VPF/PatchManifestData.hpp'
 HEADERS = (
     'UserVideoDecodeData.hpp',
     'UserSequoiaVideoData.hpp',
+    'UserSonomaVideoData.hpp',
     'UserSurfaceSyncData.hpp',
     'UserSurfaceConstructorData.hpp',
     'UserSequoiaSurfaceData.hpp',
+    'UserSonomaSurfaceData.hpp',
 )
 
 MAX_IMAGES = 16
@@ -48,6 +50,7 @@ class FeatureSpec:
     locations: str | None
     uuid_namespace: str | None = None
     uuid_name: str | None = None
+    patch_indices: tuple[int, ...] | None = None
 
 
 def _ident(value, context: str) -> str:
@@ -206,6 +209,7 @@ def _specs(headers: dict[str, cppdata.HeaderData]) -> list[FeatureSpec]:
 
     # 视频：每台设备使用自己的 PatchesXXXX 表；Resolver 证据共用。
     for header_name, namespace, os_name in (
+        ('UserSonomaVideoData.hpp', 'UserSonomaVideoData', 'Darwin23'),
         ('UserSequoiaVideoData.hpp', 'UserSequoiaVideoData', 'Darwin24'),
         ('UserVideoDecodeData.hpp', 'UserVideoDecodeData', 'Darwin25'),
     ):
@@ -228,25 +232,35 @@ def _specs(headers: dict[str, cppdata.HeaderData]) -> list[FeatureSpec]:
                 )
             )
 
-    # Sequoia 显示组：每台设备一套补丁表，共用完整函数证据。
-    header = headers['UserSequoiaSurfaceData.hpp']
-    for device, table in _device_patches(header, 'UserSequoiaSurfaceData'):
-        specs.append(
-            FeatureSpec(
-                key=f'DisplaySRD_Darwin24_{device:04X}',
-                feature='DisplaySRD',
-                os=('Darwin24',),
-                device_id=device,
-                evidence='RelocationAwareFullFunction',
-                header='UserSequoiaSurfaceData.hpp',
-                namespace='UserSequoiaSurfaceData',
-                patches=table,
-                functions='ResolverFunctions',
-                locations='ResolverLocations',
-                uuid_namespace='UserSequoiaSurfaceData',
-                uuid_name='CacheUUID',
+    for namespace, os_name in (('UserSonomaSurfaceData', 'Darwin23'), ('UserSequoiaSurfaceData', 'Darwin24')):
+        header = headers[namespace + '.hpp']
+        for device, table in _device_patches(header, namespace):
+            specs.append(
+                FeatureSpec(
+                    key=f'DisplaySRD_{os_name}_{device:04X}',
+                    feature='DisplaySRD',
+                    os=(os_name,),
+                    device_id=device,
+                    evidence='RelocationAwareFullFunction',
+                    header=namespace + '.hpp',
+                    namespace=namespace,
+                    patches=table,
+                    functions='ResolverFunctions',
+                    locations='ResolverLocations',
+                    uuid_namespace=namespace,
+                    uuid_name='CacheUUID',
+                )
             )
-        )
+
+    for feature in ('DisplayComputeScratch', 'DisplayPipelineConstructor', 'DisplaySubmit'):
+        specs.append(FeatureSpec(
+            key=feature + '_Darwin23', feature=feature, os=('Darwin23',), device_id=0,
+            evidence='RelocationAwareFullFunction', header='UserSonomaSurfaceData.hpp',
+            namespace='UserSonomaSurfaceData::Submit' if feature == 'DisplaySubmit' else 'UserSonomaSurfaceData',
+            patches='Patches1638' if feature == 'DisplayPipelineConstructor' else None,
+            functions='ResolverFunctions', locations='ResolverLocations',
+            uuid_namespace='UserSonomaSurfaceData', uuid_name='CacheUUID',
+            patch_indices=(2,) if feature == 'DisplayPipelineConstructor' else None))
 
     # Scratch 与 SubmitGuard 的提交入口只提供函数证据；实际补丁由设备表/运行时生成。
     specs.append(
@@ -334,6 +348,10 @@ def _feature(spec: FeatureSpec, headers: dict[str, cppdata.HeaderData]) -> dict:
         if spec.patches != 'Patches' and header.maybe_array(namespace, 'Patches') is not None:
             base = _parse_patches(header, namespace, 'Patches', None)
         patches = _parse_patches(header, namespace, spec.patches, base)
+
+    if spec.patch_indices is not None:
+        patches = [patches[index] for index in spec.patch_indices]
+        locations = [locations[index] for index in spec.patch_indices]
 
     for index, patch in enumerate(patches):
         location = locations[index] if index < len(locations) else None
@@ -478,7 +496,14 @@ def emit_cpp(features: list[dict]) -> str:
         )
         patches = f"{namespace}::{_patch_table(feature)}"
         name = f"Sites_{_sanitize(feature['key'])}"
-        if feature['locations']:
+        spec = _spec_map()[feature['key']][0]
+        if spec.patch_indices is not None:
+            selected = ', '.join(f'makeSites({patches}, {namespace}::ResolverLocations).sites[{i}]' for i in spec.patch_indices)
+            lines.append(f'inline constexpr SiteArray<PatchSite, {len(spec.patch_indices)}> {name} = {{{{{selected}}}}};')
+            locations = ', '.join(f'{namespace}::ResolverLocations[{i}]' for i in spec.patch_indices)
+            lines.append(f'inline constexpr UserCacheResolver::Location Locations_{name}[] = {{{locations}}};')
+            feature['_locations'] = f'Locations_{name}'
+        elif feature['locations']:
             lines.append(f'inline constexpr auto {name} = makeSites({patches}, {namespace}::ResolverLocations);')
         else:
             lines.append(f'inline constexpr auto {name} = makeSites({patches});')
@@ -494,7 +519,7 @@ def emit_cpp(features: list[dict]) -> str:
             f"{namespace}::ResolverFunctions, {len(feature['functions'])}" if feature['functions'] else 'nullptr, 0'
         )
         locations = (
-            f"{namespace}::ResolverLocations, {len(feature['locations'])}" if feature['locations'] else 'nullptr, 0'
+            f"{feature.get('_locations', namespace + '::ResolverLocations')}, {len(feature['locations'])}" if feature['locations'] else 'nullptr, 0'
         )
         sites = f"{feature['_sites']}, {len(feature['patches'])}" if feature['patches'] else 'nullptr, 0'
         uuid = _cstr(feature['cacheUUID']) if feature['cacheUUID'] else 'nullptr'

@@ -35,7 +35,7 @@ static void testPlanner()
     constexpr UInt32 allGroups = allDisplayGroupBits;
     check(requestedGroupsForDisplayFix(false, 25) == 0, "policy disabled");
     check((requestedGroupsForDisplayFix(true, 25) & allGroups) == allGroups, "policy darwin25");
-    check((requestedGroupsForDisplayFix(true, 23) & displayGroupBit(DisplayGroup::MetalScratch)) == 0,
+    check((requestedGroupsForDisplayFix(true, 23) & displayGroupBit(DisplayGroup::MetalScratch)) != 0,
           "policy darwin23 scratch");
     check((requestedGroupsForDisplayFix(true, 25) & ~allDisplayGroupBits) == 0, "policy group bits");
     constexpr UInt32 displayExternal =
@@ -59,13 +59,8 @@ static void testPlanner()
           "24 submit before render");
 
     const auto darwin23 = planDisplay(input(OsDarwin23, 0x1638, allGroups, displayExternal));
-    constexpr UInt32 legacyGroups =
-        displayGroupBit(DisplayGroup::GLHwInfo) | displayGroupBit(DisplayGroup::GLDualQuad)
-        | displayGroupBit(DisplayGroup::MetalRenderCore) | displayGroupBit(DisplayGroup::MetalSubmitSafety)
-        | displayGroupBit(DisplayGroup::KernelGFX9) | displayGroupBit(DisplayGroup::KernelScanout);
-    check((darwin23.enabled & legacyGroups) == legacyGroups, "darwin23 legacy groups");
-    expectReason(darwin23, DisplayGroup::MetalScratch, DisplayRejectReason::UnsupportedOperatingSystem,
-                 "darwin23 scratch");
+    check(darwin23.enabled == allGroups && darwin23.rejected == 0, "darwin23 all groups");
+    check(orderedBefore(darwin23, DisplayGroup::MetalRenderCore, DisplayGroup::MetalScratch), "23 render scratch");
     check(orderedBefore(darwin23, DisplayGroup::MetalSubmitSafety, DisplayGroup::MetalRenderCore),
           "23 submit before render");
 
@@ -245,8 +240,7 @@ static void testRuntime()
         check(runtime.verify(guard, ExternalSubmitResolver), "runtime complete evidence");
         check(runtime.begin() && runtime.ready(), "runtime eligible allows write");
         check(runtime.installed(guard), "runtime guard delivered");
-        check(runtime.state(DisplayGroup::MetalSubmitSafety)
-                  == (major == 23 ? DisplayGroupState::Installed : DisplayGroupState::Installing),
+        check(runtime.state(DisplayGroup::MetalSubmitSafety) == DisplayGroupState::Installing,
               "runtime partial safety group is not installed");
         check(runtime.state(DisplayGroup::MetalRenderCore) == DisplayGroupState::Installing,
               "runtime guard does not install render");
@@ -255,8 +249,7 @@ static void testRuntime()
               "runtime applicable render members installed");
         check(runtime.state(DisplayGroup::MetalSubmitSafety) == DisplayGroupState::Installed,
               "runtime safety installed");
-        check(runtime.state(DisplayGroup::MetalScratch)
-                  == (major == 23 ? DisplayGroupState::Disabled : DisplayGroupState::Installed),
+        check(runtime.state(DisplayGroup::MetalScratch) == DisplayGroupState::Installed,
               "runtime applicable scratch members installed");
     }
     runtime.reset(0x2000, 25, 0x1638, MetalDisplayGroups);

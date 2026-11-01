@@ -110,22 +110,27 @@ def identify_payload(native, device_id, va_family):
 def main():
     global WORK
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--sequoia-cache', type=Path)
+    cache_args = parser.add_mutually_exclusive_group()
+    cache_args.add_argument('--sequoia-cache', type=Path)
+    cache_args.add_argument('--sonoma-cache', type=Path)
     parser.add_argument('--refresh-encode', action='store_true', help='使用已核验的内嵌原生上下文刷新编码补丁')
+    parser.add_argument('--check', action='store_true', help='核对生成头，不写入生产数据')
     args = parser.parse_args()
     if args.refresh_encode:
         from refresh_video_encode_data import refresh
         WORK.mkdir(parents=True, exist_ok=True)
         refresh(compile_payload((ROOT / "tools/video_encode_params.s").read_text(), "encode-params"))
         return
-    profile = json.loads((ROOT / 'tools/fixtures/sequoia-compat.json').read_text()) if args.sequoia_cache else None
+    system = 'sonoma' if args.sonoma_cache else 'sequoia'
+    directory = args.sonoma_cache or args.sequoia_cache
+    profile = json.loads((ROOT / f'tools/fixtures/{system}-compat.json').read_text()) if directory else None
     if profile:
-        WORK = ROOT / 'build/sequoia/video'
+        WORK = ROOT / f'build/{system}/video'
     WORK.mkdir(parents=True, exist_ok=True)
     capabilities = devices()
     if (0x1638, 5) not in capabilities:
         raise ValueError("缺少既有 Cezanne 配置")
-    cache = CacheReader(args.sequoia_cache, profile['uuid']) if profile else CacheReader()
+    cache = CacheReader(directory, profile['uuid']) if profile else CacheReader()
     hashes = {n: v['sha256'] for n, v in profile['video'].items()} if profile else HASHES
     contexts = profile['encodeContexts'] if profile else ENCODE_CONTEXTS
     gva_address, gva_size, gva_hash, gva_offset, gva_branch = (
@@ -170,7 +175,7 @@ def main():
         # 非专用 AMD 机型的原生回退只选择 Intel；无 Intel 时跳到已有的 AMD 插入路径。
         # 此前已检查至少存在一个可用 GPU，因此该出口必有 AMD，其他选择与显式请求不变。
         add("AppleGVA_AMDOnlyFallback", gva_address + gva_offset,
-            gva_branch, bytes.fromhex("0f842a000000"))
+            gva_branch, bytes.fromhex("0f8470000000" if args.sonoma_cache else "0f842a000000"))
 
         name = "__ZN17VAAcceleratorInfo8identifyEjj"
         address, original = function(name)
@@ -195,13 +200,15 @@ def main():
             add(name, address + offset, code[offset:offset + 8], patched, fairplay_decode=True)
         name = "__ZN18VAAddrLibInterface4initEP11VAIOConnectP13sHardwareInfo"
         address, code = function(name)
-        assert code[0x8B:0x92] == bytes.fromhex("4181fc8d000000")
-        add(name, address + 0x8E, b"\x8d", b"\x8e", fairplay_decode=True)
+        compare = 0x8E if args.sonoma_cache else 0x8B
+        assert code[compare:compare + 7] == bytes.fromhex("4181fc8d000000")
+        add(name, address + compare + 3, b"\x8d", b"\x8e", fairplay_decode=True)
         name = "__ZN11VACPFactory8createCPEP11_VAHWConfigP11VAIOConnectPP4VACp"
         address, code = function(name)
-        assert code[0x3F:0x44] == bytes.fromhex("83f9047317")
+        compare = 0x36 if args.sonoma_cache else 0x3F
+        assert code[compare:compare + 5] == bytes.fromhex("83f9047317")
         # APU 识别复用 VCN2 枚举 5；内容保护工厂需承接到已有 PSP 实现。
-        add(name, address + 0x41, b"\x04", b"\x05", fairplay_decode=True)
+        add(name, address + compare + 2, b"\x04", b"\x05", fairplay_decode=True)
         name = "__ZN4Addr3Lib6CreateEPK18_ADDR_CREATE_INPUTP19_ADDR_CREATE_OUTPUT"
         address, code = function(name)
         assert code[0xB5:0xBA] == bytes.fromhex("3d8d000000")
@@ -225,8 +232,9 @@ def main():
         # 按实际纹理元素大小设置 P010 输入参数，同时保留原有 pitch 换算。
         name = "__ZN11Vcn2Encoder15setEncodeParamsEPvP15VAVendorTexture"
         address, code = function(name)
-        assert len(code) == 138
+        assert len(code) == (148 if args.sonoma_cache else 138)
         payload = compile_payload((ROOT / "tools/video_encode_params.s").read_text(), "encode-params")
+        payload += b'\x90' * (len(code) - len(payload))
         assert len(payload) == len(code)
         add(name, address, code, payload)
         code_section = next(s for s in sections if s[0] == "__text")
@@ -275,7 +283,7 @@ def main():
             indices[label] = resolver.add(address, code, bytes(patched))
         locations = [(indices[r["label"]], r["address"]-functions[r["label"]][0]) for r in records]
         header = "// 由 tools/build_video_decode_patch.py 生成，不手工编辑。\n#pragma once\n#include <IOKit/IOTypes.h>\n#include <UserCacheResolver.hpp>\n"
-        namespace = 'UserSequoiaVideoData' if profile else 'UserVideoDecodeData'
+        namespace = ('UserSonomaVideoData' if args.sonoma_cache else 'UserSequoiaVideoData') if profile else 'UserVideoDecodeData'
         header += f"namespace {namespace} {{\n" + array("CacheMagic", cache.magic) + array("CacheUUID", cache.uuid)
         header += f"inline constexpr UInt64 CacheBase = 0x{cache.base:X}ULL;\n"
         header += ("using Patch = UserVideoDecodeData::Patch;\n" if profile else
@@ -324,7 +332,12 @@ def main():
         header += f"inline constexpr UInt32 MaxPatchSize = 448;\ninline constexpr UInt32 PageCount = {pages};\n}}\n"
         if profile:
             header = header.replace('#include <UserCacheResolver.hpp>', '#include <UserVideoDecodeData.hpp>')
-        (ROOT / f"NootedRed/{namespace}.hpp").write_text(header)
+        output = ROOT / f'NootedRed/{namespace}.hpp'
+        if args.check:
+            if output.read_text() != header:
+                raise ValueError(f'生成数据过期：{output}')
+        else:
+            output.write_text(header)
         (WORK / "user-patches.json").write_text(json.dumps({"records": records, "pages": pages,
                                                            "device_records": device_records,
                                                            "cacheUUID": cache.uuid.hex()}, indent=2) + "\n")

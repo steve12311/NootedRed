@@ -1,6 +1,7 @@
 // 仅生成当前视频缓存的补丁计划；UUID 不作为动态路径的兼容依据。
 #pragma once
 #include <UserSequoiaVideoData.hpp>
+#include <UserSonomaVideoData.hpp>
 #include <UserVideoDecodeData.hpp>
 #include <VPF/FastResolution.hpp>
 namespace UserVideoDecodeResolver
@@ -11,12 +12,19 @@ namespace UserVideoDecodeResolver
     static constexpr auto FunctionCount = sizeof(ResolverFunctions) / sizeof(ResolverFunctions[0]);
     static constexpr auto SequoiaFunctionCount =
         sizeof(UserSequoiaVideoData::ResolverFunctions) / sizeof(UserSequoiaVideoData::ResolverFunctions[0]);
-    static constexpr auto MaxFunctionCount =
-        FunctionCount > SequoiaFunctionCount ? FunctionCount : SequoiaFunctionCount;
+    static constexpr auto SonomaFunctionCount =
+        sizeof(UserSonomaVideoData::ResolverFunctions) / sizeof(UserSonomaVideoData::ResolverFunctions[0]);
+    static constexpr auto LegacyFunctionCount =
+        SonomaFunctionCount > SequoiaFunctionCount ? SonomaFunctionCount : SequoiaFunctionCount;
+    static constexpr auto MaxFunctionCount = FunctionCount > LegacyFunctionCount ? FunctionCount : LegacyFunctionCount;
+    static_assert(UserSonomaVideoData::MaxPatchSize <= MaxPatchSize);
     static constexpr auto PatchCount = sizeof(Patches) / sizeof(Patches[0]);
     static_assert(ImageCount
                   == sizeof(UserSequoiaVideoData::ResolverImages) / sizeof(UserSequoiaVideoData::ResolverImages[0]));
     static_assert(PatchCount == sizeof(UserSequoiaVideoData::Patches) / sizeof(UserSequoiaVideoData::Patches[0]));
+    static_assert(ImageCount
+                  == sizeof(UserSonomaVideoData::ResolverImages) / sizeof(UserSonomaVideoData::ResolverImages[0]));
+    static_assert(PatchCount == sizeof(UserSonomaVideoData::Patches) / sizeof(UserSonomaVideoData::Patches[0]));
     struct Plan
     {
         UserVideoDecodeData::Patch       patches[PatchCount]{};
@@ -69,21 +77,27 @@ namespace UserVideoDecodeResolver
     }
 
     inline bool resolve(UserSharedCache::Input& input, UInt64 base, const UserVideoDecodeData::Patch* patches,
-                        Plan& plan, bool sequoia = false, VPF::FastResolution* fast = nullptr)
+                        Plan& plan, UInt32 major = 25, VPF::FastResolution* fast = nullptr)
     {
         if (!patches) { return false; }
-        return sequoia ? resolveSet(input, base, patches, plan, UserSequoiaVideoData::ResolverImages,
-                                    UserSequoiaVideoData::ResolverFunctions, UserSequoiaVideoData::ResolverLocations,
-                                    false, fast) :
-                         resolveSet(input, base, patches, plan, ResolverImages, ResolverFunctions, ResolverLocations,
-                                    true, fast);
+        if (major == 23) {
+            return resolveSet(input, base, patches, plan, UserSonomaVideoData::ResolverImages,
+                              UserSonomaVideoData::ResolverFunctions, UserSonomaVideoData::ResolverLocations, false,
+                              fast);
+        }
+        if (major != 24 && major != 25) { return false; }
+        return major == 24 ? resolveSet(input, base, patches, plan, UserSequoiaVideoData::ResolverImages,
+                                        UserSequoiaVideoData::ResolverFunctions,
+                                        UserSequoiaVideoData::ResolverLocations, false, fast) :
+                             resolveSet(input, base, patches, plan, ResolverImages, ResolverFunctions,
+                                        ResolverLocations, true, fast);
     }
 
     inline bool resolve(UserSharedCache::Reader reader, UInt64 base, const UserVideoDecodeData::Patch* patches,
-                        Plan& plan, bool sequoia = false, VPF::FastResolution* fast = nullptr)
+                        Plan& plan, UInt32 major = 25, VPF::FastResolution* fast = nullptr)
     {
         UserSharedCache::Input input{reader, {}};
-        return resolve(input, base, patches, plan, sequoia, fast);
+        return resolve(input, base, patches, plan, major, fast);
     }
 
 }    // namespace UserVideoDecodeResolver

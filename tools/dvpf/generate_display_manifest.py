@@ -60,8 +60,6 @@ def _site_array(feature: dict) -> str:
 def _shared_sites(feature: dict) -> tuple[str, int]:
     if not feature['sharedSites']:
         return 'nullptr', 0
-    if feature.get('cppSharedSites'):
-        return feature['cppSharedSites'], len(feature['sharedSites'])
     name = f"VPF::ManifestData::Sites_{_sanitize(feature['key'])}.sites"
     return name, len(feature['sharedSites'])
 
@@ -82,7 +80,6 @@ def emit_cpp(features: list[dict]) -> str:
         '#include <VPF/PatchManifestData.hpp>',
         '#include <UserOpenGLData.hpp>',
         '#include <UserSubmitGuardData.hpp>',
-        '#include <UserLegacyData.hpp>',
         '',
         'namespace VPF',
         '{',
@@ -98,14 +95,6 @@ def emit_cpp(features: list[dict]) -> str:
         lines.append('')
 
     for feature in features:
-        if feature.get('cppSharedSites'):
-            site = feature['sharedSites'][0]
-            lines += [
-                f'inline constexpr PatchSite {feature["cppSharedSites"]}[] = {{',
-                f'    {{NoFunction, 0, {site["size"]}, UserLegacyData::OS23Gate, UserLegacyData::OS23GatePatched}},',
-                '};',
-                '',
-            ]
         text = _site_array(feature)
         if text != 'nullptr':
             lines.append(text)

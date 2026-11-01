@@ -42,4 +42,38 @@ namespace MetalFixture
         }
     }
 
+    template<size_t Images, size_t Functions>
+    static void setupProfile(unsigned device, unsigned major,
+                             const UserCacheResolver::ImageReference (&images)[Images],
+                             const UserCacheResolver::Function (&functions)[Functions])
+    {
+        cache(images, functions);
+        const auto constant = destination(functions[0].originalRefs[0], functions, Functions);
+        blocks[constant].resize(16);
+        word32(constant, 0x40400000);
+        put(destination(functions[0].originalRefs[2], functions, Functions), UserSurfaceSyncData::NativeDump,
+            sizeof(UserSurfaceSyncData::NativeDump));
+        plan = {};
+        plan.input = {reader, {}};
+        plan.input.scanBuffer = plan.scan;
+        assert(UserSurfaceSyncResolver::resolveMetal(plan.input, base, device, plan, major));
+    }
+
+    static void setupOS(unsigned device, unsigned major)
+    {
+        if (major == 25) { setup(device, true, true, true); return; }
+        static constexpr UserCacheResolver::Function sonoma[] = {
+            UserSonomaSurfaceData::ResolverFunctions[0], UserSonomaSurfaceData::ResolverFunctions[1],
+            UserSonomaSurfaceData::ResolverFunctions[2], UserSonomaSurfaceData::ResolverFunctions[3],
+            UserSonomaSurfaceData::ResolverFunctions[4], UserSonomaSurfaceData::Submit::ResolverFunctions[0],
+        };
+        static constexpr UserCacheResolver::Function sequoia[] = {
+            UserSequoiaSurfaceData::ResolverFunctions[0], UserSequoiaSurfaceData::ResolverFunctions[1],
+            UserSequoiaSurfaceData::ResolverFunctions[2], UserSequoiaSurfaceData::ResolverFunctions[3],
+            UserSequoiaSurfaceData::ResolverFunctions[4], UserSequoiaSurfaceData::Submit::ResolverFunctions[0],
+        };
+        if (major == 23) { setupProfile(device, major, UserSonomaSurfaceData::ResolverImages, sonoma); }
+        else { assert(major == 24); setupProfile(device, major, UserSequoiaSurfaceData::ResolverImages, sequoia); }
+    }
+
 }    // namespace MetalFixture

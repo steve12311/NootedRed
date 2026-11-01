@@ -26,17 +26,21 @@ def function(code):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--sequoia-cache', type=Path)
+    cache_args = parser.add_mutually_exclusive_group()
+    cache_args.add_argument('--sequoia-cache', type=Path)
+    cache_args.add_argument('--sonoma-cache', type=Path)
     args = parser.parse_args()
-    data = json.loads((ROOT / ('build/sequoia/surface/patch-data.json' if args.sequoia_cache else
+    directory = args.sonoma_cache or args.sequoia_cache
+    system = 'sonoma' if args.sonoma_cache else 'sequoia'
+    data = json.loads((ROOT / (f'build/{system}/surface/patch-data.json' if directory else
                               'build/user-surface-sync/patch-data.json')).read_text())
-    variants = data['device_records'] if args.sequoia_cache else data['device_compute_scratch_records']
+    variants = data['device_records'] if directory else data['device_compute_scratch_records']
     devices = supported_devices()
     assert [entry['device_id'] for entry in variants] == devices
-    if not args.sequoia_cache:
+    if not directory:
         assert all(entry['records'][:3] == data['legacy_blend_records'] for entry in variants)
-    profile = json.loads((ROOT / 'tools/fixtures/sequoia-compat.json').read_text()) if args.sequoia_cache else None
-    cache = CacheReader(args.sequoia_cache, profile['uuid']) if profile else CacheReader()
+    profile = json.loads((ROOT / f'tools/fixtures/{system}-compat.json').read_text()) if directory else None
+    cache = CacheReader(directory, profile['uuid']) if profile else CacheReader()
     try:
         cases = 0
         for entry in variants:

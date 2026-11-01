@@ -33,7 +33,7 @@ TRACKED = (
     'NootedRed/UserSequoiaSurfaceData.hpp',
     'NootedRed/UserSurfaceConstructorData.hpp',
     'NootedRed/UserSubmitGuardData.hpp',
-    'NootedRed/UserLegacyData.hpp',
+    'NootedRed/UserSonomaSurfaceData.hpp',
     'NootedRed/UserSharedCache.hpp',
     'NootedRed/UserCacheResolver.hpp',
     'NootedRed/UserPatchMemory.hpp',

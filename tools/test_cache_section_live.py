@@ -100,7 +100,7 @@ int main(){
 #if OPTIMIZED
   uint8_t scan[UserSharedCache::Input::ScanSize];input.scanBuffer=scan;
 #endif
-  assert(UserVideoDecodeResolver::resolve(input,base,device.patches,plan,MAJOR==24));
+  assert(UserVideoDecodeResolver::resolve(input,base,device.patches,plan,MAJOR));
   originals(plan,sizeof(plan.patches)/sizeof(plan.patches[0]));
   printf("PASS real video device=%x reads=%u bytes=%u\n",device.deviceID,plan.reads,input.bytes);
   printf("PERF video device=%x calls=%u bytes=%llu cpu_ms=%.3f\n",device.deviceID,calls,bytesRead,1000.0*(clock()-start)/CLOCKS_PER_SEC);

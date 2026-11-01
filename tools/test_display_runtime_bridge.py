@@ -4,11 +4,11 @@ import argparse
 import re
 import subprocess
 
-from test_legacy_bridges import COMMON
 from user_patch_memory_harness import with_memory_helpers
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / 'build/display-runtime-bridge'
+COMMON = (ROOT / 'tools/fixtures/display-hook.cpp.in').read_text()
 
 MAIN = r'''
 static void put(uint64_t address,const uint8_t* bytes,unsigned size){
@@ -18,12 +18,12 @@ static void put(uint64_t address,const uint8_t* bytes,unsigned size){
  }
 }
 static uint64_t methodAddress(){
- return hostMajor==23?cacheBase+UserLegacyData::submitOffset(23):MetalFixture::functionAddresses[1];
+ return MetalFixture::functionAddresses.back();
 }
 static void setup(){
- reset(legacyProfile);
- if(!legacyProfile){
-  MetalFixture::setup(NRed::singleton().device,true,true,true);
+ reset();
+ {
+  MetalFixture::setupOS(NRed::singleton().device,hostMajor);
   memory.clear();protections.clear();maximums.clear();
   for(const auto& [address,bytes]:MetalFixture::blocks){
    for(size_t i=0;i<bytes.size();i++)memory[(address+i)&~uint64_t(4095)][(address+i)&4095]=bytes[i];
@@ -34,7 +34,6 @@ static void setup(){
  put(methodAddress(),UserSubmitGuardData::MethodOriginal,UserSubmitGuardData::MethodPatchSize);
 }
 static void renderBytes(bool patched){
- if(legacyProfile){check(legacyProfile,patched);return;}
  for(unsigned i=0;i<arrsize(UserSurfaceSyncData::ComputeScratchPatches);i++){
   const auto& patch=MetalFixture::plan.patches[i];uint8_t bytes[512];
   assert(reader(cacheBase+patch.offset,bytes,patch.size)==0);
@@ -43,7 +42,24 @@ static void renderBytes(bool patched){
 }
 int main(){
  using VPF::DisplayGroupState;
- for(unsigned major:{23U,25U})for(unsigned device:{0x15D8U,0x15DDU,0x15E7U,0x1636U,0x1638U,0x164CU}){
+ for(unsigned major:{23U,24U,25U}){
+  hostMajor=major;NRed::singleton().device=0x1638;properties.clear();wantRender=false;
+  KernelPatcher disabled;UserSurfaceSync::init(disabled);assert(disabled.routes==0);
+  assert(properties.at("NRedSubmitGuardDisabled")==1);
+  wantRender=true;NRed::singleton().device=0x6860;properties.clear();
+  KernelPatcher unsupported;UserSurfaceSync::init(unsupported);assert(unsupported.routes==0);
+  assert(properties.at("NRedImmediateSyncRejected")==3);
+  NRed::singleton().device=0x1638;properties.clear();
+  KernelPatcher missing;missing.symbols=false;UserSurfaceSync::init(missing);
+  assert(missing.routes==0&&properties.at("NRedImmediateSyncRejected")==1);
+  properties.clear();KernelPatcher routing;routing.routesOK=false;UserSurfaceSync::init(routing);
+  assert(routing.routes==1&&properties.at("NRedImmediateSyncRejected")==2);
+ }
+ for(unsigned major:{22U,26U}){
+  hostMajor=major;properties.clear();KernelPatcher unsupported;UserSurfaceSync::init(unsupported);
+  assert(unsupported.routes==0&&!properties.contains("NRedDisplayFixEnabled"));
+ }
+ for(unsigned major:{23U,24U,25U})for(unsigned device:{0x15D8U,0x15DDU,0x15E7U,0x1636U,0x1638U,0x164CU}){
   hostMajor=major;NRed::singleton().device=device;wantRender=true;
   KernelPatcher kernel;UserSurfaceSync::init(kernel);assert(kernel.routes==1);
   setup();call();renderBytes(true);rx();
@@ -51,7 +67,7 @@ int main(){
   assert(properties.at("NRedDisplayRenderGroupState")==unsigned(DisplayGroupState::Installed));
   assert(properties.at("NRedDisplaySubmitGroupState")==unsigned(DisplayGroupState::Installed));
   assert(properties.at("NRedDisplayScratchGroupState")
-         ==unsigned(major==23?DisplayGroupState::Disabled:DisplayGroupState::Installed));
+         ==unsigned(DisplayGroupState::Installed));
   auto before=writes;call();assert(writes==before&&allocations==1);renderBytes(true);rx();
 
   // 守卫分配/入口失败时不能继续写渲染计划。
@@ -71,11 +87,11 @@ int main(){
   call();renderBytes(false);rx();assert(writes==0&&allocations==0);
   assert(properties.at("NRedDisplayPlannerRejected")!=0);
 
-  setup();const auto patch=legacyProfile?legacyProfile->patches[0].offset:MetalFixture::plan.patches[0].offset;
+  setup();const auto patch=MetalFixture::plan.patches[0].offset;
   memory.at((cacheBase+patch)&~uint64_t(4095))[(cacheBase+patch)&4095]^=1;
   call();assert(writes==0&&allocations==0&&protects==0);
  }
- puts("PASS actual Metal Display Planner: 12 OS/device profiles, guard-before-render, rejection, rollback, group state and idempotency");
+ puts("PASS actual Metal Display Planner: 18 OS/device profiles, guard-before-render, rejection, rollback, group state and idempotency");
 }
 '''
 

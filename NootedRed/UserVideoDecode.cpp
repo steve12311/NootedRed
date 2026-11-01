@@ -152,7 +152,7 @@ namespace
         }
     };
     VideoLedger                       videoLedger;
-    bool                              sequoia{false};
+    UInt32                            darwinMajor{0};
     const UserVideoDecodeData::Patch* devicePatches{nullptr};
     constexpr auto                    PatchCount   = arrsize(UserVideoDecodeData::Patches);
     constexpr UInt32                  Capacity     = PatchCount;
@@ -163,7 +163,9 @@ namespace
 
     UInt32 fairPlayMask()
     {
-        return sequoia ? UserSequoiaVideoData::FairPlayDecodeMask : UserVideoDecodeData::FairPlayDecodeMask;
+        return darwinMajor == 23 ? UserSonomaVideoData::FairPlayDecodeMask :
+               darwinMajor == 24 ? UserSequoiaVideoData::FairPlayDecodeMask :
+                                   UserVideoDecodeData::FairPlayDecodeMask;
     }
 
     enum class Stage : UInt32
@@ -237,7 +239,7 @@ namespace
 
     constexpr UInt32 darwinMask(const UInt32 major)
     {
-        return major == 24 ? VPF::OsDarwin24 : (major == 25 ? VPF::OsDarwin25 : 0);
+        return major == 23 ? VPF::OsDarwin23 : (major == 24 ? VPF::OsDarwin24 : (major == 25 ? VPF::OsDarwin25 : 0));
     }
 
     bool addPlanImages(VPF::VerifiedPatchPlan& out, const VPF::VerifiedPatchPlan& source)
@@ -579,9 +581,8 @@ namespace
             return result;
         }
         auto& fast = transaction.state->fast;
-        fast.begin(&header[88], major, VPF::resolutionProfile(deviceID, sequoia ? 1U : 0U), 0, probeMapping,
-                   &probeState);
-        if (!UserVideoDecodeResolver::resolve(input, base, devicePatches, *dynamicBuffer.plan, sequoia, &fast)) {
+        fast.begin(&header[88], major, VPF::resolutionProfile(deviceID, major), 0, probeMapping, &probeState);
+        if (!UserVideoDecodeResolver::resolve(input, base, devicePatches, *dynamicBuffer.plan, major, &fast)) {
             stage(Stage::CacheMismatch, fairPlayPID);
             NRed::singleton().setProp32("NRedVCNUserDynamicRejected", 1);
             return result;
@@ -876,15 +877,10 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         SYSLOG("UserVideoDecode", "VCN capability rejected: device=0x%X reason=%u", deviceID, rejected);
         return;
     }
-    // Darwin 23 没有对应的用户态补丁数据；保持失败关闭，不使用其他版本的补丁。
-    if (currentKernelVersion().major() == 23) {
-        NRed::singleton().setProp32("NRedVCNUserUnsupportedOS", 1);
-        NRed::singleton().setProp32("NRedVCNUserRejected", 6);
-        return;
-    }
-    sequoia = currentKernelVersion().major() == 24;
-    const auto* candidates =
-        sequoia ? UserSequoiaVideoData::findDevice(deviceID) : UserVideoDecodeData::findDevice(deviceID);
+    darwinMajor            = currentKernelVersion().major();
+    const auto* candidates = darwinMajor == 23 ? UserSonomaVideoData::findDevice(deviceID) :
+                             darwinMajor == 24 ? UserSequoiaVideoData::findDevice(deviceID) :
+                                                 UserVideoDecodeData::findDevice(deviceID);
     if (!candidates) {
         NRed::singleton().setProp32("NRedVCNUserRejected", 3);
         return;
@@ -953,7 +949,7 @@ void UserVideoDecode::init(KernelPatcher& patcher)
     NRed::singleton().setProp32("NRedVCNRegionQueryVersion", 1);
     // FairPlay 诊断只在视频 Hook 安装成功后发布。
     NRed::singleton().setProp32("NRedDRMVideoEnabled", 1);
-    NRed::singleton().setProp32("NRedDRMVideoRevision", 4);
+    NRed::singleton().setProp32("NRedDRMVideoRevision", 5);
     NRed::singleton().setProp32("NRedDRMVideoMask", fairPlayMask());
     // 显示模块也成功注册时，协调器成为最外层 Hook；否则继续使用本模块的旧 lease。
     UserPatchCoordinator::registerVideo(

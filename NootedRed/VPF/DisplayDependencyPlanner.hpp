@@ -94,13 +94,9 @@ namespace VPF
         if (!displayFix) { return 0; }
         UInt32 groups = displayGroupBit(DisplayGroup::GLHwInfo) | displayGroupBit(DisplayGroup::GLDualQuad)
                         | displayGroupBit(DisplayGroup::KernelGFX9) | displayGroupBit(DisplayGroup::KernelScanout);
-        // Darwin 23 的 LegacyBlend/SubmitGuard 仍由旧精确 profile 提供证据。
-        if (major >= 24) {
+        if (major >= 23 && major <= 25) {
             groups |= displayGroupBit(DisplayGroup::MetalRenderCore) | displayGroupBit(DisplayGroup::MetalScratch)
                       | displayGroupBit(DisplayGroup::MetalSubmitSafety);
-        }
-        else if (major == 23) {
-            groups |= displayGroupBit(DisplayGroup::MetalRenderCore) | displayGroupBit(DisplayGroup::MetalSubmitSafety);
         }
         return groups;
     }

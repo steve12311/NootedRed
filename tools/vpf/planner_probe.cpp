@@ -39,14 +39,14 @@ int main()
 {
     constexpr UInt32 videoRequested = bits({FeatureId::Vcn2Decode, FeatureId::Vcn2Encode});
     constexpr UInt32 videoEnabled = bits({FeatureId::Vcn2Decode, FeatureId::Vcn2Encode});
-    for (const UInt32 os : {static_cast<UInt32>(OsDarwin24), static_cast<UInt32>(OsDarwin25)}) {
+    for (const UInt32 os :
+         {static_cast<UInt32>(OsDarwin23), static_cast<UInt32>(OsDarwin24), static_cast<UInt32>(OsDarwin25)})
+    {
         for (const UInt32 device : {0x15E7U, 0x1636U, 0x1638U, 0x164CU}) {
             const auto result = plan(input(os, device, videoRequested, ExternalVcnBridge));
             expect("video", result, videoEnabled);
         }
     }
-    // Darwin 23 没有 VCN 用户态补丁数据：全部拒绝。
-    expect("video darwin23", plan(input(OsDarwin23, 0x1638, videoRequested, ExternalVcnBridge)), 0);
     // 缺少内核桥接或非 VCN 设备：拒绝。
     expect("video no bridge", plan(input(OsDarwin25, 0x1638, videoRequested, 0)), 0);
     expect("video display device", plan(input(OsDarwin25, 0x15D8, videoRequested, ExternalVcnBridge)), 0);
@@ -65,7 +65,9 @@ int main()
         bits({FeatureId::DisplaySubmitGuard, FeatureId::DisplaySubmit, FeatureId::DisplaySRD,
               FeatureId::DisplayComputeScratch});
     constexpr UInt32 displayEnabled = displayRequested;
-    for (const UInt32 os : {static_cast<UInt32>(OsDarwin24), static_cast<UInt32>(OsDarwin25)}) {
+    for (const UInt32 os :
+         {static_cast<UInt32>(OsDarwin23), static_cast<UInt32>(OsDarwin24), static_cast<UInt32>(OsDarwin25)})
+    {
         const auto result = plan(input(os, 0x1638, displayRequested, ExternalMetalBridge | ExternalSubmitResolver));
         expect("display", result, displayEnabled);
         assert(orderedBefore(result, FeatureId::DisplaySubmitGuard, FeatureId::DisplaySRD));
@@ -76,11 +78,9 @@ int main()
                                    ExternalMetalBridge | ExternalSubmitResolver));
     expect("display legacy", legacy, displayEnabled | featureBit(FeatureId::DisplayLegacyBlend));
     assert(orderedBefore(legacy, FeatureId::DisplaySRD, FeatureId::DisplayLegacyBlend));
-    // LegacyBlend 不在 Darwin 24 的当前路径启用。
-    expect("legacy darwin24",
-           plan(input(OsDarwin24, 0x1638, featureBit(FeatureId::DisplayLegacyBlend),
-                      ExternalMetalBridge | ExternalSubmitResolver)),
-           0);
+    const auto legacy24 = plan(input(OsDarwin24, 0x1638, displayRequested | featureBit(FeatureId::DisplayLegacyBlend),
+                                     ExternalMetalBridge | ExternalSubmitResolver));
+    expect("legacy darwin24", legacy24, displayEnabled | featureBit(FeatureId::DisplayLegacyBlend));
     // 缺少 SubmitResolver 不阻止 SRD；SubmitGuard 单独拒绝。
     const auto noSubmit = plan(input(OsDarwin25, 0x1638,
                                      bits({FeatureId::DisplaySubmitGuard, FeatureId::DisplaySRD}),

@@ -61,7 +61,7 @@ class EquivalenceTests(unittest.TestCase):
         cls.old = json.loads(subprocess.check_output([str(executable)], text=True, timeout=60))
         cls.current = plan_dump.dump_plans()
         cls.old_by_key = {_key(plan): plan for plan in cls.old['plans']}
-        cls.current_by_key = {_key(plan): plan for plan in cls.current['plans'] if plan['feature'] == 'Vcn2Decode'}
+        cls.current_by_key = {_key(plan): plan for plan in cls.current['plans'] if plan['feature'] == 'Vcn2Decode' and plan['os'] in ('Darwin24', 'Darwin25')}
 
     def test_plan_set_is_complete(self):
         self.assertEqual(self.old['kind'], 'vpf.video-legacy')

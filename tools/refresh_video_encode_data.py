@@ -1,5 +1,6 @@
 """从生成头中已核验的原生上下文刷新编码补丁，不依赖已卸载的系统缓存。"""
 import hashlib
+import json
 import re
 from pathlib import Path
 from metal_cache import array
@@ -20,16 +21,20 @@ def refresh(payload):
     if len(payload) != 138:
         raise ValueError('编码补丁长度错误')
     updates = []
-    for name in ('UserVideoDecodeData', 'UserSequoiaVideoData'):
+    for name in ('UserVideoDecodeData', 'UserSequoiaVideoData', 'UserSonomaVideoData'):
         path = ROOT / f'NootedRed/{name}.hpp'
         text = path.read_text()
         context = extract(text, 'ResolverOriginal14')
-        native = context[:138]
-        if hashlib.sha256(native).hexdigest() != HASHES[key]:
+        sonoma = name == 'UserSonomaVideoData'
+        size = 148 if sonoma else 138
+        replacement = payload + b'\x90' * (size - len(payload))
+        native = context[:size]
+        profile = json.loads((ROOT / 'tools/fixtures/sonoma-compat.json').read_text()) if sonoma else None
+        if hashlib.sha256(native).hexdigest() != (profile['video'][key]['sha256'] if sonoma else HASHES[key]):
             raise ValueError(f'{name} 原生编码函数未核实')
-        if len(context) != 292:
+        if len(context) != (profile['encodeContexts'][key][1] if sonoma else 292):
             raise ValueError('编码上下文边界错误')
-        index = 9 if name == 'UserSequoiaVideoData' else 11
+        index = 11 if name == 'UserVideoDecodeData' else 9
         old = extract(text, f'Original{index}')
         if old == native:
             offset = 0
@@ -40,9 +45,9 @@ def refresh(payload):
         # 原生引用只在后续 AVC 函数中；此补丁无外部 rel32 引用。
         for suffix in ('Original', 'Patched'):
             refs = re.search(r'Resolver' + suffix + r'Refs14\[\] = \{(.*?)\n\};', text, re.S)[1]
-            if any(int(x) < 138 for x in re.findall(r'\{(\d+),', refs)):
+            if any(int(x) < size for x in re.findall(r'\{(\d+),', refs)):
                 raise ValueError('编码补丁含未处理的重定位')
-        for label, data in [(f'Original{index}', native), (f'Patched{index}', payload)]:
+        for label, data in [(f'Original{index}', native), (f'Patched{index}', replacement)]:
             text = re.sub(r'inline constexpr UInt8 ' + label + r'\[\] = \{.*?\n\};\n',
                           lambda _: array(label, data), text, count=1, flags=re.S)
         pattern = r'\{0x([0-9A-Fa-f]+)ULL, Original%d, Patched%d, sizeof\(Original%d\)\}' % (index, index, index)

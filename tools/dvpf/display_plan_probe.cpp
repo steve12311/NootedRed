@@ -165,13 +165,6 @@ static void testStaticMetal()
     for (UInt32 i = 0; i < VPF::DisplayManifestData::FeatureCount; ++i) {
         const auto& manifest = VPF::DisplayManifestData::Features[i];
         if (manifest.sharedSites == nullptr) { continue; }
-        if (manifest.feature == VPF::DisplayFeature::MetalLegacyBlend && manifest.osMask == VPF::OsDarwin23) {
-            check(manifest.sharedSiteCount == 1 && manifest.sharedSites[0].size == 2
-                      && memcmp(manifest.sharedSites[0].original, UserLegacyData::OS23Gate, 2) == 0
-                      && memcmp(manifest.sharedSites[0].replacement, UserLegacyData::OS23GatePatched, 2) == 0,
-                  "darwin23 legacy site");
-            continue;
-        }
         const auto* shared = VPF::ManifestData::find(manifest.sharedFeature, manifest.osMask, manifest.deviceID);
         check(shared != nullptr, "shared manifest");
         if (!shared) { continue; }

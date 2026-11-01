@@ -20,17 +20,21 @@ HEVC = "__ZN27AVDVcn2HevcEncDataProcessor19ProcessEncodeStatusEP19_VAEncodeStatu
 def main():
     global WORK
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--sequoia-cache', type=Path)
+    cache_args = parser.add_mutually_exclusive_group()
+    cache_args.add_argument('--sequoia-cache', type=Path)
+    cache_args.add_argument('--sonoma-cache', type=Path)
     args = parser.parse_args()
-    if args.sequoia_cache:
-        WORK = ROOT / 'build/sequoia/encode-test'
+    directory = args.sonoma_cache or args.sequoia_cache
+    system = 'sonoma' if args.sonoma_cache else 'sequoia'
+    if directory:
+        WORK = ROOT / f'build/{system}/encode-test'
     WORK.mkdir(parents=True, exist_ok=True)
-    report = json.loads((ROOT / ('build/sequoia/video/user-patches.json' if args.sequoia_cache else 'build/vcn/user-patches.json')).read_text())
+    report = json.loads((ROOT / (f'build/{system}/video/user-patches.json' if directory else 'build/vcn/user-patches.json')).read_text())
     rows = [r for r in report["records"] if r["label"] in [PITCH, SIZE, AVC, HEVC]]
     assert len(rows) == 4
     assembly = ".text\n"
-    profile = json.loads((ROOT / 'tools/fixtures/sequoia-compat.json').read_text()) if args.sequoia_cache else None
-    cache = CacheReader(args.sequoia_cache, profile['uuid']) if profile else CacheReader()
+    profile = json.loads((ROOT / f'tools/fixtures/{system}-compat.json').read_text()) if directory else None
+    cache = CacheReader(directory, profile['uuid']) if profile else CacheReader()
     try:
         lines = (cache.directory / "dyld_shared_cache_x86_64h.map").read_text().splitlines()
         image = "/System/Library/Extensions/AMDRadeonVADriver2.bundle/Contents/MacOS/AMDRadeonVADriver2"

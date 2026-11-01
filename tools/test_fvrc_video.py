@@ -57,13 +57,13 @@ static void video(){
  cache(ResolverImages,ResolverFunctions,true);resetMapping();TEXTBYTES=0;
  UserVideoDecodeResolver::Plan first{};UserSharedCache::Input coldInput{reader,{}};
  auto fastFirst=beginFast();
- assert(UserVideoDecodeResolver::resolve(coldInput,base,devicePatches,first,false,&fastFirst));
+ assert(UserVideoDecodeResolver::resolve(coldInput,base,devicePatches,first,25,&fastFirst));
  assert(!fastFirst.hot&&TEXTBYTES>0x100000);const auto coldText=TEXTBYTES;
  assert(VPF::resolutionCache.stat(VPF::ResolutionStat::Published)>=1);
  base+=0x40000000ULL;cache(ResolverImages,ResolverFunctions,true);resetMapping();TEXTBYTES=0;
  UserVideoDecodeResolver::Plan second{};UserSharedCache::Input hotInput{reader,{}};
  auto fastSecond=beginFast();
- assert(UserVideoDecodeResolver::resolve(hotInput,base,devicePatches,second,false,&fastSecond));
+ assert(UserVideoDecodeResolver::resolve(hotInput,base,devicePatches,second,25,&fastSecond));
  assert(fastSecond.hot&&TEXTBYTES*4<coldText);
  for(unsigned i=0;i<UserVideoDecodeResolver::PatchCount;i++){
   assert(first.patches[i].offset==second.patches[i].offset&&first.patches[i].size==second.patches[i].size);
@@ -71,12 +71,12 @@ static void video(){
  base+=0x40000000ULL;cache(ResolverImages,ResolverFunctions,true);resetMapping();mappingDirty=true;dirtyImage=1;
  UserVideoDecodeResolver::Plan dirty{};UserSharedCache::Input dirtyInput{reader,{}};
  auto fastDirty=beginFast();
- assert(UserVideoDecodeResolver::resolve(dirtyInput,base,devicePatches,dirty,false,&fastDirty));
+ assert(UserVideoDecodeResolver::resolve(dirtyInput,base,devicePatches,dirty,25,&fastDirty));
  assert(!fastDirty.hot);
  base+=0x40000000ULL;cache(ResolverImages,ResolverFunctions,true);resetMapping();mappingWrongObject=true;
  UserVideoDecodeResolver::Plan other{};UserSharedCache::Input otherInput{reader,{}};
  auto fastOther=beginFast();
- assert(UserVideoDecodeResolver::resolve(otherInput,base,devicePatches,other,false,&fastOther));
+ assert(UserVideoDecodeResolver::resolve(otherInput,base,devicePatches,other,25,&fastOther));
  assert(!fastOther.hot);
  for(unsigned i=0;i<UserVideoDecodeResolver::PatchCount;i++){
   assert(first.patches[i].offset==dirty.patches[i].offset&&first.patches[i].offset==other.patches[i].offset);

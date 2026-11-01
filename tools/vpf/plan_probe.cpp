@@ -17,6 +17,13 @@ static std::map<std::string, unsigned> properties;
 #include "user-cache-dynamic.hpp"
 
 // 生成数据以 namespace 组织，不能直接作为模板参数；用轻量 traits 暴露数组。
+struct VideoDarwin23
+{
+    static inline constexpr auto& devices   = UserSonomaVideoData::DevicePatches;
+    static inline constexpr auto& images    = UserSonomaVideoData::ResolverImages;
+    static inline constexpr auto& functions = UserSonomaVideoData::ResolverFunctions;
+};
+
 struct VideoDarwin24
 {
     static inline constexpr auto& devices   = UserSequoiaVideoData::DevicePatches;
@@ -151,7 +158,7 @@ static void checkImages(const VerifiedPatchPlan& plan, const UserCacheResolver::
 }
 
 template<typename Data>
-static void testVideo(const char* os, const UInt32 osMask, const bool sequoia)
+static void testVideo(const char* os, const UInt32 osMask, const UInt32 major)
 {
     for (const auto& device : Data::devices) {
         cache(Data::images, Data::functions, true);
@@ -161,7 +168,7 @@ static void testVideo(const char* os, const UInt32 osMask, const bool sequoia)
         UserVideoDecodeResolver::Plan legacy;
         char                          label[128];
         std::snprintf(label, sizeof(label), "video %s device %04X", os, device.deviceID);
-        check(UserVideoDecodeResolver::resolve(input, base, device.patches, legacy, sequoia), label);
+        check(UserVideoDecodeResolver::resolve(input, base, device.patches, legacy, major), label);
         const auto* manifest = VPF::ManifestData::find(VPF::FeatureId::Vcn2Decode, osMask, device.deviceID);
         check(manifest != nullptr, label);
         if (!manifest) { continue; }
@@ -196,6 +203,39 @@ static void testSequoiaSurface()
         check(VPF::adaptSurface(plan, *manifest, base, legacy.input.cache, legacy, 4, PlanState::AllOriginal), label);
         checkPlan(plan, legacy.patches, 4, legacy.reads, label);
         emitPlan("DisplaySRD", "Darwin24", device.deviceID, PlanState::AllOriginal, plan);
+    }
+}
+
+static void testSonomaSurface()
+{
+    using namespace UserSonomaSurfaceData;
+    constexpr auto functionCount = sizeof(ResolverFunctions) / sizeof(ResolverFunctions[0]);
+    for (const auto& device : DevicePatches) {
+        cache(ResolverImages, ResolverFunctions, false);
+        const auto constant = destination(ResolverFunctions[0].originalRefs[0], ResolverFunctions, functionCount);
+        blocks[constant].resize(16);
+        word32(constant, 0x40400000);
+        const auto dump = destination(ResolverFunctions[0].originalRefs[2], ResolverFunctions, functionCount);
+        put(dump, UserSurfaceSyncData::NativeDump, sizeof(UserSurfaceSyncData::NativeDump));
+
+        UserSurfaceSyncResolver::Plan legacy;
+        char                          label[128];
+        std::snprintf(label, sizeof(label), "surface Darwin23 device %04X", device.deviceID);
+        check((
+                  [&]
+                  {
+                      legacy.input            = {reader, {}};
+                      legacy.input.scanBuffer = legacy.scan;
+                      return UserSurfaceSyncResolver::resolveMetal(legacy.input, base, device.deviceID, legacy, 23);
+                  }()),
+              label);
+        const auto* manifest = VPF::ManifestData::find(VPF::FeatureId::DisplaySRD, VPF::OsDarwin23, device.deviceID);
+        check(manifest != nullptr, label);
+        if (!manifest) { continue; }
+        VerifiedPatchPlan plan;
+        check(VPF::adaptSurface(plan, *manifest, base, legacy.input.cache, legacy, 4, PlanState::AllOriginal), label);
+        checkPlan(plan, legacy.patches, 4, legacy.reads, label);
+        emitPlan("DisplaySRD", "Darwin23", device.deviceID, PlanState::AllOriginal, plan);
     }
 }
 
@@ -256,9 +296,11 @@ int main(int argc, char** argv)
 {
     jsonMode = argc > 1 && std::strcmp(argv[1], "--json") == 0;
     if (jsonMode) { std::printf("{\"schemaVersion\":1,\"kind\":\"vpf.plans\",\"plans\":["); }
-    testVideo<VideoDarwin24>("Darwin24", VPF::OsDarwin24, true);
-    testVideo<VideoDarwin25>("Darwin25", VPF::OsDarwin25, false);
+    testVideo<VideoDarwin23>("Darwin23", VPF::OsDarwin23, 23);
+    testVideo<VideoDarwin24>("Darwin24", VPF::OsDarwin24, 24);
+    testVideo<VideoDarwin25>("Darwin25", VPF::OsDarwin25, 25);
     testSequoiaSurface();
+    testSonomaSurface();
     testScratch();
     testSiteOverlap();
     if (jsonMode) { std::printf("]}\n"); }

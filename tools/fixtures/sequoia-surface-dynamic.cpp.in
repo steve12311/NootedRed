@@ -31,8 +31,7 @@ static void setup(unsigned id)
     const auto dump = destination(ResolverFunctions[0].originalRefs[2], ResolverFunctions, 5);
     put(dump, UserSurfaceSyncData::NativeDump, sizeof(UserSurfaceSyncData::NativeDump));
     NRed::device = id;
-    sequoia = renderRequested = computeScratch = legacyBlend = srdShared = true;
-    legacyProfile                                                        = nullptr;
+    renderRequested = computeScratch = legacyBlend = srdShared = true;
     submitGuard                                                          = true;
     devicePatches                                                        = UserSurfaceSyncData::findDevice(id);
     assert(devicePatches);

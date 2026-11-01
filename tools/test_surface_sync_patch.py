@@ -43,7 +43,7 @@ struct Executable{
    }
   }
   assert(linked==(size==10?1U:2U));
-  if(size==215){unsigned constants=0;
+  if(size==sizeof(old_init)){unsigned constants=0;
    for(size_t i=0;i+9<=size;i++)if(memcmp(code+i,"\xc4\xe2\x79\x18\x05",5)==0){
     int32_t v=int32_t(1100-i-9);memcpy(p+i+5,&v,4);float value=3.0f;memcpy(p+1100,&value,4);constants++;
    }assert(constants==1);
@@ -58,7 +58,7 @@ int main(int argc,const char*[]){
  Executable a(old_init,sizeof(old_init),0x7ffb10d73a28ULL),b(new_init,sizeof(new_init),0x7ffb10d73a28ULL);
  // 新覆盖入口跳到同一页内部的 stub，保持真实相对位置。
  uint8_t* bridge=static_cast<uint8_t*>(mmap(nullptr,4096,3,MAP_PRIVATE|MAP_ANON,-1,0));assert(bridge!=MAP_FAILED);
- memcpy(bridge,b.p,4096);memcpy(bridge+215,new_override,10);
+ memcpy(bridge,b.p,4096);memcpy(bridge+sizeof(new_init),new_override,10);
  assert(mprotect(bridge,4096,5)==0);
  Executable c(old_override,sizeof(old_override),0x7ffb10d73affULL);
  // 参数可用于先确认旧函数确实不能满足目标修复条件。
@@ -118,8 +118,8 @@ int main(int argc,const char*[]){
 
 
 if __name__ == "__main__":
-    if '--sequoia' in sys.argv:
-        WORK = ROOT / 'build/sequoia/surface'
+    if '--sequoia' in sys.argv or '--sonoma' in sys.argv:
+        WORK = ROOT / ('build/sonoma/surface' if '--sonoma' in sys.argv else 'build/sequoia/surface')
         data = json.loads((WORK / 'patch-data.json').read_text())
         for entry in data['device_records']:
             verify({'device_id': entry['device_id'], 'records': entry['records'][:2]}, 'records', True, data)

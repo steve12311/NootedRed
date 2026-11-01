@@ -3,7 +3,6 @@
 #include <IOKit/IOLib.h>
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
-#include <UserLegacyData.hpp>
 #include <UserPatchCoordinator.hpp>
 #include <UserPatchMemory.hpp>
 #include <UserSubmitGuardData.hpp>
@@ -76,26 +75,14 @@ struct Published {
 } published{};
 bool              srdShared{false}, legacyBlend{false}, computeScratch{false}, submitGuard{false};
 bool              renderRequested{false};
-bool              sequoia{false};
-const UserLegacyCompat::Profile*           legacyProfile{nullptr};
 const UserSurfaceSyncData::DevicePatchSet* devicePatches{&UserSurfaceSyncData::DevicePatches[0]};
 
 constexpr auto PatchCount = arrsize(UserSurfaceSyncData::ComputeScratchPatches);
-constexpr auto LegacyPatchCount = arrsize(UserSurfaceSyncData::LegacyBlendPatches);
-constexpr auto BaselinePatchCount = arrsize(UserSurfaceSyncData::Patches);
-static_assert(BaselinePatchCount == arrsize(UserSurfaceSyncData::SrdSharedPatches));
 static_assert(PatchCount <= 16);
 static_assert(UserSurfaceSyncData::MaxPatchSize <= 512);
 static_assert(UserSequoiaSurfaceData::MaxPatchSize <= UserSurfaceSyncResolver::Plan::BufferSize);
 constexpr UInt32 MaxPageCount = 8;
 static_assert(PatchCount * 2 <= MaxPageCount);
-
-const UserSurfaceSyncData::Patch* activePatches()
-{
-    return computeScratch ?
-               devicePatches->scratch :
-               (legacyBlend ? devicePatches->blend : (srdShared ? devicePatches->shared : devicePatches->immediate));
-}
 
 enum class Stage : UInt32 {
     Called, OriginalError, Argument, CacheRead, CacheMismatch, CodeRead, CodeMismatch, Already,
@@ -175,7 +162,6 @@ kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, S
 {
     using namespace UserSubmitGuardData;
     fresh = false;
-    if (offset == 0 && legacyProfile) { offset = UserLegacyData::submitOffset(legacyProfile->major); }
     if (offset == 0 || base >= UserSharedCache::UserLimit || offset >= UserSharedCache::UserLimit - base
         || MethodPatchSize > UserSharedCache::UserLimit - base - offset)
     {
@@ -330,7 +316,6 @@ kern_return_t installSubmitGuard(vm_map_t map, const UInt64 base, bool& fresh, S
 // Per-call storage: never shared between concurrent processes or held across the native syscall.
 struct PatchWorkspace
 {
-    UserSurfaceSyncData::Patch combined[PatchCount];
     UserSurfaceSyncResolver::Plan plan;
     UInt8                         saved[PatchCount][UserSurfaceSyncResolver::Plan::BufferSize];
     VPF::VerifiedPatchPlan        requestPlan;
@@ -359,24 +344,12 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
 {
     if (args == nullptr || args->startAddress == 0) { stage(Stage::Argument); return result; }
     using namespace UserSurfaceSyncData;
-    const auto* patches = activePatches();
-    UInt32      patchCount =
-        legacyProfile ?
-                 legacyProfile->patchCount :
-                 static_cast<UInt32>(computeScratch ? PatchCount : (legacyBlend ? LegacyPatchCount : BaselinePatchCount));
+    const UserSurfaceSyncData::Patch* patches{nullptr};
+    constexpr UInt32                  patchCount = PatchCount;
     WorkspaceBuffer workspace;
     if (!workspace.value) {
         error(KERN_RESOURCE_SHORTAGE);
         return result;
-    }
-    auto& combined = workspace.value->combined;
-    if (legacyProfile) {
-        if (patchCount > PatchCount) { return result; }
-        for (UInt32 i = 0; i < patchCount; ++i) {
-            const auto& patch = legacyProfile->patches[i];
-            combined[i]       = {patch.offset, patch.original, patch.patched, patch.size};
-        }
-        patches = combined;
     }
     UInt64      base{0};
     UInt8       header[104];
@@ -391,7 +364,6 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         stage(Stage::CacheMismatch);
         return result;
     }
-    const bool dynamic         = !legacyProfile;
     auto&      plan            = workspace.value->plan;
     auto&      input           = plan.input;
     input.reader               = readUser;
@@ -404,8 +376,12 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         return result;
     }
     MappingProbeState probeState{map, queryRegion};
-    if (dynamic && renderRequested) {
-        if (sequoia) {
+    if (renderRequested) {
+        if (major == 23) {
+            using namespace UserSonomaSurfaceData;
+            input.selectImages(base, ResolverImages, arrsize(ResolverImages));
+        }
+        else if (major == 24) {
             using namespace UserSequoiaSurfaceData;
             input.selectImages(base, ResolverImages, arrsize(ResolverImages));
         }
@@ -421,42 +397,32 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         memcpy(&value, header + 88 + i * 4, sizeof(value));
         publish(published.uuid[i], uuidKeys[i], value);
     }
-    // Darwin 24/25 始终核验完整提交方法；UUID 只用于诊断和已核验位置缓存。
+    // Darwin 23/24/25 始终核验完整提交方法；UUID 只用于诊断和已核验位置缓存。
     UInt64               submitOffset{0};
     auto&                submitFast    = workspace.value->submitFast;
     VPF::FastResolution* submitFastPtr = nullptr;
-    if (submitGuard && (sequoia || dynamic)) {
-        const UInt32 submitFlags = sequoia ? 1U : 2U;
+    if (submitGuard) {
+        const UInt32 submitFlags = major;
         submitFast.begin(&header[88], major, VPF::resolutionProfile(deviceID, submitFlags), 0, probeMapping,
                          &probeState);
         submitFastPtr = &submitFast;
     }
     const bool knownCache =
-        legacyProfile ?
-            memcmp(header + 88, legacyProfile->uuid, 16) == 0 :
-            (submitGuard && UserSurfaceSyncResolver::resolveSubmit(input, base, submitOffset, !sequoia, submitFastPtr));
+        submitGuard && UserSurfaceSyncResolver::resolveSubmitForOS(input, base, submitOffset, major, submitFastPtr);
     if (submitFastPtr) {
         publish(published.fvrcSubmit, "NRedFVRCSubmitHot", submitFast.hot ? 1 : 0);
         publish(published.fvrcSubmitCold, "NRedFVRCSubmitCold", submitFast.hot ? 0 : 1);
     }
-    if (sequoia && submitGuard && !knownCache) { NRed::singleton().setProp32("NRedSubmitGuardDynamicRejected", 1); }
+    if (submitGuard && !knownCache) { NRed::singleton().setProp32("NRedSubmitGuardDynamicRejected", 1); }
     if (!renderRequested) { return result; }
-    if (legacyProfile && !UserLegacyCompat::matches(readUser, base, header + 88, *legacyProfile)) {
-        stage(Stage::CacheMismatch);
-        NRed::singleton().setProp32("NRedLegacyBlendRejected", 1);
-        return result;
-    }
-    if (dynamic) {
+    {
         auto&        fast         = workspace.value->fast;
-        UInt32       displayFlags = sequoia ? 1U : 0U;
+        UInt32       displayFlags = 0;
         if (srdShared) { displayFlags |= 2U; }
         if (legacyBlend) { displayFlags |= 4U; }
         if (computeScratch) { displayFlags |= 8U; }
         fast.begin(&header[88], major, VPF::resolutionProfile(deviceID, displayFlags), 0, probeMapping, &probeState);
-        const bool resolved =
-            sequoia ? UserSurfaceSyncResolver::resolveSequoia(input, base, deviceID, plan, &fast) :
-                      UserSurfaceSyncResolver::resolve(input, base, *devicePatches, srdShared, legacyBlend, plan,
-                                                       computeScratch, &fast);
+        const bool resolved = UserSurfaceSyncResolver::resolveMetal(input, base, deviceID, plan, major, &fast);
         publish(published.fvrcDisplay, "NRedFVRCDisplayHot", fast.hot ? 1 : 0);
         publish(published.fvrcDisplayCold, "NRedFVRCDisplayCold", fast.hot ? 0 : 1);
         if (!resolved) {
@@ -480,7 +446,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
 
     auto& saved = workspace.value->saved;
     auto& pages = workspace.value->pages;
-    const auto cache = dynamic ? input.cache : UserSharedCache::Range{base, UserSharedCache::UserLimit - base};
+    const auto cache       = input.cache;
     auto& requestPlan = workspace.value->requestPlan;
     if (!VPF::adaptDisplayPatches(requestPlan, base, cache, patches, patchCount)) {
         stage(Stage::CodeMismatch);
@@ -604,7 +570,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     }
     runtime.installed(runtime.features());
     stage(Stage::Applied);
-    if (dynamic) { NRed::singleton().setProp32("NRedImmediateSyncDynamicApplied", 1); }
+    NRed::singleton().setProp32("NRedImmediateSyncDynamicApplied", 1);
     // 仅记录已完整写入并恢复 RX 的 WindowServer，避免用全局计数代替故障进程证据。
     if (process != nullptr) {
         const auto pid = proc_pid(process);
@@ -702,13 +668,11 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
     }
     NRed::singleton().setProp32("NRedSharedRegionStackRevision", 1);
     NRed::singleton().setProp32("NRedCacheSectionRevision", 1);
-    sequoia         = currentKernelVersion().major() == 24;
-    legacyProfile   = sequoia ? nullptr : UserLegacyData::metal(currentKernelVersion().major());
     renderRequested = false;
     submitGuard     = (UserPatchCoordinator::requestedDisplayGroups() & VPF::MetalDisplayGroups) != 0;
     legacyBlend = renderRequested = submitGuard;
-    computeScratch = srdShared = submitGuard && (sequoia || currentKernelVersion().majorMatches(MACOS_26));
-    NRed::singleton().setProp32("NRedDisplayFixVersion", 2);
+    computeScratch = srdShared = submitGuard;
+    NRed::singleton().setProp32("NRedDisplayFixVersion", 3);
     NRed::singleton().setProp32("NRedSubmitGuardVersion", 1);
     NRed::singleton().setProp32("NRedSubmitGuardRevision", 6);
     NRed::singleton().setProp32("NRedImmediateSyncVersion", 1);
@@ -728,7 +692,7 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
         SYSLOG("UserSurfaceSync", "Unsupported render-fix device: 0x%X", deviceID);
         return;
     }
-    if (!currentKernelVersion().majorMatches(MACOS_26) && !sequoia && !legacyProfile) {
+    if (currentKernelVersion().major() < 23 || currentKernelVersion().major() > 25) {
         NRed::singleton().setProp32("NRedImmediateSyncRejected", 4);
         SYSLOG("UserSurfaceSync", "Metal fix requires Darwin 23/24/25; found %u.%u", currentKernelVersion().major(),
                currentKernelVersion().minor());

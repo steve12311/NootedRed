@@ -1,4 +1,4 @@
-"""在 CPU 上执行两套生成数据中的真实编码参数补丁，不创建 GPU 对象。"""
+"""在 CPU 上执行三套生成数据中的真实编码参数补丁，不创建 GPU 对象。"""
 from pathlib import Path
 import subprocess
 from refresh_video_encode_data import extract
@@ -9,10 +9,10 @@ WORK = ROOT / 'build/video-main10-patch'
 
 def main():
     WORK.mkdir(parents=True, exist_ok=True)
-    for name, index in [('UserVideoDecodeData', 11), ('UserSequoiaVideoData', 9)]:
+    for name, index in [('UserVideoDecodeData', 11), ('UserSequoiaVideoData', 9), ('UserSonomaVideoData', 9)]:
         text = (ROOT / f'NootedRed/{name}.hpp').read_text()
         code = extract(text, f'Patched{index}')
-        native = extract(text, 'ResolverOriginal14')[:138]
+        native = extract(text, 'ResolverOriginal14')[:148 if name == 'UserSonomaVideoData' else 138]
         assembly = ''
         for label, data in [('stock', native), ('fixed', code)]:
             assembly += f'.text\n.globl _{label}\n_{label}:\n.byte ' + ','.join(map(str, data)) + '\n'

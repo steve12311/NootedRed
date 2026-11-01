@@ -6,7 +6,9 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-WORK = ROOT / ('build/dynamic-cache/sequoia-video' if '--sequoia' in sys.argv else 'build/dynamic-cache/video')
+SONOMA = '--sonoma' in sys.argv
+LEGACY = SONOMA or '--sequoia' in sys.argv
+WORK = ROOT / ('build/dynamic-cache/sonoma-video' if SONOMA else 'build/dynamic-cache/sequoia-video' if '--sequoia' in sys.argv else 'build/dynamic-cache/video')
 
 
 def main():
@@ -26,7 +28,7 @@ def main():
     body = re.split(r'namespace\s*\{', source, maxsplit=1)[1].split('}    // namespace', 1)[0]
     body = with_memory_helpers(body)
     template = (ROOT / 'tools/fixtures/vcn-user-bridge.cpp.in').read_text()
-    preamble = template[:template.index('static bool isWindowServer')]
+    preamble = template
     preamble = preamble.replace('#include "UserVideoDecodeData.hpp"', '#include <vector>\n#include "UserVideoDecodeData.hpp"\n#include "UserVideoDecodeResolver.hpp"')
     preamble += '#include "user-cache-dynamic.hpp"\n'
     preamble = preamble.replace('#define IONew(T,N) (new T[N])\n#define IODelete(P,T,N) delete[] P', r'''
@@ -98,14 +100,32 @@ static kern_return_t query(vm_map_t,uint64_t* a,uint64_t* size,unsigned*,int* p,
  i->object_id=0x1234;i->share_mode=cleanPage(*a)?5:2;i->shadow_depth=0;return 0;}
 static void setup(unsigned id){
  using namespace UserVideoDecodeData;cache(ResolverImages,ResolverFunctions,true);cleanBlocks=blocks;
- devicePatches=findDevice(id);assert(devicePatches);
+ NRed::device=id;devicePatches=findDevice(id);assert(devicePatches);
  VPF::ResolutionDiagnostics::setEnabled(true);VPF::resolutionCache.init();
  drmClient=false;clientEntitlement=nullptr;drmTouchedPages.clear();maxima.clear();
  published={};seenStages=appliedCount=errorCount=0;originalCheck=reinterpret_cast<uint64_t>(original);readUser=reader;writeUser=writer;getTaskMap=map;queryRegion=query;
 }
 static void call(){SharedRegionCheckArgs args{0x1000};int value=0;assert(wrappedSharedRegionCheck(drmClient?reinterpret_cast<void*>(217):nullptr,&args,&value)==0&&value==123);assert(liveTransactions==0&&liveDynamicPlans==0);}
 int main(){
- guardLock=IOLockAlloc();
+ // 执行真实初始化入口：三系统注册相同生命周期和共享缓存 Hook。
+ for(unsigned major:{23U,24U,25U}){
+  Version::majorValue=major;NRed::device=0x1638;properties.clear();
+  flag=false;KernelPatcher disabled;UserVideoDecode::init(disabled);assert(disabled.routes==0&&disabled.solves==0);
+  flag=true;KernelPatcher enabled;UserVideoDecode::init(enabled);
+  assert(enabled.routes==2&&properties.at("NRedVCNUserEnabled")==1);
+  assert(properties.at("NRedDRMVideoRevision")==5);
+  assert(devicePatches==(major==23?INIT_SONOMA::findDevice(0x1638):
+                         major==24?INIT_SEQUOIA::findDevice(0x1638):INIT_TAHOE::findDevice(0x1638)));
+  for(unsigned device:{0x15D8U,0x15DDU,0xFFFF1638U}){
+   NRed::device=device;KernelPatcher rejected;UserVideoDecode::init(rejected);assert(rejected.routes==0);
+  }
+ }
+ for(unsigned major:{22U,26U}){
+  Version::majorValue=major;NRed::device=0x1638;KernelPatcher rejected;UserVideoDecode::init(rejected);
+  assert(rejected.routes==0&&properties.at("NRedVCNUserRejected")==4);
+ }
+ Version::majorValue=PROFILE_MAJOR;darwinMajor=PROFILE_MAJOR;
+ if(!guardLock)guardLock=IOLockAlloc();
  unsigned cases=0;
  // IONew 按原始内存模拟；逐一拒绝两处工作区分配，退出时必须全部释放。
  for(bool dynamicFailure:{false,true}){
@@ -203,20 +223,24 @@ int main(){
  printf("PASS %u video dynamic bridge cases: four devices; shifted images/functions/GOT; cross-page rollback; content/metadata/target rejection\n",cases);
 }
 '''
-    if '--sequoia' in sys.argv:
+    if LEGACY:
         harness = harness.replace('cache(ResolverImages,ResolverFunctions,true)', 'cache(ResolverImages,ResolverFunctions,false)')
         harness = harness.replace('UserVideoDecodeData::MaxPatchSize,1)', 'UserVideoDecodeData::MaxPatchSize,0)')
         harness = harness.replace('UserVideoDecodeData::', 'UserSequoiaVideoData::')
         harness = harness.replace('using namespace UserVideoDecodeData;', 'using namespace UserSequoiaVideoData;')
-        harness = harness.replace('devicePatches,plan)', 'devicePatches,plan,true)')
+        harness = harness.replace('devicePatches,plan)', f'devicePatches,plan,{23 if SONOMA else 24})')
         harness = harness.replace('0x7F87FE', '0x7FE1FE')
-        harness = harness.replace('drmClient=false;clientEntitlement', 'sequoia=true;drmClient=false;clientEntitlement')
+        harness = harness.replace('drmClient=false;clientEntitlement', f'darwinMajor={23 if SONOMA else 24};Version::majorValue={23 if SONOMA else 24};drmClient=false;clientEntitlement')
+    if SONOMA:
+        harness = harness.replace('UserSequoiaVideoData', 'UserSonomaVideoData')
     # 从实际源文件中提取的桥接引用进程诊断函数。
-    uuid = 'UserSequoiaVideoData::CacheUUID' if '--sequoia' in sys.argv else 'UserVideoDecodeData::CacheUUID'
+    uuid = ('UserSonomaVideoData::CacheUUID' if SONOMA else 'UserSequoiaVideoData::CacheUUID') if LEGACY else 'UserVideoDecodeData::CacheUUID'
     harness = harness.replace('BODY', 'static bool referenceUUID=false;\nBODY')
     harness = harness.replace('cleanBlocks=blocks;', f'if(referenceUUID)put(base+88,{uuid},16);cleanBlocks=blocks;')
     harness = harness.replace('int main(){', 'int main(int argc,char**){referenceUUID=argc>1;')
-    harness = harness.replace('BODY', body)
+    harness = harness.replace('INIT_SONOMA', 'UserSonomaVideoData').replace('INIT_SEQUOIA', 'UserSequoiaVideoData').replace('INIT_TAHOE', 'UserVideoDecodeData')
+    harness = harness.replace('PROFILE_MAJOR', str(23 if SONOMA else 24 if LEGACY else 25))
+    harness = harness.replace('BODY', body + '\n' + source[source.index('void UserVideoDecode::init('):])
     harness = harness.replace('static kern_return_t vm_protect', 'static int proc_pid(proc_t);static void proc_name(int,char*,int);\nstatic kern_return_t vm_protect', 1)
     if '--baseline' in sys.argv:
         harness = harness.replace('call();if(!properties.contains("NRedVCNUserDynamicApplied"))', 'call();assert(writes==0&&protects==0);puts("PASS baseline reproduces unknown-cache rejection");return 0;if(!properties.contains("NRedVCNUserDynamicApplied"))',1)

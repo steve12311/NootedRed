@@ -2,6 +2,7 @@
 #pragma once
 #include <UserSequoiaSurfaceData.hpp>
 #include <UserSharedCache.hpp>
+#include <UserSonomaSurfaceData.hpp>
 #include <UserSurfaceConstructorData.hpp>
 #include <UserSurfaceSyncData.hpp>
 #include <VPF/FastResolution.hpp>
@@ -23,6 +24,7 @@ namespace UserSurfaceSyncResolver
     struct Plan
     {
         static constexpr UInt32 BufferSize = UserSequoiaSurfaceData::MaxPatchSize;
+        static_assert(BufferSize >= UserSonomaSurfaceData::MaxPatchSize);
         static_assert(BufferSize >= UserSurfaceSyncData::MaxPatchSize && BufferSize <= 512);
         UserSurfaceSyncData::Patch     patches[4]{};
         UInt8                          original[4][BufferSize]{};
@@ -425,15 +427,16 @@ namespace UserSurfaceSyncResolver
         return resolve(plan.input, base, device, shared, blend, plan, scratchMode, fast);
     }
 
-    inline bool resolveSequoia(Input& input, UInt64 base, UInt32 deviceID, Plan& plan,
-                               VPF::FastResolution* fast = nullptr)
+    template<size_t Images, size_t Functions, size_t Locations>
+    inline bool resolveProfile(Input& input, UInt64 base, const UserSurfaceSyncData::Patch* patches, Plan& plan,
+                               const UserCacheResolver::ImageReference (&ResolverImages)[Images],
+                               const UserCacheResolver::Function       (&ResolverFunctions)[Functions],
+                               const UserCacheResolver::Location       (&ResolverLocations)[Locations],
+                               VPF::FastResolution*                    fast)
     {
-        using namespace UserSequoiaSurfaceData;
-        const auto* patches = UserSequoiaSurfaceData::findDevice(deviceID);
         if (!patches) { return false; }
-        constexpr auto Images    = sizeof(ResolverImages) / sizeof(ResolverImages[0]);
-        constexpr auto Functions = sizeof(ResolverFunctions) / sizeof(ResolverFunctions[0]);
-        static_assert(Images <= 16 && Functions <= 32);
+        static_assert(Locations == 4);
+        static_assert(Images <= sizeof(plan.sequoiaImages) / sizeof(plan.sequoiaImages[0]) && Functions <= 32);
         auto& bounds = plan.sequoiaImages;
         if (!UserCacheResolver::resolveImages(input, base, ResolverImages, bounds)) { return false; }
         UInt32 functionImages[Functions]{};
@@ -495,6 +498,29 @@ namespace UserSurfaceSyncResolver
         return true;
     }
 
+    inline bool resolveMetal(Input& input, UInt64 base, UInt32 deviceID, Plan& plan, UInt32 major,
+                             VPF::FastResolution* fast = nullptr)
+    {
+        if (major == 23) {
+            return resolveProfile(input, base, UserSonomaSurfaceData::findDevice(deviceID), plan,
+                                  UserSonomaSurfaceData::ResolverImages, UserSonomaSurfaceData::ResolverFunctions,
+                                  UserSonomaSurfaceData::ResolverLocations, fast);
+        }
+        if (major == 24) {
+            return resolveProfile(input, base, UserSequoiaSurfaceData::findDevice(deviceID), plan,
+                                  UserSequoiaSurfaceData::ResolverImages, UserSequoiaSurfaceData::ResolverFunctions,
+                                  UserSequoiaSurfaceData::ResolverLocations, fast);
+        }
+        const auto* device = UserSurfaceSyncData::findDevice(deviceID);
+        return major == 25 && device && resolve(input, base, *device, true, true, plan, true, fast);
+    }
+
+    inline bool resolveSequoia(Input& input, UInt64 base, UInt32 deviceID, Plan& plan,
+                               VPF::FastResolution* fast = nullptr)
+    {
+        return resolveMetal(input, base, deviceID, plan, 24, fast);
+    }
+
     inline bool resolveSequoia(Reader reader, UInt64 base, UInt32 deviceID, Plan& plan,
                                VPF::FastResolution* fast = nullptr)
     {
@@ -503,14 +529,12 @@ namespace UserSurfaceSyncResolver
         return resolveSequoia(plan.input, base, deviceID, plan, fast);
     }
 
-    inline bool resolveSubmit(Input& input, UInt64 base, UInt64& offset, bool sectionRelative,
-                              VPF::FastResolution* fast = nullptr)
+    inline bool resolveSubmitProfile(Input& input, UInt64 base, UInt64& offset, const UserCacheResolver::Function& fn,
+                                     const UserCacheResolver::ImageReference* ResolverImages, bool sectionRelative,
+                                     VPF::FastResolution* fast)
     {
-        using namespace UserSequoiaSurfaceData::Submit;
         Image image;
         if (!imageForCache(input, base, image)) { return false; }
-        const auto& fn =
-            sectionRelative ? UserSurfaceConstructorData::Submit::ResolverFunctions[0] : ResolverFunctions[0];
         if (image.segmentCount > 8 || fn.size < 32) { return false; }
         UserCacheResolver::ImageBounds bounds{};
         if (!imageBounds(image, bounds)) { return false; }
@@ -591,6 +615,28 @@ namespace UserSurfaceSyncResolver
             fast->publish(VPF::FunctionGroup::DisplaySubmit, located, functionImages, 1);
         }
         return true;
+    }
+
+    inline bool resolveSubmitForOS(Input& input, UInt64 base, UInt64& offset, UInt32 major,
+                                   VPF::FastResolution* fast = nullptr)
+    {
+        if (major == 23) {
+            return resolveSubmitProfile(input, base, offset, UserSonomaSurfaceData::Submit::ResolverFunctions[0],
+                                        UserSonomaSurfaceData::Submit::ResolverImages, false, fast);
+        }
+        if (major == 24) {
+            return resolveSubmitProfile(input, base, offset, UserSequoiaSurfaceData::Submit::ResolverFunctions[0],
+                                        UserSequoiaSurfaceData::Submit::ResolverImages, false, fast);
+        }
+        return major == 25
+               && resolveSubmitProfile(input, base, offset, UserSurfaceConstructorData::Submit::ResolverFunctions[0],
+                                       UserSurfaceConstructorData::Submit::ResolverImages, true, fast);
+    }
+
+    inline bool resolveSubmit(Input& input, UInt64 base, UInt64& offset, bool sectionRelative,
+                              VPF::FastResolution* fast = nullptr)
+    {
+        return resolveSubmitForOS(input, base, offset, sectionRelative ? 25 : 24, fast);
     }
 
     inline bool resolveSubmit(Reader reader, UInt64 base, UInt64& offset, bool sectionRelative,

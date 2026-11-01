@@ -6,9 +6,9 @@
 
 | 系统 | Darwin | 显示入口 | 视频入口 | VPF 状态 |
 | --- | --- | --- | --- | --- |
-| macOS 14 Sonoma | 23 | `-NRedDisplayFix`；`UserLegacyData::metal(23)` 精确配置 | `-NRedVideoFix`；没有对应补丁数据，拒绝用户态视频补丁 | Manifest 不覆盖 OS23 精确配置 |
-| macOS 15 Sequoia | 24 | `-NRedDisplayFix`；动态 `resolveSequoia` + 动态 Submit | `-NRedVideoFix`；`UserSequoiaVideoData` 动态解析 | Manifest 覆盖 |
-| macOS 26 Tahoe | 25 | `-NRedDisplayFix`；动态 `resolve` + 静态 SRD/LegacyBlend/Scratch/Submit | `-NRedVideoFix`；`UserVideoDecodeData` 动态解析 | Manifest 覆盖 |
+| macOS 14 Sonoma | 23 | `-NRedDisplayFix`；`resolveMetal` + 动态 Submit | `-NRedVideoFix`；`UserSonomaVideoData` 动态解析 | Manifest 覆盖 |
+| macOS 15 Sequoia | 24 | `-NRedDisplayFix`；`resolveMetal` + 动态 Submit | `-NRedVideoFix`；`UserSequoiaVideoData` 动态解析 | Manifest 覆盖 |
+| macOS 26 Tahoe | 25 | `-NRedDisplayFix`；`resolveMetal` + 动态 Submit | `-NRedVideoFix`；`UserVideoDecodeData` 动态解析 | Manifest 覆盖 |
 
 没有新增 VPF boot-args；`NRedECFix` 等与 VPF 无关。
 
@@ -20,11 +20,11 @@
 
 | 功能 | Darwin 23 | Darwin 24 | Darwin 25 | 证据 |
 | --- | --- | --- | --- | --- |
-| Immediate / SRD / LegacyBlend | OS23Metal 精确配置 | `UserSequoiaSurfaceData` 动态完整函数 | `UserSurfaceSyncData` 静态表 + 完整函数核验 | 动态：`RelocationAwareFullFunction`；静态：`ExactValidatedBuild` |
-| ComputeScratch | 不启用 | `ScratchResolverData` 动态；六设备 | 同左 | `RelocationAwareFullFunction` + 设备表 |
-| SubmitGuard | 不进入动态路径 | `Submit` 完整函数动态定位 | `Submit` 完整函数动态定位 | `RelocationAwareFullFunction` |
+| SRD / LegacyBlend | `UserSonomaSurfaceData` 动态完整函数 | 版本专属动态完整函数 | `UserSurfaceSyncData` 静态表 + 完整函数核验 | 动态：`RelocationAwareFullFunction`；静态：`ExactValidatedBuild` |
+| ComputeScratch | 456 字节完整函数；六设备 | `ScratchResolverData` 动态；六设备 | 同左 | `RelocationAwareFullFunction` + 设备表 |
+| SubmitGuard | `Submit` 完整函数动态定位 | `Submit` 完整函数动态定位 | `Submit` 完整函数动态定位 | `RelocationAwareFullFunction` |
 | OpenGL SE/CU + DualQuad | 页内完整块；参考页快速路径 | 同左；15.8.1 参考页已核验 | 同左；当前 26.7.2 驱动不匹配夹具 25 | 精确：`ExactKnownPage`；动态：`FullPageLocalBlock` |
-| 守卫页 | 无 | `vm_allocate` 私有页 + 载荷核验 | 同左 | 运行时生成，无静态站点 |
+| 守卫页 | `vm_allocate` 私有页 + 载荷核验 | `vm_allocate` 私有页 + 载荷核验 | 同左 | 运行时生成，无静态站点 |
 
 `UserPatchCoordinator` 在显示与视频模块均成功安装时调用原生入口一次，再以 `vm_map`
 为租约键执行显示和视频回调；映射函数不可用时退回 task 身份，映射结果为空时跳过。
@@ -33,15 +33,13 @@
 OpenGL 使用已验证页内的完整块匹配，参考页证据用于交叉核验而非固定写入偏移。
 内核证据和离线语义报告不改变运行时准入。
 
-Darwin 23 的 Metal 精确 profile 由显示清单单独记录 LegacyBlend gate；组规划器保留
-LegacyBlend 与 SubmitGuard，拒绝不支持的 SRD/Scratch。已知部分 Darwin 25 构建与参考
-OpenGL 数据不匹配时会拒绝安装，不能通过放宽运行时条件解决。
+三个系统启用相同显示组，Darwin 23 的 SRD、Scratch、构造函数和提交方法均使用自己的数据。
+已知部分 Darwin 25 构建与参考 OpenGL 数据不匹配时会拒绝安装。
 
 关键拒绝/诊断键：
 
 - `NRedImmediateSyncRejected`：参数/MapGate/符号/路由失败。
 - `NRedImmediateSyncDynamicRejected`：动态显示计划核验失败。
-- `NRedLegacyBlendRejected`：OS23 精确 profile UUID/字节不匹配。
 - `NRedSubmitGuardRejected` / `NRedSubmitGuardDynamicRejected`：提交入口或载荷不匹配。
 - `NRedSubmitGuardRollbackFailed`：入口无法恢复；保留目标页，不自动重试。
 - `NRedPatchCoordinatorEnabled/Skipped/Rejected/Peak`：两个模块协调、单模块回退、Hook 安装失败或
@@ -60,15 +58,14 @@ Manifest 覆盖和合成测试不能证明各设备已通过实机验收。
 
 | 功能 | Darwin 23 | Darwin 24 | Darwin 25 |
 | --- | --- | --- | --- |
-| 用户态视频补丁 | **拒绝**：`NRedVCNUserUnsupportedOS=1`、`NRedVCNUserRejected=6` | `UserSequoiaVideoData` 动态；所有 UUID | 参考 UUID `31374756-89B4-34E8-A34F-56C5D57216A1` 静态快路径；其他 UUID `UserVideoDecodeData` 动态 |
-| FairPlay | 不启用用户态视频补丁 | entitlement `com.apple.private.fpsd.client`；只选 AMD 解码子集 | 同左 |
-| AppleGVA / 编码 | 原生 | 原生策略；编码补丁不在 FairPlay 子集 | 同左 |
+| 用户态视频补丁 | `UserSonomaVideoData` 动态；所有 UUID | `UserSequoiaVideoData` 动态；所有 UUID | `UserVideoDecodeData` 动态；所有 UUID |
+| FairPlay | entitlement `com.apple.private.fpsd.client`；18 项 AMD 解码子集 | entitlement `com.apple.private.fpsd.client`；只选 AMD 解码子集 | 同左 |
+| AppleGVA / 编码 | 普通进程应用；FairPlay 保持原生 | 原生策略；编码补丁不在 FairPlay 子集 | 同左 |
 | 受保护视频黑屏 / 固件证书 | 未解决 | 未解决 | 未解决 |
 
 关键拒绝/诊断键：
 
 - `NRedVCNUserRejected`：能力/符号/路由/MapGate 初始化拒绝。
-- `NRedVCNUserUnsupportedOS`：Darwin 23 没有对应补丁数据，拒绝启用。
 - `NRedVCNUserDynamicRejected`：动态视频计划核验失败。
 - `NRedVCNUserMixed` / `NRedImmediateSyncD08`：混合状态拒绝。
 
@@ -76,13 +73,13 @@ Manifest 覆盖和合成测试不能证明各设备已通过实机验收。
 
 | FeatureId | Darwin | 设备 | 站点 | 说明 |
 | --- | --- | ---: | ---: | --- |
-| `Vcn2Decode` | 24 / 25 | 4 | 23/实例 | 视频补丁表；含编码相关站点，但 FairPlay 仍按位掩码选解码子集 |
-| `DisplaySRD` | 24 | 6 | 4/实例 | `UserSequoiaSurfaceData` 动态完整函数 |
+| `Vcn2Decode` | 23 / 24 / 25 | 4 | 23/实例 | 视频补丁表；含编码相关站点，但 FairPlay 仍按位掩码选解码子集 |
+| `DisplaySRD` | 23 / 24 | 6 | 4/实例 | 版本专属动态完整函数 |
 | `DisplaySRD` | 25 | 0 | 2 | 静态 `SrdSharedPatches`；`ExactValidatedBuild` |
 | `DisplayLegacyBlend` | 25 | 0 | 3 | 静态 `LegacyBlendPatches` |
-| `DisplayComputeScratch` | 24 / 25 | 0 | 0 | `ScratchResolverData` 函数证据；实际站点来自设备表 |
-| `DisplayPipelineConstructor` | 24 / 25 | 0 | 1 | `UserSurfaceConstructorData` |
-| `DisplaySubmit` | 24 / 25 | 0 | 0 | Submit 完整函数；偏移运行时返回 |
+| `DisplayComputeScratch` | 23 / 24 / 25 | 0 | 0 | `ScratchResolverData` 函数证据；实际站点来自设备表 |
+| `DisplayPipelineConstructor` | 23 / 24 / 25 | 0 | 1 | `UserSurfaceConstructorData` |
+| `DisplaySubmit` | 23 / 24 / 25 | 0 | 0 | Submit 完整函数；偏移运行时返回 |
 | `DisplaySubmitGuard` | — | — | — | 跳转/守卫载荷运行时生成，无静态站点 |
 | `DisplayOpenGLHwInfo` | 23 / 24 / 25 | 6 | 1/实例 | DVPF：完整页块，页内 256 B |
 | `DisplayOpenGLDualQuad` | 23 / 24 / 25 | 6 | 1/实例 | DVPF：页内 142 B |

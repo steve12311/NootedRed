@@ -14,6 +14,7 @@ static std::set<unsigned> failedProtectCalls;
 static uint64_t failedRead=0;
 static void put(uint64_t a,const void* p,size_t n){
  auto i=blocks.upper_bound(a);assert(i!=blocks.begin());--i;
+ if(!(a-i->first<=i->second.size()&&n<=i->second.size()-(a-i->first)))fprintf(stderr,"cache fixture write outside block: address=%llx size=%zu block=%llx length=%zu\n",a,n,i->first,i->second.size());
  assert(a-i->first<=i->second.size()&&n<=i->second.size()-(a-i->first));memcpy(i->second.data()+a-i->first,p,n);
 }
 static void word32(uint64_t a,uint32_t v){put(a,&v,4);}

@@ -16,7 +16,6 @@ ROOT = Path(__file__).resolve().parents[2]
 OPENGL_HEADER = ROOT / 'NootedRed/UserOpenGLData.hpp'
 OPENGL_FIXTURE = ROOT / 'tools/fixtures/opengl-compat.json'
 SUBMIT_GUARD_HEADER = ROOT / 'NootedRed/UserSubmitGuardData.hpp'
-LEGACY_HEADER = ROOT / 'NootedRed/UserLegacyData.hpp'
 NRed_SOURCE = ROOT / 'NootedRed/NRed.cpp'
 
 OPENGL_DRIVER_NAME = 'AMDRadeonX5000GLDriver'
@@ -183,51 +182,6 @@ _METAL = {
 
 def load_metal() -> list[dict]:
     result = []
-    # Darwin 23 的 LegacyBlend/SubmitGuard 仍走 UserLegacyData 精确 profile。
-    arrays = byte_arrays(LEGACY_HEADER)
-    text = LEGACY_HEADER.read_text()
-    patch = re.search(r'OS23MetalPatches\[\] = \{\s*\{0x([0-9A-Fa-f]+)ULL, OS23Gate, OS23GatePatched, (\d+)\},?\s*\};',
-                      text)
-    page = re.search(r'OS23MetalPages\[\] = \{\{0x([0-9A-Fa-f]+)ULL, OS23MetalPage\}\};', text)
-    if not patch or not page:
-        raise ValueError('Darwin23 Metal legacy profile 格式未核实')
-    if arrays['OS23GatePatched'] != bytes([0xEB, 0x0B]):
-        raise ValueError('Darwin23 Metal gate 载荷未核实')
-    result.append(
-        _feature(
-            key='MetalLegacyBlend_Darwin23',
-            feature='MetalLegacyBlend',
-            domain='MetalSharedCache',
-            group='MetalRenderCore',
-            os=['Darwin23'],
-            osMask=schema.OS_BITS['Darwin23'],
-            deviceID=0,
-            evidence='ExactStaticPayload',
-            sharedFeature='DisplayLegacyBlend',
-            maxSites=1,
-            maxPatchedBytes=int(patch.group(2)),
-            installable=True,
-            imagePath=METAL_DRIVER_PATH,
-            source='UserLegacyData.hpp',
-            cacheUUID=arrays['OS23UUID'].hex().upper(),
-            sharedSites=[
-                {
-                    'offset': int(patch.group(1), 16),
-                    'size': int(patch.group(2)),
-                    'original': arrays['OS23Gate'],
-                    'replacement': arrays['OS23GatePatched'],
-                    'functionIndex': 0xFFFFFFFF,
-                    'instructionOffset': 0,
-                    'dynamicOffset': 0,
-                    'dynamicSize': 0,
-                    'pageFileOffset': int(page.group(1), 16),
-                    'pageOffset': int(patch.group(1), 16) - int(page.group(1), 16),
-                    'pageHash': schema.format_digest(arrays['OS23MetalPage']),
-                }
-            ],
-            cppSharedSites='SharedSites_MetalLegacyBlend_Darwin23',
-        )
-    )
     for feature in generate_manifest.build_all():
         if feature['feature'] not in _METAL:
             continue
@@ -284,26 +238,6 @@ def load_metal() -> list[dict]:
     return result
 
 
-def _legacy_submit_offsets() -> dict[int, int]:
-    text = LEGACY_HEADER.read_text()
-    start = text.index('inline UInt64 submitOffset(UInt32 major)')
-    brace = text.index('{', start)
-    depth = 0
-    end = brace
-    for index in range(brace, len(text)):
-        if text[index] == '{':
-            depth += 1
-        elif text[index] == '}':
-            depth -= 1
-            if depth == 0:
-                end = index + 1
-                break
-    body = text[brace:end]
-    result = {int(major): int(value, 16) for major, value in
-              re.findall(r'if \(major == (\d+)\) \{ return (0x[0-9A-Fa-f]+)ULL; \}', body)}
-    return result
-
-
 def load_submit_guard() -> list[dict]:
     arrays = byte_arrays(SUBMIT_GUARD_HEADER)
     values = scalars(SUBMIT_GUARD_HEADER)
@@ -316,8 +250,7 @@ def load_submit_guard() -> list[dict]:
     template = bytes([0xFF, 0x25, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x90])
     if len(template) != patch_size:
         raise ValueError('SubmitGuard 入口模板长度不符')
-    offsets = _legacy_submit_offsets()
-    offsets[24] = offsets[25] = 0
+    offsets = {23: 0, 24: 0, 25: 0}
     result = []
     for major in (23, 24, 25):
         offset = offsets.get(major)

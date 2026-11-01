@@ -1,10 +1,9 @@
-# Sequoia / Tahoe 用户态动态缓存匹配
+# Sonoma / Sequoia / Tahoe 用户态动态缓存匹配
 
-macOS 15/26 使用各自已核实的完整函数数据，复用公共动态解析器。macOS 14 继续使用
-独立的精确缓存／页面配置，范围与参数见 [多系统适配](macos-multi-os-compat.md)。
+macOS 14/15/26 使用各自已核实的完整函数数据，复用公共动态解析器、VPF 计划和页面事务，范围与参数见 [多系统适配](macos-multi-os-compat.md)。
 
 显示组使用 `-NRedDisplayFix`，视频组使用 `-NRedVideoFix`；
-旧分项参数不再读取，完整组合见 [启动参数](boot-arguments.md)。本文中的动态解析适用于 Sequoia / Darwin 24.x 和 Tahoe / Darwin 25.x。
+旧分项参数不再读取，完整组合见 [启动参数](boot-arguments.md)。本文中的动态解析适用于 Darwin 23/24/25。
 设备范围保持不变：
 ComputeScratch 为 NRed 原生支持的六种 Vega APU；视频为四种 VCN 2.2 APU。
 
@@ -19,7 +18,7 @@ SrdShared、LegacyBlend、ComputeScratch 和视频补丁都复用这些基础能
 OpenGL 的独立驱动修复见 [OpenGL 修复](opengl-display-fix.md)。它复用公共相对位移工具及引用数据，
 只匹配当前校验页内的完整修复块，不执行文件准备或 Mach-O 扫描；跨页块和页内歧义均拒绝。
 
-Tahoe 和 Sequoia 的所有 UUID 均通过当前进程中的 dyld header、image table 与 Mach-O 解析定位映像，
+三个系统的所有 UUID 均通过当前进程中的 dyld header、image table 与 Mach-O 解析定位映像，
 再匹配补丁所在的完整原生函数或本机设备已应用的完整载荷。参考 UUID 也不能跳过解析；
 生成数据中的函数 RVA 仅供匹配和重定位参考，提交守卫必须接收解析器核验的实际方法位置。
 FVRC 可复用已核验的位置，但仍检查映像身份、映射属性、完整函数和引用目标。
@@ -32,7 +31,7 @@ FVRC 可复用已核验的位置，但仍检查映像身份、映射属性、完
 
 Tahoe ComputeScratch 核验原生配置函数、完整 pipeline 构造函数和 452 字节 Scratch 函数，
 Scratch 只按该函数自身的完整字节与相对引用判定兼容，不按 UUID 切换固定偏移路径。
-Sequoia 核验原生配置函数、完整 pipeline 构造函数和 456 字节 Scratch 函数。
+Sonoma 和 Sequoia 核验各自原生配置函数、完整 pipeline 构造函数和 456 字节 Scratch 函数。
 SubmitGuard 独立匹配完整提交方法，核对相对引用；重复安装还核对整个已安装守卫及返回地址。
 生成器以 `LC_FUNCTION_STARTS` 确定该内部函数边界，使用 `LC_DATA_IN_CODE` 区分跳转表与指令。
 参考文件中的链式指针按 [Apple dyld 缓存格式](https://github.com/apple-oss-distributions/dyld/blob/main/include/mach-o/dyld_cache_format.h)
@@ -48,13 +47,13 @@ SubmitGuard 独立匹配完整提交方法，核对相对引用；重复安装�
 相应 `DynamicMatched`、`DynamicApplied`、`DynamicRejected`、`DynamicReads`
 记录动态核验、完成写入并恢复 RX、拒绝和读取次数。
 渲染诊断 `NRedImmediateSyncRevision=4` 是历史事务版本名称；当前修复组合由
-`NRedDisplayFixVersion=2`、`NRedImmediateSyncDisabled=1` 标识。
+`NRedDisplayFixVersion=3`、`NRedImmediateSyncDisabled=1` 标识。
 
 离线回归包括六种 Scratch 设备、四种视频设备、重排映像／函数／GOT、跨页部分写入、
 权限失败与幂等，并提供 ASan/UBSan。只读参考缓存回归还核对动态计划
-与静态数据逐项一致。不同 Sequoia / Tahoe 缓存的实机启动、画面与持续视频播放仍需测试人员验收。
+与静态数据逐项一致。不同 Sonoma / Sequoia / Tahoe 缓存的实机启动、画面与持续视频播放仍需测试人员验收。
 
-`test_surface_sync_dynamic.py`、`test_compute_cache_dynamic.py` 和 `test_video_cache_dynamic.py`
+`test_compute_cache_dynamic.py` 和 `test_video_cache_dynamic.py`
 默认分别运行未知 UUID 和参考 UUID，在保留参考 UUID 时仍重排映像、函数与引用目标。
-`--known-uuid` 仅运行参考 UUID 用例，后两项还接受 `--sequoia`。
+`--known-uuid` 仅运行参考 UUID 用例，两项均接受 `--sequoia` 或 `--sonoma`。
 两类 UUID 执行相同的写入、幂等、拒绝和回滚断言。

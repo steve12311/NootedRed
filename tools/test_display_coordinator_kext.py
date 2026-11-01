@@ -120,7 +120,7 @@ int main(int argc,char** argv){
     configureDisplay(true,25);
     assert(displayGroups()==127 && videoGroups()==127);
     configureDisplay(true,23);
-    assert(displayGroups()==119 && videoGroups()==119);
+    assert(displayGroups()==127 && videoGroups()==127);
     configureDisplay(false,25);
     assert(displayGroups()==0 && videoGroups()==0);
     KernelPatcher patcher;
