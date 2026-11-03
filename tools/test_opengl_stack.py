@@ -23,6 +23,8 @@ def inspect(binary, link_map):
         ('publish', '__ZN12_GLOBAL__N_17publish', 128, 1),
         ('validatePage', '__ZN12_GLOBAL__N_112validatePage', 128, 1),
         ('validateRange', '__ZN12_GLOBAL__N_113validateRange', 128, 1),
+        ('verifyFilesystem', '__ZN12_GLOBAL__N_116verifyFilesystem', 256, 1),
+        ('verifyFileData', '__ZN12_GLOBAL__N_114verifyFileData', 768, 1),
         ('patchPage', '__ZN12_GLOBAL__N_19patchPage', 128, 1),
         ('deliverBlock', '__ZN12_GLOBAL__N_112deliverBlock', 768, 1),
         ('patchBlock', '__ZN12_GLOBAL__N_110patchBlock', 768, 1),

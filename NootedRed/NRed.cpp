@@ -56,6 +56,7 @@ void NRed::init()
 
     Backlight::singleton().init();
     VCN::init();
+    UserOpenGL::registerKext();
 
     lilu.onKextLoadForce(&kextRadeonX6000Framebuffer);
     lilu.onKextLoadForce(&kextRadeonX5000HWLibs);
@@ -82,6 +83,7 @@ void NRed::init()
         nullptr, 0,
         [](void* const, KernelPatcher& patcher, const size_t id, const mach_vm_address_t slide, const size_t size)
         {
+            UserOpenGL::processKext(patcher, id, slide, size);
             AGDP::singleton().processKext(patcher, id, slide, size);
             Backlight::singleton().processKext(patcher, id, slide, size);
             DebugEnabler::singleton().processKext(patcher, id, slide, size);

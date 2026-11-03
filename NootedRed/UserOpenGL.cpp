@@ -1,4 +1,5 @@
 // 独立 OpenGL 文件在签名验证后修正内存页；不修改磁盘文件或验证结果。
+#include <Headers/kern_api.hpp>
 #include <Headers/kern_mach.hpp>
 #include <Headers/kern_util.hpp>
 #include <NRed.hpp>
@@ -19,13 +20,33 @@ namespace
     using PageValidator  = void (*)(vnode_t, memory_object_t, memory_object_offset_t, const void*, int*, int*, int*);
     using RangeValidator = boolean_t (*)(vnode_t, memory_object_t, memory_object_offset_t, const void*, vm_size_t,
                                          unsigned*);
+    // Darwin 23–25 的 vnop_verify_args 共用此前缀；25 的尾部 verifykind 保留在调用者参数中。
+    struct FileVerifyArguments
+    {
+        void*         descriptor;
+        vnode_t       vnode;
+        off_t         offset;
+        const void*   data;
+        size_t        size;
+        size_t*       blockSize;
+        void**        context;
+        UInt32        flags;
+        vfs_context_t vfsContext;
+    };
+    static_assert(sizeof(FileVerifyArguments) == 72);
+    static_assert(offsetof(FileVerifyArguments, data) == 24);
+    static_assert(offsetof(FileVerifyArguments, vfsContext) == 64);
+    using FilesystemVerifier = int (*)(void*);
 
-    mach_vm_address_t             originalPage{0}, originalRange{0};
+    const char*                   apfsPath = "/System/Library/Extensions/apfs.kext/Contents/MacOS/apfs";
+    KernelPatcher::KextInfo       apfs{"com.apple.filesystems.apfs",     &apfsPath, 1, {true}, {},
+                                 KernelPatcher::KextInfo::Unloaded};
+    mach_vm_address_t             originalPage{0}, originalRange{0}, originalVerify{0};
     const UserOpenGLData::Device* device{nullptr};
     const VPF::DisplayManifest*   manifests[2]{nullptr, nullptr};
     thread_call_t                 reportCall{nullptr};
     UInt32                        appliedMask{0}, dynamicMask{0}, errorMask{0}, planMask{0}, evidenceMask{0};
-    UInt32                        groupStates[2]{};
+    UInt32                        groupStates[2]{}, verifyMask{0};
     constexpr UInt32              PageSize = UserOpenGLResolver::PageSize;
 
     // 仅在命中或写入失败后排队发布诊断；初始化不启动工作线程。
@@ -36,7 +57,12 @@ namespace
         const auto errors  = __atomic_load_n(&errorMask, __ATOMIC_RELAXED);
         const auto plans   = __atomic_load_n(&planMask, __ATOMIC_RELAXED);
         const auto proofs  = __atomic_load_n(&evidenceMask, __ATOMIC_RELAXED);
+        const auto checks  = __atomic_load_n(&verifyMask, __ATOMIC_RELAXED);
         auto&      nred    = NRed::singleton();
+        nred.setProp32("NRedOpenGLVerifyObserved", (checks & 1) != 0);
+        nred.setProp32("NRedOpenGLVerifyRestored", (checks & 2) != 0);
+        nred.setProp32("NRedOpenGLVerifyRejected", (checks & 4) != 0);
+        nred.setProp32("NRedOpenGLVerifyAllocationFailed", (checks & 8) != 0);
         nred.setProp32("NRedOpenGLSEApplied", (applied & 1) != 0);
         nred.setProp32("NRedOpenGLDualQuadApplied", (applied & 2) != 0);
         nred.setProp32("NRedOpenGLDynamicApplied", dynamic == 3);
@@ -124,6 +150,78 @@ namespace
         return driver;
     }
 
+    // 解压页入会复用已缓存的执行页；校验副本只还原完整匹配的本设备补丁，不改写共享页。
+    template<typename Verify>
+    __attribute__((noinline)) int verifyFileData(vnode_t vnode, off_t offset, const void* data, size_t size,
+                                                 UInt32 flags, Verify&& verify)
+    {
+        if (!device || !reportCall || __atomic_load_n(&appliedMask, __ATOMIC_RELAXED) == 0 || !vnode || !data
+            || (flags != 0 && flags != 2) || size < PageSize || (static_cast<UInt64>(offset) & (PageSize - 1)) != 0
+            || static_cast<UInt64>(offset) > UserOpenGLResolver::MaxFileSize - PageSize
+            || size > UserOpenGLResolver::MaxFileSize - static_cast<UInt64>(offset) || !isDriver(vnode))
+        {
+            return verify(data);
+        }
+        report(verifyMask, 1);
+        const auto* bytes = static_cast<const UInt8*>(data);
+        UInt8*      copy{nullptr};
+        for (size_t position = 0; PageSize <= size - position; position += PageSize) {
+            for (UInt32 kind = 0; kind < 2; ++kind) {
+                if ((__atomic_load_n(&appliedMask, __ATOMIC_RELAXED) & (1U << kind)) == 0) { continue; }
+                UserOpenGLResolver::Resolved resolved;
+                const auto                   fileOffset = static_cast<UInt64>(offset) + position;
+                if (!UserOpenGLResolver::resolvePage(*device, bytes + position, fileOffset, kind, resolved)
+                    || !resolved.alreadyPatched)
+                {
+                    continue;
+                }
+                const auto& function = device->resolver->functions[kind];
+                const auto  start    = device->resolver->locations[kind].offset;
+                memcpy(resolved.patched, device->patches[kind].original, resolved.size);
+                for (UInt32 r = 0; r < function.originalCount; ++r) {
+                    const auto& ref = function.originalRefs[r];
+                    if (ref.indirect || ref.offset < start || ref.offset - start > resolved.size - 4
+                        || !UserSharedCache::setRelative(resolved.patched, ref.offset - start,
+                                                         fileOffset + resolved.offset, ref.rva))
+                    {
+                        if (copy) { kern_os_free(copy); }
+                        return verify(data);
+                    }
+                }
+                if (!copy) {
+                    copy = static_cast<UInt8*>(kern_os_malloc(size));
+                    if (!copy) {
+                        report(verifyMask, 8);
+                        return verify(data);
+                    }
+                    memcpy(copy, bytes, size);
+                }
+                memcpy(copy + position + resolved.offset, resolved.patched, resolved.size);
+            }
+        }
+        if (copy) { report(verifyMask, 2); }
+        const auto result = verify(copy ? copy : data);
+        if (result != 0) { report(verifyMask, 4); }
+        if (copy) { kern_os_free(copy); }
+        return result;
+    }
+
+    // 挂接实际文件系统操作，覆盖内核中被内联的 VNOP_VERIFY 分派。
+    __attribute__((noinline)) int verifyFilesystem(void* raw)
+    {
+        FileVerifyArguments arguments;
+        memcpy(&arguments, raw, sizeof(arguments));
+        return verifyFileData(arguments.vnode, arguments.offset, arguments.data, arguments.size, arguments.flags,
+                              [&](const void* bytes)
+                              {
+                                  auto* buffer = static_cast<UInt8*>(raw) + offsetof(FileVerifyArguments, data);
+                                  memcpy(buffer, &bytes, sizeof(bytes));
+                                  const auto result = reinterpret_cast<FilesystemVerifier>(originalVerify)(raw);
+                                  memcpy(buffer, &arguments.data, sizeof(arguments.data));
+                                  return result;
+                              });
+    }
+
     // 超出驱动文件上限的页不取名；范围验证整段只取一次名称。
     __attribute__((noinline)) void patchPage(vnode_t vnode, const UInt8* data, UInt64 offset, vm_size_t size,
                                              UInt32 validated, UInt32 tainted, UInt32 nx)
@@ -168,7 +266,13 @@ namespace
 
 }    // namespace
 
-void UserOpenGL::init(KernelPatcher& patcher)
+void UserOpenGL::registerKext()
+{
+    const auto major = currentKernelVersion().major();
+    if (major >= 23 && major <= 25 && checkKernelArgument("-NRedDisplayFix")) { lilu.onKextLoadForce(&apfs); }
+}
+
+void UserOpenGL::init(KernelPatcher&)
 {
     if ((UserPatchCoordinator::requestedDisplayGroups() & VPF::OpenGLDisplayGroups) == 0) { return; }
     manifests[0] = manifests[1] = nullptr;
@@ -180,6 +284,19 @@ void UserOpenGL::init(KernelPatcher& patcher)
         thread_call_allocate_with_options(publish, nullptr, THREAD_CALL_PRIORITY_KERNEL, THREAD_CALL_OPTIONS_ONCE);
     if (!reportCall) {
         NRed::singleton().setProp32("NRedOpenGLRejected", 1);
+        return;
+    }
+}
+
+void UserOpenGL::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size)
+{
+    if (!device || !reportCall || id != apfs.loadIndex || originalVerify != 0) { return; }
+    KernelPatcher::RouteRequest verifyRequest{"_apfs_vnop_verify", verifyFilesystem, originalVerify};
+    if (!patcher.routeMultipleLong(id, &verifyRequest, 1, slide, size)) {
+        patcher.clearError();
+        thread_call_free(reportCall);
+        reportCall = nullptr;
+        NRed::singleton().setProp32("NRedOpenGLRejected", 3);
         return;
     }
     UInt32                      backends{0};
@@ -195,7 +312,8 @@ void UserOpenGL::init(KernelPatcher& patcher)
         NRed::singleton().setProp32("NRedOpenGLRejected", 2);
         return;
     }
-    NRed::singleton().setProp32("NRedOpenGLRevision", 5);
+    NRed::singleton().setProp32("NRedOpenGLRevision", 7);
+    NRed::singleton().setProp32("NRedOpenGLVerifyEnabled", 1);
     NRed::singleton().setProp32("NRedOpenGLPageLocal", 1);
     NRed::singleton().setProp32("NRedOpenGLEnabled", 1);
     NRed::singleton().setProp32("NRedOpenGLBackends", backends);

@@ -22,7 +22,7 @@
 SrdShared、LegacyBlend、ComputeScratch 和 SubmitGuard，保留原生同步策略，不再启用 ImmediateSync。
 三个系统的显示开关还启用 OpenGL SE/CU 和条件 DualQuad 修复，无需新增参数。
 OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读取驱动文件或启动准备任务。
-`NRedOpenGLRevision=5`、`NRedOpenGLPageLocal=1` 标记此实现；加载 OpenGL 应用后检查
+`NRedOpenGLRevision=7`、`NRedOpenGLPageLocal=1` 标记此实现；加载 OpenGL 应用后检查
 `NRedOpenGLSEApplied` / `NRedOpenGLDualQuadApplied`。`DynamicApplied` 仅标记两项均经动态路径命中。
 详细匹配边界与参考页面校验见 [OpenGL 修复](opengl-display-fix.md)。
 `NRedDisplayFixVersion=3` 标记这个组合；`NRedImmediateSync*` 继续作为历史页面事务诊断名称，

@@ -2,4 +2,11 @@
 #pragma once
 #include <Headers/kern_patcher.hpp>
 
-namespace UserOpenGL { void init(KernelPatcher& patcher); }
+namespace UserOpenGL
+{
+
+    void registerKext();
+    void init(KernelPatcher& patcher);
+    void processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size);
+
+}    // namespace UserOpenGL

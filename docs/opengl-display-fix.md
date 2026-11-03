@@ -15,7 +15,7 @@
 
 OpenGL 驱动是独立文件，不能依靠 Metal 的共享缓存加载钩子处理。
 初始化只选择设备、分配诊断回调并注册原生页校验钩子，不排队执行准备任务。
-OpenGL 路径不读取驱动文件、不解析 Mach-O、不保留整页计划，也不在页入路径分配堆内存。
+OpenGL 补丁路径不读取驱动文件、不解析 Mach-O、不保留整页计划，也不在签名校验钩子中分配堆内存。
 
 `_cs_validate_page` / `_cs_validate_range` 先执行原函数，再检查验证结果、taint/NX、
 文件偏移和当前页边界；4 KiB 页接受布尔成功值 `1` 或 XNU 整页成功位图 `0xF`，
@@ -47,6 +47,34 @@ DualQuad 匹配完整的 142 字节函数。15/26 的 SE 原生函数跨页，�
 诊断只在实际命中或写入失败后通过 ONCE 回调异步发布；该回调只发布原子状态，
 不执行文件 I/O 或补丁准备。重复校验已修复页面不重复写入，不重复排队同一状态。
 非目标文件只检查 vnode 名称，不进行代码扫描；目标页每项修复最多扫描 4 KiB。
+
+## 压缩文件完整性校验
+
+内核会把 `VNOP_VERIFY` 内联到 `decmpfs_pagein_compressed` 和
+`decmpfs_read_compressed`，直接通过 vnode 操作表调用文件系统。仅挂钩导出的
+`_VNOP_VERIFY` 无法覆盖这种调用。
+
+模块预先监听 APFS（包括已经加载的实例），在其加载回调中先挂钩
+`_apfs_vnop_verify`，成功后才注册签名页补丁钩子。保护入口未就绪或安装失败时
+不启用 OpenGL 页修改；安装失败以 `NRedOpenGLRejected=3` 标记。
+文件系统操作使用 Darwin 23–25 共用的 72 字节参数前缀，只在调用期间替换数据
+指针并随即恢复。Darwin 25 新增的尾部 `verifykind` 不复制、不读取；原始参数
+结构、校验上下文、块大小输出及原生返回值均传给原操作。
+
+压缩页入可以在同一校验块中复用已缓存页和新解压页。已缓存页可能包含本模块安装的
+SE/CU 或 DualQuad 补丁，直接校验会与文件系统原始摘要冲突。仅对目标驱动、普通数据
+校验和带上下文的数据校验，在完整匹配本设备已应用载荷时申请当前范围的临时副本，
+重建原始块及其 rel32，再把副本交给原生校验器，返回后释放。执行页始终保持原样。
+没有已知补丁、不完整页面、未知载荷、预计算摘要、上下文管理或分配失败时原样转发；
+副本内任何其它字节变化仍由文件系统校验拒绝，不关闭或强制通过完整性校验。
+
+回归模拟已缓存补丁页与新解压页混合的 64 KiB 校验范围，覆盖原始摘要成功、
+未知改动失败、执行页不变及 72/80 字节的原生参数结构。测试从文件系统操作
+直接分派，覆盖内联包装器的路径，并检查旧版参数没有尾部越界读取。
+内核钩子及图形工作负载仍需实机验收。
+
+流程依据 [XNU decmpfs 的页复用与 VNOP_VERIFY](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/decmpfs.c)；
+校验器继续使用文件系统自身的摘要与拒绝策略。
 
 ## 本机页面核验
 
@@ -94,7 +122,11 @@ python3 tools/vpf/build_gl_evidence.py --system-root "$NRED_GL_SYSTEM_ROOT" \
 文件偏移、写入前竞争、恢复失败、异步诊断和显示总开关。初始化回归禁止启动时排队；
 测试桩不提供文件 I/O 接口，避免重新引入文件准备路径。
 
-`NRedOpenGLRevision=5`、`NRedOpenGLPageLocal=1` 标记当前页内匹配修订。
+`NRedOpenGLRevision=7`、`NRedOpenGLPageLocal=1` 标记当前修订；
+`NRedOpenGLVerifyEnabled=1` 表示 APFS 校验入口已安装。
+`NRedOpenGLVerifyObserved`、`NRedOpenGLVerifyRestored`、`NRedOpenGLVerifyRejected`、
+`NRedOpenGLVerifyAllocationFailed` 分别标记目标数据校验命中、原始字节还原、
+原生校验拒绝和副本分配失败。仅首次状态变化排队发布，不记录进程、路径或数据。
 启动后核对 `NRedOpenGLEnabled`、`NRedOpenGLBackends`、`NRedOpenGLVPFRevision`、
 `NRedOpenGLVPFManifestMask`；加载 OpenGL 应用后核对 `NRedOpenGLSEApplied`、
 `NRedOpenGLDualQuadApplied`、`NRedOpenGLVPFPlanVerified`、`NRedOpenGLVPFEvidenceMask`

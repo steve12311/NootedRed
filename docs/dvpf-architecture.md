@@ -8,7 +8,7 @@ Display Verified Patch Framework（DVPF）为显示补丁提供清单、核验�
 
 | 域 | 入口 | 约束 |
 | --- | --- | --- |
-| OpenGL | `_cs_validate_page` / `_cs_validate_range` | 仅处理已验证的当前页和完整页内代码块 |
+| OpenGL | `_cs_validate_page` / `_cs_validate_range`；`_apfs_vnop_verify` | 页内补丁；文件系统使用还原已知补丁的校验副本 |
 | Metal | `_shared_region_check_np` | 按当前 `vm_map` 核验并安装共享缓存补丁 |
 | Kernel Graphics / Framebuffer | `X5000`、`X6000FB`、DCN | 只读采集显示状态，不使用用户态事务 |
 

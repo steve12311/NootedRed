@@ -14,7 +14,7 @@ def main():
     args = parser.parse_args()
     source = (ROOT / 'NootedRed/UserOpenGL.cpp').read_text()
     body = source.split('namespace\n{', 1)[1].split('}    // namespace', 1)[0]
-    init = source[source.index('void UserOpenGL::init('):]
+    init = source[source.index('void UserOpenGL::registerKext('):]
     stubs = WORK / 'stubs/IOKit'
     stubs.mkdir(parents=True, exist_ok=True)
     (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt16=uint16_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
@@ -29,6 +29,7 @@ def main():
 #include <set>
 #include <string>
 #include <vector>
+#include <cstdlib>
 #include <UserOpenGLData.hpp>
 #include <UserOpenGLResolver.hpp>
 #include <VPF/DisplayManifestData.hpp>
@@ -36,6 +37,7 @@ def main():
 #include <VPF/DisplayRuntime.hpp>
 using vnode_t=void*;using memory_object_t=void*;using memory_object_offset_t=uint64_t;using vm_size_t=uint64_t;
 using boolean_t=int;using mach_vm_address_t=uint64_t;using thread_call_param_t=void*;using thread_call_t=void*;
+using vfs_context_t=void*;
 using thread_call_func_t=void(*)(void*,void*);
 constexpr int KERN_SUCCESS=0;
 static bool flag=true,allocateOK=true,pending=false,locked=false,inHook=false;
@@ -75,6 +77,38 @@ namespace MachInfo{static int setKernelWriting(bool enable,void*){
 static const char* vnodeName="AMDRadeonX5000GLDriver";static unsigned names=0,putnames=0;
 static const char* vnode_getname(vnode_t p){assert(p);names++;return vnodeName;}
 static void vnode_putname(const char* p){assert(p);putnames++;}
+static off_t verifyOffset=0;static UInt32 verifyFlags=0;
+static const void* verifyExpected=nullptr;static bool allocateBufferOK=true;static unsigned buffers=0,verifyCalls=0;
+[[maybe_unused]] static void* kern_os_malloc(size_t size){assert(!inHook&&!locked);if(!allocateBufferOK)return nullptr;buffers++;return malloc(size);}
+[[maybe_unused]] static void kern_os_free(void* p){assert(p&&buffers);buffers--;free(p);}
+static int stockVerify(vnode_t vp,off_t off,const void* data,size_t size,size_t* block,void** context,UInt32 flags,vfs_context_t ctx,void* kind){
+ assert(vp==reinterpret_cast<void*>(1)&&off==verifyOffset&&flags==verifyFlags);
+ assert(block&&context&&ctx==reinterpret_cast<void*>(0x3333)&&kind==(major==25?reinterpret_cast<void*>(0x4444):nullptr));
+ *block=131072;*context=reinterpret_cast<void*>(0x5555);verifyCalls++;return !data||!verifyExpected||memcmp(data,verifyExpected,size)==0?0:94;
+}
+// 内联 VNOP_VERIFY 直接分派到文件系统操作，不经过导出的包装函数。
+struct FilesystemArgs {
+ void* descriptor;vnode_t vnode;off_t offset;const void* data;size_t size;size_t* block;void** context;
+ UInt32 flags;vfs_context_t ctx;void* kind;
+};
+using FilesystemVerifier=int(*)(void*);
+static int stockFilesystem(void* raw){
+ FilesystemArgs a{};memcpy(&a,raw,major==25?80:72);assert(a.descriptor==reinterpret_cast<void*>(0x2222));
+ return stockVerify(a.vnode,a.offset,a.data,a.size,a.block,a.context,a.flags,a.ctx,a.kind);
+}
+static FilesystemVerifier filesystemVerify=stockFilesystem;
+static int verifyInlined(void* data,size_t size,off_t offset,UInt32 flags=0){
+ size_t block=0;void* context=nullptr;verifyOffset=offset;verifyFlags=flags;
+ FilesystemArgs a{reinterpret_cast<void*>(0x2222),reinterpret_cast<void*>(1),offset,data,size,&block,&context,flags,
+                  reinterpret_cast<void*>(0x3333),major==25?reinterpret_cast<void*>(0x4444):nullptr};
+ // 精确分配旧版 72 字节参数，ASan 会捕获对 Darwin 25 尾字段的越界读取。
+ std::vector<uint8_t> raw(major==25?80:72);memcpy(raw.data(),&a,raw.size());auto before=raw;
+ auto result=filesystemVerify(raw.data());
+ assert(raw==before&&buffers==0&&block==131072&&context==reinterpret_cast<void*>(0x5555));return result;
+}
+static int verify(void* data,size_t size=4096,UInt32 flags=0,off_t offset=0xe000){
+ return verifyInlined(data,size,offset,flags);
+}
 static vnode_t expectedVnode=reinterpret_cast<void*>(0x1234567812340000ULL);
 static memory_object_t expectedPager=reinterpret_cast<void*>(0xabcdef0098760000ULL);
 static uint64_t expectedOffset=0x56789000ULL,expectedSize=0;static const void* expectedData=nullptr;
@@ -88,14 +122,28 @@ static boolean_t stockRange(vnode_t vp,memory_object_t pager,uint64_t offset,con
 }
 struct KernelPatcher {
  static constexpr int KernelID=0;static inline void* kernelWriteLock=nullptr;
- unsigned routes=0;bool pageOK=true,rangeOK=true;
- struct RouteRequest {const char* name;template<class F>RouteRequest(const char* s,F,uint64_t& original):name(s){
+ struct KextInfo {static constexpr size_t Unloaded=0;const char* id;const char** paths;size_t pathNum;
+  bool sys[6];bool user[2];size_t loadIndex;};
+ unsigned routes=0;bool pageOK=true,rangeOK=true,verifyOK=true;
+ struct RouteRequest {const char* name;template<class F>RouteRequest(const char* s,F f,uint64_t& original):name(s){
+  assert(strcmp(s,"_VNOP_VERIFY")!=0);
+  if(strcmp(s,"_apfs_vnop_verify")==0){
+   original=reinterpret_cast<uint64_t>(stockFilesystem);filesystemVerify=reinterpret_cast<FilesystemVerifier>((uintptr_t)f);return;
+  }
   original=reinterpret_cast<uint64_t>(strcmp(s,"_cs_validate_page")==0?reinterpret_cast<void*>(stockPage):reinterpret_cast<void*>(stockRange));
  }};
- bool routeMultipleLong(int,RouteRequest* r,unsigned n){assert(n==1);routes++;return strcmp(r->name,"_cs_validate_page")==0?pageOK:rangeOK;}
+ bool routeMultipleLong(size_t id,RouteRequest* r,unsigned n,uint64_t slide=0,size_t size=0){
+  assert(n==1);routes++;
+  if(strcmp(r->name,"_apfs_vnop_verify")==0){assert(id==77&&slide==0x100000&&size==0x200000);return verifyOK;}
+  assert(id==KernelID);return strcmp(r->name,"_cs_validate_page")==0?pageOK:rangeOK;
+ }
  void clearError(){}
 };
-namespace UserOpenGL{void init(KernelPatcher&);}
+static unsigned registrations=0;
+struct Lilu {void onKextLoadForce(KernelPatcher::KextInfo* k){
+ assert(strcmp(k->id,"com.apple.filesystems.apfs")==0&&k->pathNum==1&&k->sys[0]);k->loadIndex=77;registrations++;
+}};static Lilu lilu;
+namespace UserOpenGL{void registerKext();void init(KernelPatcher&);void processKext(KernelPatcher&,size_t,mach_vm_address_t,size_t);}
 namespace Actual {
 BODY
 }
@@ -105,17 +153,24 @@ static void reset(unsigned os=25,unsigned id=0x1638){
  if(Actual::reportCall)thread_call_free(Actual::reportCall);
  Actual::reportCall=nullptr;Actual::device=nullptr;Actual::manifests[0]=Actual::manifests[1]=nullptr;
  Actual::appliedMask=Actual::dynamicMask=Actual::errorMask=Actual::planMask=Actual::evidenceMask=0;
- Actual::groupStates[0]=Actual::groupStates[1]=0;
+ Actual::groupStates[0]=Actual::groupStates[1]=0;Actual::originalVerify=0;Actual::verifyMask=0;registrations=0;
  properties.clear();failedWrites.clear();onEnable=nullptr;pending=locked=inHook=false;
  flag=allocateOK=true;major=os;pci=id;allocated=freed=writeAccess=queued=validCalls=0;
  validValue=rangeResult=1;taintValue=nxValue=0;vnodeName="AMDRadeonX5000GLDriver";names=putnames=0;
  expectedVnode=reinterpret_cast<void*>(0x1234567812340000ULL);expectedOffset=0xe000;
+ filesystemVerify=stockFilesystem;verifyExpected=nullptr;allocateBufferOK=true;buffers=verifyCalls=0;
 }
-static void init(){KernelPatcher patcher;UserOpenGL::init(patcher);
- assert(patcher.routes==2&&properties.at("NRedOpenGLBackends")==3);
- assert(!pending&&queued==0&&properties.at("NRedOpenGLRevision")==5&&properties.at("NRedOpenGLPageLocal")==1);
+static void start(KernelPatcher& patcher){
+ UserOpenGL::registerKext();UserOpenGL::init(patcher);assert(patcher.routes==0);
+ UserOpenGL::processKext(patcher,78,0x100000,0x200000);assert(patcher.routes==0);
+ UserOpenGL::processKext(patcher,77,0x100000,0x200000);
+}
+static void init(){KernelPatcher patcher;start(patcher);assert(registrations==1);
+ assert(patcher.routes==3&&properties.at("NRedOpenGLBackends")==3);
+ assert(!pending&&queued==0&&properties.at("NRedOpenGLRevision")==7&&properties.at("NRedOpenGLPageLocal")==1);
  assert(properties.at("NRedOpenGLVPFRevision")==1&&properties.at("NRedOpenGLVPFManifestMask")==3);
- assert(!properties.contains("NRedOpenGLDynamicPending"));}
+ assert(!properties.contains("NRedOpenGLDynamicPending"));
+ auto routes=patcher.routes;UserOpenGL::processKext(patcher,77,0x100000,0x200000);assert(patcher.routes==routes);}
 static void page(void* data,bool validPointer=true){
  int valid=99,taint=99,nx=99;expectedData=data;inHook=true;
  Actual::validatePage(expectedVnode,expectedPager,expectedOffset,data,validPointer?&valid:nullptr,&taint,&nx);
@@ -138,7 +193,32 @@ int main(){
   assert(properties.at("NRedOpenGLVPFPlanVerified")==0);assert(Actual::evidenceMask==(1U<<index));
   assert(properties.at(index?"NRedOpenGLDualQuadGroupState":"NRedOpenGLHwInfoGroupState")
          ==unsigned(VPF::DisplayGroupState::Installed));
-  auto before=writeAccess,queueBefore=queued;page(bytes.data());assert(writeAccess==before&&queued==queueBefore);cases++;
+  // 解压页入会复用已缓存的补丁页；文件系统仍必须校验原始字节，且不能改写执行页。
+  verifyExpected=p.original;auto execution=bytes;
+  assert(verify(bytes.data(),4096,0,expectedOffset)==0&&verifyCalls==1&&bytes==execution);cases++;
+  assert(verifyInlined(bytes.data(),4096,expectedOffset)==0&&bytes==execution);cases++;
+  flush();assert(properties.at("NRedOpenGLVerifyObserved")==1&&properties.at("NRedOpenGLVerifyRestored")==1
+   &&properties.at("NRedOpenGLVerifyRejected")==0&&properties.at("NRedOpenGLVerifyAllocationFailed")==0);cases++;
+  auto diagnostics=queued;
+  assert(verifyInlined(bytes.data(),4096,expectedOffset)==0&&queued==diagnostics);cases++;
+  assert(verifyInlined(nullptr,0,expectedOffset)==0&&queued==diagnostics);cases++;
+  assert(verify(bytes.data(),4096,2,expectedOffset)==0&&bytes==execution);cases++;
+  // 预计算哈希、上下文管理及未知 flags 不能被当作文件数据修改。
+  for(unsigned flags:{1U,4U,8U,16U}){
+   assert(verify(bytes.data(),4096,flags,expectedOffset)==94&&bytes==execution);cases++;
+  }
+  allocateBufferOK=false;assert(verify(bytes.data(),4096,0,expectedOffset)==94&&bytes==execution);cases++;
+  flush();assert(properties.at("NRedOpenGLVerifyAllocationFailed")==1);cases++;
+  allocateBufferOK=true;
+  bytes[(p.offset+p.size)%4096]^=1;auto corrupted=bytes;
+  assert(verify(bytes.data(),4096,0,expectedOffset)==94&&bytes==corrupted);cases++;
+  flush();assert(properties.at("NRedOpenGLVerifyRejected")==1);cases++;
+  bytes=execution;bytes[p.offset]^=1;corrupted=bytes;
+  assert(verify(bytes.data(),4096,0,expectedOffset)==94&&bytes==corrupted);cases++;
+  bytes=execution;vnodeName="other";
+  assert(verify(bytes.data(),4096,0,expectedOffset)==94&&bytes==execution);cases++;
+  vnodeName="AMDRadeonX5000GLDriver";
+  flush();auto before=writeAccess,queueBefore=queued;page(bytes.data());assert(writeAccess==before&&queued==queueBefore);cases++;
   // XNU 整页验证返回四位全真位图，不能仅接受旧布尔值 1。
   setup();validValue=0xf;page(bytes.data());flush();assert(bytes==expected&&Actual::appliedMask==(1U<<index));cases++;
   for(int valid:{-1,2,3,7,14,16}){
@@ -196,26 +276,35 @@ int main(){
   assert(Actual::appliedMask==3&&Actual::dynamicMask==3&&properties.at("NRedOpenGLDynamicApplied")==1&&writeAccess==4);
   assert(Actual::planMask==3&&Actual::evidenceMask==3&&properties.at("NRedOpenGLVPFPlanVerified")==1);
   assert(properties.at("NRedOpenGLVPFEvidenceMask")==3);
+  verifyExpected=original.data();auto execution=bytes;
+  assert(verify(bytes.data(),bytes.size(),0,expectedOffset)==0&&bytes==execution);cases++;
+  // 一个较大校验块同时包含已缓存补丁页与新解压的原始页。
+  std::vector<uint8_t> mixed(65536,0x5a),unmodified;
+  memcpy(mixed.data(),bytes.data(),4096);unmodified=mixed;
+  memcpy(unmodified.data(),original.data(),4096);verifyExpected=unmodified.data();
+  assert(verify(mixed.data(),mixed.size(),0,expectedOffset)==0&&memcmp(mixed.data(),bytes.data(),4096)==0);cases++;
   for(unsigned i=0;i<4096;i++)if(!(i>=300&&i<556)&&!(i>=2000&&i<2142))assert(bytes[i]==original[i]);cases++;
   // 重复校验不写入、不重复排队；另一个 CPU 已写入的页面也能识别。
   auto before=queued;page(bytes.data());assert(writeAccess==4&&queued==before);cases++;
  }
  for(unsigned bits=0;bits<4;bits++){
-  reset();KernelPatcher p;p.pageOK=bits&1;p.rangeOK=bits&2;UserOpenGL::init(p);
+  reset();KernelPatcher p;p.pageOK=bits&1;p.rangeOK=bits&2;start(p);
   if(bits)assert(properties.at("NRedOpenGLBackends")==bits&&Actual::reportCall&&!pending);
   else assert(properties.at("NRedOpenGLRejected")==2&&!Actual::reportCall&&freed==1);cases++;
  }
- reset();allocateOK=false;KernelPatcher p;UserOpenGL::init(p);assert(p.routes==0&&properties.at("NRedOpenGLRejected")==1);cases++;
- for(unsigned os:{22U,26U}){reset(os);KernelPatcher k;UserOpenGL::init(k);assert(k.routes==0&&allocated==0);cases++;}
- for(unsigned id:{0U,0x6863U,0xffff1638U}){reset(25,id);KernelPatcher k;UserOpenGL::init(k);assert(k.routes==0&&allocated==0);cases++;}
- reset();flag=false;KernelPatcher off;UserOpenGL::init(off);assert(off.routes==0&&allocated==0);cases++;
- printf("PASS %u actual OpenGL hook cases: no startup worker/file I/O; page-local matching; native ABI/status; write protection; display master switch\n",cases);
+ reset();allocateOK=false;KernelPatcher p;start(p);assert(p.routes==0&&properties.at("NRedOpenGLRejected")==1);cases++;
+ reset();KernelPatcher denied;denied.verifyOK=false;start(denied);
+ assert(denied.routes==1&&properties.at("NRedOpenGLRejected")==3&&!Actual::reportCall&&freed==1);cases++;
+ for(unsigned os:{22U,26U}){reset(os);KernelPatcher k;start(k);assert(k.routes==0&&allocated==0);cases++;}
+ for(unsigned id:{0U,0x6863U,0xffff1638U}){reset(25,id);KernelPatcher k;start(k);assert(k.routes==0&&allocated==0);cases++;}
+ reset();flag=false;KernelPatcher off;start(off);assert(off.routes==0&&allocated==0);cases++;
+ printf("PASS %u actual OpenGL hook cases: no startup worker/file I/O; page-local matching; native ABI/status; compressed integrity; write protection; display master switch\n",cases);
 }
-'''.replace('BODY', body).replace('INIT', init.replace('{\n', '{\n    using namespace Actual;\n', 1))
+'''.replace('BODY', body).replace('INIT', init.replace('\n{\n', '\n{\n    using namespace Actual;\n'))
     if args.stack:
         harness = harness[:harness.index('static void reset(')] + r'''
 int main(){
- KernelPatcher patcher;UserOpenGL::init(patcher);
+ KernelPatcher patcher;UserOpenGL::registerKext();UserOpenGL::init(patcher);UserOpenGL::processKext(patcher,77,0x100000,0x200000);
  const auto& d=*UserOpenGLData::findDevice(25,0x1638);static std::array<uint8_t,4096> bytes;
  memcpy(bytes.data(),d.pages[0].original,4096);expectedData=bytes.data();expectedOffset=0xe000;
  int valid=0,taint=0,nx=0;Actual::validatePage(expectedVnode,expectedPager,expectedOffset,bytes.data(),&valid,&taint,&nx);flush();
