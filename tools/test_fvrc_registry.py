@@ -103,6 +103,15 @@ static void basic(){
  assert(resolutionCache.publish(makeValue(keepKey))==PublishResult::Published);
  assert(resolutionCache.publish(makeValue(keepKey,0x11000,ProofClass::HintOnly))==PublishResult::Duplicate);
  assert(resolutionCache.lookup(keepKey,snapshot)&&snapshot.proof==ProofClass::ReusableImmutableIdentity);
+ // 已补丁进程的 HintOnly（不同变体/位置）不能禁用干净证明；干净证明可取代不同布局的提示。
+ const auto dirtyKey=makeKey(uint32_t(FunctionGroup::DisplayConstructor),4,14);
+ assert(resolutionCache.publish(makeValue(dirtyKey))==PublishResult::Published);
+ assert(resolutionCache.publish(makeValue(dirtyKey,0x12000,ProofClass::HintOnly))==PublishResult::Duplicate);
+ assert(resolutionCache.lookup(dirtyKey,snapshot)&&snapshot.proof==ProofClass::ReusableImmutableIdentity);
+ const auto hintFirstKey=makeKey(uint32_t(FunctionGroup::VideoDecode),5,15);
+ assert(resolutionCache.publish(makeValue(hintFirstKey,0x12000,ProofClass::HintOnly))==PublishResult::Published);
+ assert(resolutionCache.publish(makeValue(hintFirstKey,0x11000))==PublishResult::Published);
+ assert(resolutionCache.lookup(hintFirstKey,snapshot)&&snapshot.proof==ProofClass::ReusableImmutableIdentity);
  printf("PASS basic: full-field key compare, layout identity, publish/snapshot, invalid rejection, conflict disable, proof upgrade\n");
 }
 static void capacity(){

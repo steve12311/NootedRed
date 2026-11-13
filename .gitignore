@@ -38,3 +38,9 @@ build/
 **/xcshareddata/WorkspaceSettings.xcsettings
 .cache/
 clang_analyze/
+
+# graft's local repository settings — not committed.
+/.graft/
+# Local trail/graft index and its ripgrep override — not part of the kext.
+/graft/
+/.ignore

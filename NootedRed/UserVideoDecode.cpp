@@ -833,6 +833,7 @@ namespace
             if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d coordinated", ticket, pid); }
             return result;
         }
+        if (!UserPatchCoordinator::processAllowed(process)) { return result; }
         if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d patch-enter", ticket, pid); }
         if (!guardLock) { return result; }
         auto* identity = getTaskMap ? static_cast<void*>(getTaskMap(current_task())) : nullptr;

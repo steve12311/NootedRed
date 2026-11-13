@@ -55,6 +55,7 @@ static bool coordinatorActive=false;
 namespace UserPatchCoordinator {
 using PatchCallback=int(*)(void*,void*,int);
 inline bool deferModulePatches(){return coordinatorActive;}
+inline bool processAllowed(void*){return true;}
 inline void clearDisplay(){}
 inline void clearVideo(){}
 inline void registerDisplay(PatchCallback){}

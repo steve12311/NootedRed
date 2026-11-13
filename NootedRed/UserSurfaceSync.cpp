@@ -70,7 +70,7 @@ UInt32 seenStages{0}, appliedCount{0}, errorCount{0}, windowServerCount{0}, weat
 UInt32 submitGuardCount{0};
 struct Published {
     UInt64 uuid[4], matched, reads, planState, planSites, planVerified;
-    UInt64 fvrcDisplay, fvrcDisplayCold, fvrcSubmit, fvrcSubmitCold;
+    UInt64 fvrcDisplay, fvrcDisplayCold, fvrcSubmit, fvrcSubmitCold, fvrcReject, fvrcHotTotal;
     UInt64 groupsEnabled, groupsRejected, renderState, scratchState, submitState;
 } published{};
 bool              srdShared{false}, legacyBlend{false}, computeScratch{false}, submitGuard{false};
@@ -425,6 +425,14 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         const bool resolved = UserSurfaceSyncResolver::resolveMetal(input, base, deviceID, plan, major, &fast);
         publish(published.fvrcDisplay, "NRedFVRCDisplayHot", fast.hot ? 1 : 0);
         publish(published.fvrcDisplayCold, "NRedFVRCDisplayCold", fast.hot ? 0 : 1);
+        // 诊断：最近一次映射身份检查结果，以及累计热路径次数（前 16 次逐次、之后每 256 次发布一次）。
+        publish(published.fvrcReject, "NRedFVRCMappingReject",
+                __atomic_load_n(&VPF::lastMappingReject, __ATOMIC_RELAXED));
+        if (const auto hot = VPF::ResolutionDiagnostics::counters.load(VPF::ResolutionEvent::Hot);
+            hot <= 16 || (hot & 0xFF) == 0)
+        {
+            publish(published.fvrcHotTotal, "NRedFVRCHotTotal", hot > 0xFFFFFFFFULL ? 0xFFFFFFFFU : static_cast<UInt32>(hot));
+        }
         if (!resolved) {
             stage(Stage::CacheMismatch);
             NRed::singleton().setProp32("NRedImmediateSyncDynamicRejected", 1);
@@ -649,6 +657,7 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
         if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d coordinated", ticket, pid); }
         return result;
     }
+    if (!UserPatchCoordinator::processAllowed(process)) { return result; }
     if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d patch-enter", ticket, pid); }
     const auto patchedResult = patchSharedRegion(process, args, result);
     if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d patch-return=%d", ticket, pid, patchedResult); }

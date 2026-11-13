@@ -227,6 +227,22 @@ namespace VPF
             for (UInt32 i = 0; i < Capacity; ++i) {
                 auto& entry = entries[i];
                 if (entry.state == 0 || entry.value.key != value.key) { continue; }
+                if (entry.state == 1) {
+                    const bool entryProven = entry.value.proof == ProofClass::ReusableImmutableIdentity;
+                    const bool valueProven = value.proof == ProofClass::ReusableImmutableIdentity;
+                    // HintOnly 来自映射不干净的进程（例如同一进程已被补丁、读到已改写的变体），
+                    // 不能否定干净映射上得到的证明；反之干净证明直接取代提示，即使提示布局不同。
+                    if (entryProven && !valueProven) {
+                        record(ResolutionStat::Duplicate);
+                        return PublishResult::Duplicate;
+                    }
+                    if (!entryProven && valueProven) {
+                        entry.value = value;
+                        record(ResolutionStat::Upgraded);
+                        record(ResolutionStat::Published);
+                        return PublishResult::Published;
+                    }
+                }
                 if (entry.state == 1 && sameLayout(entry.value, value)) {
                     if (value.proof == ProofClass::ReusableImmutableIdentity
                         && entry.value.proof == ProofClass::HintOnly)

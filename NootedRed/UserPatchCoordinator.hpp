@@ -15,6 +15,9 @@ namespace UserPatchCoordinator
     // 回调只接收已成功返回的原生结果；参数保持调用者自己的结构布局。
     using PatchCallback = int (*)(void* process, void* args, int result);
 
+    // 进程过滤：返回 false 表示该进程不加载 GPU 用户态驱动，可跳过全部共享缓存补丁。
+    using ProcessPredicate = bool (*)(void* process);
+
     PatchCallback&                           displayCallback();
     PatchCallback&                           videoCallback();
     UInt8&                                   activeFlag();
@@ -47,6 +50,15 @@ namespace UserPatchCoordinator
     inline void setActive(const bool value)
     {
         __atomic_store_n(&activeFlag(), static_cast<UInt8>(value ? 1 : 0), __ATOMIC_RELEASE);
+    }
+
+    ProcessPredicate& processFilter();
+
+    // 未注册过滤器时保持原行为：所有进程都进入补丁路径。
+    inline bool processAllowed(void* process)
+    {
+        const auto filter = processFilter();
+        return filter == nullptr || filter(process);
     }
 
     // 协调器拥有 Hook 时，模块 Hook 只调用原生链并让出补丁执行权。

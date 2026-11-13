@@ -33,6 +33,7 @@ namespace
         const auto result = reinterpret_cast<SharedRegionCheck>(originalCheck)(process, args, returnValue);
         __atomic_fetch_add(&UserPatchCoordinator::nativeCalls(), 1U, __ATOMIC_RELAXED);
         if (result != 0 || !UserPatchCoordinator::active()) { return result; }
+        if (!UserPatchCoordinator::processAllowed(process)) { return result; }
         auto mapKey = getTaskMap ? static_cast<void*>(getTaskMap(current_task())) :
                                    static_cast<void*>(current_task());
         if (!mapKey) { return result; }
@@ -62,6 +63,12 @@ namespace UserPatchCoordinator
     PatchCallback& videoCallback()
     {
         static PatchCallback value{nullptr};
+        return value;
+    }
+
+    ProcessPredicate& processFilter()
+    {
+        static ProcessPredicate value{nullptr};
         return value;
     }
 
