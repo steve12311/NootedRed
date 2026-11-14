@@ -4,6 +4,7 @@
 //        tools/probe_vp9_decode.m -o build/vp9/probe_vp9_decode
 // Input: ffmpeg -i clip.webm -c copy -f ivf clip.ivf
 // VP9_DUMP=path writes the visible luma and CbCr (NV12) of each output frame, for comparison with ffmpeg -pix_fmt nv12.
+// VP9_PERF=1 decodes asynchronously without hashing the frames and prints the decode frame rate.
 // VP9_INPROCESS=1 runs the decoder inside this process (VTApplyRestrictions), so it can be debugged with lldb.
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
@@ -19,6 +20,7 @@ static atomic_uint okFrames, badFrames;
 static atomic_int  lastError;
 static uint64_t    digest = 1469598103934665603ULL;
 static FILE*       dump;    // VP9_DUMP=path: visible luma then CbCr of every output frame, in output order
+static bool        perf;    // VP9_PERF=1: asynchronous decoding, no hashing or dump, prints the frame rate
 
 static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags flags, CVImageBufferRef image,
                     CMTime pts, CMTime duration)
@@ -40,7 +42,7 @@ static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags f
                clean.size.height, clean.origin.x, clean.origin.y);
         lastW = bufW, lastH = bufH, lastClean = clean;
     }
-    if (CVPixelBufferLockBaseAddress(image, kCVPixelBufferLock_ReadOnly)) { return; }
+    if (perf || CVPixelBufferLockBaseAddress(image, kCVPixelBufferLock_ReadOnly)) { return; }
     // Hash only the visible luma plane.
     const uint8_t* base   = CVPixelBufferGetBaseAddressOfPlane(image, 0);
     size_t         stride = CVPixelBufferGetBytesPerRowOfPlane(image, 0);
@@ -76,6 +78,7 @@ int main(int argc, char** argv)
             printf("VTApplyRestrictions(in process) = %d\n", VTApplyRestrictions ? (int)VTApplyRestrictions(1) : -1);
         }
         if (getenv("VP9_DUMP")) dump = fopen(getenv("VP9_DUMP"), "wb");
+        perf = getenv("VP9_PERF") && !dump;
         NSData* file = [NSData dataWithContentsOfFile:@(argv[1])];
         const uint8_t* d = file.bytes;
         if (file.length < 32 || memcmp(d, "DKIF", 4) || memcmp(d + 8, "VP90", 4)) {
@@ -136,6 +139,7 @@ int main(int argc, char** argv)
 
         size_t   offset = OSReadLittleInt16(d, 6);
         uint32_t sent = 0, submitErrors = 0;
+        uint64_t start = 0;
         OSStatus firstSubmitError = 0;
         while (offset + 12 <= file.length && sent < maxFrames) {
             const uint32_t size = OSReadLittleInt32(d, offset);
@@ -151,7 +155,9 @@ int main(int argc, char** argv)
             }
             if (!status) {
                 VTDecodeInfoFlags info = 0;
-                status = VTDecompressionSessionDecodeFrame(session, sample, 0, NULL, &info);
+                if (!sent) start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+                status = VTDecompressionSessionDecodeFrame(
+                    session, sample, perf ? kVTDecodeFrame_EnableAsynchronousDecompression : 0, NULL, &info);
             }
             if (status) {
                 if (!submitErrors++) firstSubmitError = status;
@@ -162,6 +168,8 @@ int main(int argc, char** argv)
             sent++;
         }
         VTDecompressionSessionWaitForAsynchronousFrames(session);
+        const double seconds = (clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start) / 1e9;
+        if (perf) printf("decode %.2f s, %.1f fps\n", seconds, atomic_load(&okFrames) / seconds);
         printf("frames sent %u, submit errors %u (first %d), decoded ok %u, bad %u (last %d), luma digest %016llx\n",
                sent, submitErrors, (int)firstSubmitError, atomic_load(&okFrames), atomic_load(&badFrames),
                atomic_load(&lastError), digest);
