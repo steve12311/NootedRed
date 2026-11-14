@@ -1,6 +1,6 @@
 // VP9 VideoToolbox decode probe: reads an IVF file, builds a vpcC record, registers VP9 like browsers do and
 // decodes every frame with the hardware decoder required. Reports session/frame status and an output digest.
-// Build: clang -fobjc-arc -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework Foundation \
+// Build: clang -fobjc-arc -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework Foundation -framework CoreGraphics \
 //        tools/probe_vp9_decode.m -o build/vp9/probe_vp9_decode
 // Input: ffmpeg -i clip.webm -c copy -f ivf clip.ivf
 // VP9_DUMP=path writes the visible luma and CbCr (NV12) of each output frame, for comparison with ffmpeg -pix_fmt nv12.
@@ -29,7 +29,17 @@ static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags f
         atomic_store(&lastError, status ? status : -1);
         return;
     }
-    atomic_fetch_add(&okFrames, 1);
+    const unsigned index = atomic_fetch_add(&okFrames, 1);
+    // Report the buffer and clean aperture of the first frame and whenever they change (resolution changes).
+    static size_t lastW, lastH;
+    static CGRect lastClean;
+    const size_t  bufW = CVPixelBufferGetWidth(image), bufH = CVPixelBufferGetHeight(image);
+    const CGRect  clean = CVImageBufferGetCleanRect(image);
+    if (bufW != lastW || bufH != lastH || !CGRectEqualToRect(clean, lastClean)) {
+        printf("frame %u: buffer %zux%zu, clean %gx%g at %g,%g\n", index, bufW, bufH, clean.size.width,
+               clean.size.height, clean.origin.x, clean.origin.y);
+        lastW = bufW, lastH = bufH, lastClean = clean;
+    }
     if (CVPixelBufferLockBaseAddress(image, kCVPixelBufferLock_ReadOnly)) { return; }
     // Hash only the visible luma plane.
     const uint8_t* base   = CVPixelBufferGetBaseAddressOfPlane(image, 0);
