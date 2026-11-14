@@ -297,6 +297,9 @@ int main(int argc,char** argv){
 
 def main():
     write_sources()
+    # Fase 5, passo A: il coordinatore pubblica i contatori VCN definiti in HWLibs.cpp; qui basta uno stub.
+    main_cpp = WORK / 'main.cpp'
+    main_cpp.write_text('#include <VCNPowerTrace.hpp>\nvoid VCNPowerTrace::publishPending() {}\n' + main_cpp.read_text())
     for mode, flags in [('normal', ['-O2']),
                         ('kext-debug', ['-O0', '-mkernel', '-fapple-kext', '-fvisibility-inlines-hidden']),
                         ('kext-release', ['-O3', '-mkernel', '-fapple-kext', '-fvisibility-inlines-hidden']),

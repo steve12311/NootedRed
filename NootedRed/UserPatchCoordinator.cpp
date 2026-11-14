@@ -5,6 +5,7 @@
 #include <IOKit/IOLib.h>
 #include <NRed.hpp>
 #include <UserPatchCoordinator.hpp>
+#include <VCNPowerTrace.hpp>
 #include <UserPhaseTiming.hpp>
 #include <VPF/DisplayDependencyPlanner.hpp>
 #include <kern/task.h>
@@ -284,6 +285,8 @@ namespace UserPatchCoordinator
     int coordinate(void* process, void* args, const int result, void* mapKey)
     {
         if (!active() || !mapKey) { return result; }
+        // Fase 5, passo A: i contatori del VCN si pubblicano qui, in contesto thread e fuori da ogni lock.
+        VCNPowerTrace::publishPending();
         // Fase 0: tempo totale della chiamata, inclusa l'attesa del lease; pubblicato a fine funzione, fuori dal lease.
         UserPhaseTiming::Timer total(UserPhaseTiming::Phase::CoordinateFull);
         // 同一线程嵌套进入时不重复执行补丁；等待其他 map 时只睡眠，不持有注册表锁。

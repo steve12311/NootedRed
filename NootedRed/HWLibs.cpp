@@ -29,6 +29,7 @@
 #include <PenguinWizardry/PatcherPlus.hpp>
 #include <Regs/SDMA0.hpp>
 #include <Regs/SMU.hpp>
+#include <VCNPowerTrace.hpp>
 #include <kern/assert.h>
 #include <libkern/OSTypes.h>
 #include <libkern/c++/OSBoolean.h>
@@ -476,6 +477,23 @@ static const UInt8 kCailQueryAdapterInfoPatched[]  = {0x83, 0xC0, 0x91, 0x83, 0x
 
 static X5000HWLibs moduleInstance;
 
+// Fase 5, passo A (-NRedVCNPowerTrace): conta le richieste di PowerPlay di spegnere/accendere il VCN.
+static VCNPowerTrace::State& vcnPowerTrace()
+{
+    static VCNPowerTrace::State value{};
+    return value;
+}
+
+static UInt32 wrapPhmPowerGateVCN(void* const hwmgr, const UInt32 gate, const UInt32 instance)
+{ return VCNPowerTrace::call(vcnPowerTrace(), hwmgr, gate, instance); }
+
+void VCNPowerTrace::publishPending()
+{
+    if (vcnPowerTrace().original == nullptr) { return; }
+    VCNPowerTrace::publish(vcnPowerTrace(),
+                           [](const char* const key, const UInt32 value) { NRed::singleton().setProp32(key, value); });
+}
+
 X5000HWLibs& X5000HWLibs::singleton() { return moduleInstance; }
 
 X5000HWLibs::X5000HWLibs()
@@ -740,6 +758,27 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
 
     PANIC_COND(!patcher.routeMultiple(id, dmcuFwRequests, slide, size), "HWLibs",
                "Failed to route DMCU FW-related functions");
+
+    // Solo osservazione e mai fatale: se qualcosa non si risolve si prosegue senza traccia.
+    if (checkKernelArgument("-NRedVCNPowerTrace")) {
+        auto& trace         = vcnPowerTrace();
+        trace.renoirBackend = reinterpret_cast<void*>(patcher.solveSymbol(id, "_PhwRenoir_PowerGateVCN", slide, size, true));
+        patcher.clearError();
+        trace.swSmuBackend = reinterpret_cast<void*>(patcher.solveSymbol(id, "_Phw_SwSmu_PowerGateVcn", slide, size, true));
+        patcher.clearError();
+        // L'originale va direttamente nello stato condiviso: è pronto prima che il salto sia scritto.
+        KernelPatcher::RouteRequest request{"_PHM_PowerGateVCN", wrapPhmPowerGateVCN, trace.original};
+        // Salto corto (5-6 byte): copia solo `push rbp; mov rbp, rsp; test rdi, rdi` nel trampolino, senza il
+        // `je` relativo che segue (un salto lungo da 14 byte lo copierebbe con la destinazione sbagliata).
+        if (patcher.routeMultipleShort(id, &request, 1, slide, size)) {
+            NRed::singleton().setProp32("NRedVCNPowerTrace", trace.renoirBackend ? 1 : 2);
+        }
+        else {
+            patcher.clearError();
+            trace.original = nullptr;
+            NRed::singleton().setProp32("NRedVCNPowerTrace", 0);
+        }
+    }
 
     PANIC_COND(MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS, "HWLibs",
                "Failed to enable kernel writing");

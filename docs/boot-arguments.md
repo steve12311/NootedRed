@@ -44,6 +44,17 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 应用和 WindowServer 始终补丁。`-NRedPatchAllProcs` 关闭该过滤，所有进程照常补丁；
 判定规则与诊断见 [进程过滤与 FVRC 复用](process-filter-fvrc.md)。
 
+以下诊断参数默认关闭，只用于测量，不改变补丁或电源行为：
+
+| 参数 | 作用 | 结果 |
+| --- | --- | --- |
+| `-NRedPhaseTiming` | 共享缓存补丁分阶段计时 | `NRedPhase<阶段>AvgUs/MaxUs/Samples` |
+| `-NRedRejectTrace` | 记录前 32 次被拒绝的共享缓存（pid、名称、基址、UUID） | `dmesg` |
+| `-NRedVCNPowerTrace` | 统计 PowerPlay 对 VCN 的关断／开启请求，原函数照常执行 | `NRedVCNPG*` |
+
+`NRedVCNPGGated=1` 表示 VCN 当前已由 PowerPlay（`PhwRenoir_PowerGateVCN`，SMU 消息 `0xB`/`0xC`）关断；
+计数在下一次进程启动时发布到 ioreg。
+
 插件全局关闭 `-NRedOff`、调试参数及上游的 `AMDBacklight` 设置不在本次更名范围内；
 `AMDBacklight=0` 仍会阻止 EC 服务启动。
 
