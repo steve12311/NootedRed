@@ -188,3 +188,43 @@ software). Il clip di prova si ottiene con `ffmpeg -i clip.webm -c copy -f ivf c
 aggancia a `VTDecoderXPCService` con SIP attivo: le prove restano statiche più il registro di sistema.
 
 **Niente browser con la sonda attiva:** Safari/Chrome vedrebbero VP9 hardware disponibile e fallirebbero.
+
+## V2 — Messaggio VCN, provato offline (14/11/2026: superata)
+
+[`VP9Message.hpp`](../NootedRed/VP9Message.hpp) (con le tabelle in [`VP9DefaultProbs.hpp`](../NootedRed/VP9DefaultProbs.hpp))
+trasforma un fotogramma VP9 nel messaggio di decodifica del VCN 2: `rvcn_dec_message_vp9_t` (120 byte), la parte
+segmentazione del buffer IT (`rvcn_dec_vp9_probs_segment_t`), le probabilità iniziali del contesto e la sua dimensione.
+È il porting di Mesa `767fbf7c` (MIT): frontend VA `picture_vp9.c`, `si_dec_vp9`, `build_vp9_msg`,
+`ac_vcn_vp9_fill_probs_table`, `calc_ctx_size_vp9`. Nessun legame con kernel o driver; il kext non lo include ancora.
+
+**Ingresso scelto.** Solo i byte del fotogramma (già separato dal superframe), la superficie di uscita e le otto
+superfici `ref_frame_map`. L'header non compresso si legge dal bitstream, come fa Mesa: non servono gli offset
+dell'header `H` di AppleGVA ancora da confermare (`interp_filter`, `+0x1D..0x21`). In V3 restano da confermare solo
+l'indirizzo e la dimensione del fotogramma a `P+0x0000/0x0008` e le superfici a `P+0x1250` / `P+0x1260 + i·0x1258`.
+
+**Il test** ([`test_vp9_message.py`](../tools/test_vp9_message.py)) compila il codice vero di Mesa
+([`fetch_vp9_mesa.sh`](../tools/fetch_vp9_mesa.sh), commit fissato) e lo alimenta come farebbe `ffmpeg` con VA-API:
+l'header letto dal parser CBS di `ffmpeg` (indipendente dal nostro) diventa i parametri VA, poi il frontend VA di
+Mesa, `si_dec_vp9` e `build_vp9_msg` producono il messaggio. Il confronto è byte per byte, fotogramma per fotogramma,
+su messaggio, buffer di segmentazione, slot dei riferimenti e dimensioni degli header. Risultato: **222 fotogrammi
+identici** su 9 clip libvpx (352×288 – 1280×720, dimensioni dispari, 2–4 colonne di tile, segmentazione `aq-mode`
+1/2/3 con aggiornamento temporale, alt-ref nascosti a due passate, error resilient, lossless, profilo 2 a 10 bit sia
+P010 sia con dithering verso NV12). In più: probabilità iniziali e dimensione del contesto uguali a Mesa, 20 000
+fotogrammi casuali o troncati senza letture fuori dal buffer (ASan/UBSan), `show_existing_frame` e profili 1/3
+rifiutati. Quattro mutazioni volute del codice (livelli del filtro, slot di riserva, `use_prev_frame_mvs`, dati di
+segmentazione) vengono tutte rilevate.
+
+**Non coperto dai clip** (libvpx via `ffmpeg` non li genera): fotogrammi `intra_only`, `show_existing_frame` in un
+flusso reale, cambi di risoluzione con riferimenti scalati, più righe di tile, `sharpness`, segmenti con riferimento
+forzato. I vettori ufficiali `vp90-2-*` di libvpx li coprirebbero (da scaricare: non fatto).
+
+**Scelte da tenere presenti in V3.**
+
+- Il test ha trovato un errore che a occhio non si vedeva: `RDECODE_DITHERING_RANDOM` vale 5, non 1.
+- Come Mesa, la lunghezza dell'header non compresso passa da un campo a 8 bit; le probabilità di segmentazione
+  seguono la specifica (255 se non codificate, quelle di predizione a 255 senza aggiornamento temporale).
+- Dimensione compilata per il kernel (`-Os -mkernel`): 4,5 KB di codice + 2,1 KB di tabelle = 6,6 KB, entro i
+  10 416 byte del processore AV1; restano ~3,8 KB per il collegamento al driver. Per starci il lettore di bit è
+  fuori linea (senza: 8,3 KB di codice).
+- Il resto del comando (messaggio di decodifica generico, buffer DPB/contesto/bitstream, registri) resta al codice
+  `Vcn2DecCommand` che il driver AMD usa già per HEVC.

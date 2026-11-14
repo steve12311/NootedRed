@@ -172,3 +172,6 @@ Le fasi V0 e V1 dicono presto se il progetto si può fare: conviene fare quelle,
   VP9 hardware dopo la registrazione e AppleGVA arriva al driver AMD, che rifiuta il contesto (`-12907`, chiusura
   pulita): `AvdVAContext::GetVAFunctionType` non conosce `type 0x1000`. Dettagli e strumento di prova
   (`tools/probe_vp9_decode.m`, perché `ffmpeg` 6.1 non registra VP9) in [VP9 V0](vp9-v0-findings.md#v1--sonda-sulla-macchina-14112026-superata).
+- **V2 — completata (14/11/2026).** `NootedRed/VP9Message.hpp` produce gli stessi messaggi VCN di Mesa, byte per
+  byte, su 222 fotogrammi di 9 clip libvpx (profilo 0 e 2); 6,6 KB compilato per il kernel. Non tocca il kext, quindi
+  nessun boot-arg. Dettagli e limiti della copertura in [VP9 V0](vp9-v0-findings.md#v2--messaggio-vcn-provato-offline-14112026-superata).

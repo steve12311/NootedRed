@@ -1,0 +1,131 @@
+/* Mesa reference for tools/test_vp9_message.py: the real VA frontend (picture_vp9.c), si_dec_vp9 and
+ * build_vp9_msg, compiled with stubs for everything around them. @@MARKERS@@ are filled by the test. */
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#define CLAMP(x, lo, hi) ((x) < (lo) ? (lo) : (x) > (hi) ? (hi) : (x))
+#define MIN2(a, b) ((a) < (b) ? (a) : (b))
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
+#define ERROR(...) fprintf(stderr, __VA_ARGS__)
+static inline unsigned util_logbase2(unsigned n) { return 31 - __builtin_clz(n | 1); }
+static inline uint32_t util_bswap32(uint32_t v) { return __builtin_bswap32(v); }
+
+/* ---- ac_video_dec.h / ac_vcn_dec.h ---- */
+@@AC_TYPES@@
+
+/* ---- p_video_state.h ---- */
+struct pipe_video_buffer { int id; };
+struct pipe_picture_desc { bool protected_playback; };
+enum pipe_slice_buffer_placement_type {
+   PIPE_SLICE_BUFFER_PLACEMENT_TYPE_WHOLE, PIPE_SLICE_BUFFER_PLACEMENT_TYPE_BEGIN,
+   PIPE_SLICE_BUFFER_PLACEMENT_TYPE_MIDDLE, PIPE_SLICE_BUFFER_PLACEMENT_TYPE_END,
+};
+@@PIPE_TYPES@@
+
+#include "vp9-va.h"
+
+/* ---- va_private.h ---- */
+typedef struct { int unused; } vlVaDriver;
+typedef struct {
+   void *decoder;
+   struct { unsigned max_references; } templat;
+   union { struct pipe_vp9_picture_desc vp9; } desc;
+} vlVaContext;
+typedef struct { void *data; unsigned size, num_elements; } vlVaBuffer;
+static struct pipe_video_buffer surfaces[64];
+static void vlVaGetReferenceFrame(vlVaDriver *drv, VASurfaceID id, struct pipe_video_buffer **ref)
+{
+   (void)drv;
+   *ref = id == VA_INVALID_SURFACE || id >= 64 ? NULL : &surfaces[id];
+}
+
+#include "vl_vlc.h"
+@@PICTURE_VP9@@
+
+/* ---- ac_vcn_dec.c ---- */
+#include "ac_vcn_vp9_default.h"
+#define PIPE_FORMAT_NV12 1
+#define VCN_2_0_0 0x200
+struct cmd_buffer { void *it_probs_ptr; };
+struct ac_vcn_decoder { unsigned vcn_version; struct ac_video_dec base; };
+@@AC_VCN_FUNCS@@
+
+/* ---- si_video_dec.c ---- */
+struct vl_video_buffer { struct pipe_video_buffer base; void *resources[1]; };
+struct si_video_dec {
+   struct { unsigned width, height, profile; } base;
+   void *dec;
+   struct pipe_video_buffer *render_pic_list[32];
+   struct cmd_buffer cmd_buf;
+   rvcn_dec_message_vp9_t msg;
+   uint32_t msg_size;
+};
+#define PIPE_VIDEO_PROFILE_VP9_PROFILE2 2
+unsigned mesa_ref_output_format = 1; /* PIPE_FORMAT_NV12; anything else selects P010 */
+static int si_dec_init_decoder(struct si_video_dec *vid, struct ac_video_dec_session_param *param, bool prot)
+{
+   (void)param, (void)prot;
+   vid->dec = vid;
+   return 0;
+}
+static void decode_cmd_init(struct si_video_dec *vid, struct pipe_picture_desc *pic, struct pipe_video_buffer *target,
+                            struct ac_video_dec_decode_cmd *cmd)
+{
+   (void)vid, (void)pic, (void)target;
+   memset(cmd, 0, sizeof(*cmd));
+   cmd->decode_surface.format = mesa_ref_output_format;
+}
+static void si_dec_fill_surface(struct si_video_dec *vid, void *res, int usage, void *out) { (void)vid, (void)res, (void)usage, (void)out; }
+#define RADEON_USAGE_READWRITE 0
+static int decode_cmd_build(struct si_video_dec *vid, struct pipe_picture_desc *pic, struct ac_video_dec_decode_cmd *cmd)
+{
+   (void)pic;
+   vid->msg_size = build_vp9_msg(&vid->cmd_buf, cmd, &vid->msg);
+   return 0;
+}
+@@SI_DEC_VP9@@
+
+/* ---- C entry points for the harness ---- */
+static vlVaDriver drv;
+static vlVaContext ctx;
+static struct si_video_dec vid;
+static rvcn_dec_vp9_probs_segment_t it_probs;
+
+unsigned mesa_ref_message_size(void) { return sizeof(rvcn_dec_message_vp9_t); }
+unsigned mesa_ref_probs_segment_size(void) { return sizeof(rvcn_dec_vp9_probs_segment_t); }
+unsigned mesa_ref_probs_size(void) { return sizeof(rvcn_dec_vp9_probs_t); }
+void mesa_ref_default_probs(void *out) { ac_vcn_vp9_fill_probs_table(out); }
+unsigned mesa_ref_ctx_size(unsigned vcn_version, unsigned max_bit_depth)
+{
+   struct ac_vcn_decoder dec;
+   memset(&dec, 0, sizeof(dec));
+   dec.vcn_version = vcn_version;
+   dec.base.param.max_bit_depth = max_bit_depth;
+   return calc_ctx_size_vp9(&dec);
+}
+void mesa_ref_reset(unsigned output_format)
+{
+   mesa_ref_output_format = output_format;
+   memset(&ctx, 0, sizeof(ctx));
+   memset(&vid, 0, sizeof(vid));
+   memset(&it_probs, 0, sizeof(it_probs));
+   vid.cmd_buf.it_probs_ptr = &it_probs;
+}
+/* One frame: VA picture/slice parameters as ffmpeg's vaapi_vp9 fills them, then the bitstream. */
+unsigned mesa_ref_decode(VADecPictureParameterBufferVP9 *pp, VASliceParameterBufferVP9 *sp, const void *frame,
+                         unsigned size, unsigned target, void *msg_out, void *probs_out)
+{
+   vlVaBuffer pbuf = {pp, sizeof(*pp), 1}, sbuf = {sp, sizeof(*sp), 1}, dbuf = {(void *)frame, size, 1};
+   vlVaHandlePictureParameterBufferVP9(&drv, &ctx, &pbuf);
+   vlVaHandleSliceParameterBufferVP9(&ctx, &sbuf);
+   vlVaDecoderVP9BitstreamHeader(&ctx, &dbuf);
+   vid.base.profile = pp->profile;
+   vid.msg_size = 0;
+   si_dec_vp9(&vid, &surfaces[target], &ctx.desc.vp9);
+   memcpy(msg_out, &vid.msg, sizeof(vid.msg));
+   memcpy(probs_out, &it_probs, sizeof(it_probs));
+   return vid.msg_size;
+}
