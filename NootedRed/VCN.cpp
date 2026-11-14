@@ -10,8 +10,12 @@
 #include <VCNCapabilities.hpp>
 #include <VCNKernelData.hpp>
 #include <VCNKernelProfiles.hpp>
+#include <VP9Probe.hpp>
 #include <libkern/OSKextLib.h>
+#include <libkern/c++/OSArray.h>
+#include <libkern/c++/OSDictionary.h>
 #include <libkern/c++/OSMetaClass.h>
+#include <libkern/c++/OSNumber.h>
 
 namespace
 {
@@ -47,6 +51,38 @@ namespace
         return requested && VCNCapabilities::rejection(NRed::singleton().getDeviceID(), currentKernelVersion()) == 0;
     }
 
+    // Scrive le chiavi della sonda VP9 sull'acceleratore (fase V1, -NRedVP9Probe).
+    struct VP9ServiceSink
+    {
+        IOService* service;
+        bool       string(const char* key, const char* value) { return service->setProperty(key, value); }
+        bool       profiles(const char* key, const char* arrayKey, const UInt32* values, size_t count)
+        {
+            auto* array = OSArray::withCapacity(static_cast<unsigned>(count));
+            auto* dict  = OSDictionary::withCapacity(1);
+            bool  ok    = array && dict;
+            for (size_t i = 0; ok && i < count; ++i) {
+                auto* number = OSNumber::withNumber(values[i], 32);
+                ok           = number && array->setObject(number);
+                OSSafeReleaseNULL(number);
+            }
+            ok = ok && dict->setObject(arrayKey, array) && service->setProperty(key, dict);
+            OSSafeReleaseNULL(array);
+            OSSafeReleaseNULL(dict);
+            return ok;
+        }
+        void remove(const char* key) { service->removeProperty(key); }
+    };
+
+    void publishVP9Probe(void* self, bool started)
+    {
+        if (!checkKernelArgument(VP9Probe::BootArg)) { return; }
+        VP9ServiceSink sink{static_cast<IOService*>(self)};
+        const auto     status = VP9Probe::publish(sink, started && VCN::ready());
+        NRed::singleton().setProp32(VP9Probe::StatusKey, status);
+        SYSLOG("VCN", "VP9 probe status=%u", status);
+    }
+
     bool acceleratorStart(void* self, IOService* provider)
     {
         auto  original = reinterpret_cast<bool (*)(void*, IOService*)>(acceleratorStartOriginal);
@@ -69,6 +105,7 @@ namespace
         const auto result = original(self, provider);
         NRed::singleton().setProp32("NRedVCNAcceleratorStarted", result);
         if (!result && !engineAllocated) { __atomic_store_n(&loadCompleted, false, __ATOMIC_RELEASE); }
+        publishVP9Probe(self, result);
         return result;
     }
 

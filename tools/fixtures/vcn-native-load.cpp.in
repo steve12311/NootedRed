@@ -41,6 +41,15 @@ mach_vm_address_t acceleratorStartOriginal = 0;
 namespace VCN { bool ready(); void init(); }
 static std::set<std::string> bootArgs;
 static bool checkKernelArgument(const char* name) { return bootArgs.contains(name); }
+#include <VP9Probe.hpp>
+// Sink finto: registra le chiavi VP9 scritte sull'acceleratore.
+static std::map<std::string, std::string> vp9Keys;
+struct VP9ServiceSink {
+    IOService* service;
+    bool string(const char* k, const char* v) { assert(service); vp9Keys[k] = v; return true; }
+    bool profiles(const char* k, const char*, const UInt32*, size_t) { vp9Keys[k] = "dict"; return true; }
+    void remove(const char* k) { vp9Keys.erase(k); }
+};
 static int x6000 = 0;
 static unsigned forceLoads = 0;
 struct FakeLilu {
@@ -77,6 +86,7 @@ void reset()
     loadCalls = startCalls = 0;
     expectedReady = false;
     NRed::singleton().properties.clear();
+    vp9Keys.clear();
     acceleratorStartOriginal = reinterpret_cast<uintptr_t>(originalStart);
 }
 int main()
@@ -149,5 +159,18 @@ int main()
     expectedProvider = &other;expectedReady = true;originalResult = false;
     assert(!acceleratorStart(expectedSelf, &other));
     assert(loadCalls == 0 && loadCompleted && VCN::ready());
-    std::puts("PASS: native load precedes start; gates, deferred/error fallback, bounded requests and native result preserved");
+    // Sonda VP9: solo con il boot-arg, chiavi solo se l'acceleratore parte e il ponte VCN è pronto.
+    for (bool probe : {false, true}) for (bool prepared : {false, true}) for (bool started : {false, true}) {
+        reset();device.vendor = 0x1002;device.device = 0x1638;expectedProvider = &device;
+        bootArgs = {"-NRedVideoFix"};
+        if (probe) { bootArgs.insert("-NRedVP9Probe"); }
+        callbackPrepared = prepared;originalResult = started;expectedReady = prepared;
+        assert(acceleratorStart(expectedSelf, &device) == started);
+        const auto& props = NRed::singleton().properties;
+        if (!probe) { assert(!props.contains("NRedVP9Probe") && vp9Keys.empty()); continue; }
+        const bool published = prepared && started;
+        assert(props.at("NRedVP9Probe") == (published ? VP9Probe::Published : VP9Probe::NotEligible));
+        assert(vp9Keys.size() == (published ? 3U : 0U));
+    }
+    std::puts("PASS: native load precedes start; gates, deferred/error fallback, bounded requests, native result preserved, VP9 probe gated");
 }

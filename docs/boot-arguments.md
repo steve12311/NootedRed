@@ -52,6 +52,11 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 | `-NRedRejectTrace` | 记录前 32 次被拒绝的共享缓存（pid、名称、基址、UUID） | `dmesg` |
 | `-NRedVCNPowerTrace` | 统计 PowerPlay 对 VCN 的关断／开启请求，原函数照常执行 | `NRedVCNPG*` |
 
+实验参数 `-NRedVP9Probe`（VP9 计划 V1 阶段，需同时设置 `-NRedVideoFix`）：VCN 桥接就绪后在加速器上发布
+`IOGVAXDecode`、`IOGVAVP9Decode`、`IOGVAVP9DecodeCapabilities`（仅 profile 0），结果见 `NRedVP9Probe`
+（1 已发布，0 写入失败，2 不满足条件）。驱动尚无 VP9 解码后端，浏览器会改选 VP9 而无法播放：
+只在测试时开启，见 [VP9 硬解 V0 结论](vp9-v0-findings.md)。
+
 `NRedVCNPGGated=1` 表示 VCN 当前已由 PowerPlay（`PhwRenoir_PowerGateVCN`，SMU 消息 `0xB`/`0xC`）关断；
 计数在下一次进程启动时发布到 ioreg。
 
