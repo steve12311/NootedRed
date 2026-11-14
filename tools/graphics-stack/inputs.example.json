@@ -1,0 +1,10 @@
+{
+  "kernel_bundles": "components/System/Library/Extensions",
+  "shared_bundles": "components/userland",
+  "metal_metadata": "components/AMDRadeonX5000MTLDriver.bundle",
+  "metal_unpatched": "components/AMDRadeonX5000MTLDriver.unpatched",
+  "compat_library": "components/NRedMetalCompat.dylib",
+  "nootedred": "components/NootedRed27.kext",
+  "aux_loader": "components/auxkcload",
+  "aux_license": "components/aux-loader-LICENSE"
+}

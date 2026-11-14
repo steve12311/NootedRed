@@ -2,6 +2,8 @@
 
 `tools/metal-compat` contains a source-only user-space adapter for a specific **interface pairing**: Darwin 27 Metal descriptor storage and a Sequoia AMD X5000 Metal driver. It does not select a laptop model, PCI device ID, SMBIOS, cache UUID, driver UUID or OS build number.
 
+For the complete prepared-component workflow, start with the [graphics stack installation guide](darwin27-graphics-stack.md).
+
 This is a component for experimental driver-transplant integrations. It does not make the ordinary NootedRed kext alone support Darwin 27, supply Apple binaries, load kernel collections or install a working graphics stack. Kernel driver matching, firmware, user-space dependency reconstruction and any existing command-buffer layout adaptation remain the integrator's responsibility. The existing supported-OS kernel paths are unchanged.
 
 ## Failure and evidence

@@ -4,11 +4,15 @@ on:
   pull_request:
     paths:
       - 'tools/metal-compat/**'
+      - 'tools/graphics-stack/**'
+      - 'docs/darwin27-graphics-stack.md'
       - 'docs/metal-descriptor-abi.md'
       - '.github/workflows/metal-compat.yml'
   push:
     paths:
       - 'tools/metal-compat/**'
+      - 'tools/graphics-stack/**'
+      - 'docs/darwin27-graphics-stack.md'
       - 'docs/metal-descriptor-abi.md'
       - '.github/workflows/metal-compat.yml'
   workflow_dispatch:
@@ -22,6 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: python3 tools/metal-compat/build.py test
+      - run: python3 tools/graphics-stack/test_stack.py
   build:
     runs-on: macos-latest
     steps:

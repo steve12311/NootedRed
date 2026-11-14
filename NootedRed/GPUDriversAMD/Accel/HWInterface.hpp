@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // Version-independent interface to the `AMDRadeonX5000_AMDHWInterface` class
 //
 // Copyright © 2025 ChefKiss. Licensed under the Thou Shalt Not Profit License version 1.5.
@@ -20,13 +21,13 @@ class AMDRadeonX5000_AMDHWInterface
 
         Constants()
         {
-            if (currentKernelVersion() >= MACOS_11) {
+            if (appleDriverVersion() >= MACOS_11) {
                 this->vtGetHWInfo         = 0x1C0;
                 this->vtGetHWAlignManager = 0x300;
                 this->vtGetHWMemory       = 0x2D8;
                 this->hwInfoAddrConfig    = 0xA0;
             }
-            else if (currentKernelVersion() <= MACOS_10_14_X) {
+            else if (appleDriverVersion() <= MACOS_10_14_X) {
                 this->vtGetHWInfo         = 0x1B0;
                 this->vtGetHWAlignManager = 0x2D8;
                 this->vtGetHWMemory       = 0x2B8;
