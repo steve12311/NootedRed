@@ -268,6 +268,34 @@ non lo spegnimento a riposo, che passa da PowerPlay.
   driver lo usa. Il consumo in batteria non è stato misurato: non c'è nulla da confrontare.
 - Il contatore resta nel codice, spento di default, per controllare il ciclo dopo futuri aggiornamenti di macOS.
 
+## Indagine video (14/11/2026)
+
+Verifica di decodifica e codifica su Renoir con `ffmpeg` (clip di 10 s, 300 fotogrammi) e VideoToolbox. Nessun errore
+nei log, nessuna modifica necessaria.
+
+| Prova | Hardware (VCN) | Software (CPU) |
+| --- | --- | --- |
+| Decodifica H.264 4K | ~100 fps, 0,5 s di CPU | 8,7 s di CPU |
+| Decodifica HEVC 8 bit 4K | ~80 fps, 0,5 s di CPU | 11,5 s di CPU |
+| Decodifica HEVC 10 bit 4K | ~100 fps, 0,5 s di CPU | 21,4 s di CPU |
+| Codifica H.264 / HEVC 1080p | ~150 / ~140 fps | x264 veryfast ~200 fps, 11,6 s di CPU |
+| Codifica H.264 / HEVC 4K | ~52 / ~48 fps | — |
+| Codifica HEVC Main10 4K | ~32 fps, uscita `yuv420p10le` | — |
+| 3 decodifiche HEVC 4K + 1 codifica in parallelo | 9 s in tutto, nessun errore | — |
+
+- **Avvio del decoder:** la prima sessione hardware di un processo costa ~30 ms; i ~100 ms in più visti con `ffmpeg`
+  sono l'inizializzazione di VideoToolbox, uguale anche per una sessione software. Non dipende da NootedRed.
+- **VP9:** non disponibile in hardware. `AMDRadeonVADriver2` ha decoder per AVC, HEVC, MPEG-2, VC-1, JPEG e AV1
+  (solo VCN3), ma nessuno per VP9, anche se il VCN 2.2 di Renoir lo supporterebbe. Servirebbe scrivere un decoder:
+  fuori portata.
+- **AV1:** il VCN 2.2 di Renoir non lo supporta in hardware.
+- **MPEG-2 / JPEG:** il driver ha il codice ma VideoToolbox non li espone come hardware; formati di nicchia, non vale
+  il rischio.
+- **Consiglio d'uso:** i video web in VP9 (es. YouTube nei browser che lo scelgono) vengono decodificati dalla CPU.
+  Un'estensione che forza H.264 li sposta sul VCN, con meno consumi (YouTube offre H.264 fino a 1080p).
+- **VP9 in hardware:** piano separato in [Decodifica VP9 in hardware](vp9-hw-decode-plan.md): AppleGVA ha già il
+  decoder VP9, manca il backend `kAVDPictureDecodeVP9` nel driver AMD.
+
 ## Fuori piano
 
 - **Alleggerire la ricerca con la cache pronta** (misurata ~0,6–1,2 ms in fase 0): toglierebbe parte della verifica completa dei byte
