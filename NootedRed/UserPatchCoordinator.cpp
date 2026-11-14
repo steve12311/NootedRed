@@ -26,6 +26,71 @@ namespace
     GetTaskMap        getTaskMap{nullptr};
     UInt32            displayGroups{0};
 
+    // 已完成两侧补丁的 map：只作为“可以先核验 proof”的提示，从不单独决定跳过。
+    struct CompletedMap
+    {
+        void*                             map{nullptr};
+        UInt64                            base{0};
+        UserPatchCoordinator::Participant display{}, video{};
+    };
+    constexpr UInt32 CompletedSlots = UserPatchCoordinator::MaxMapSlots;
+    CompletedMap     completed[CompletedSlots]{};
+    UInt32           completedNext{0};
+
+    bool settled(const UserPatchCoordinator::Participant& value)
+    {
+        return value.outcome == UserPatchCoordinator::Outcome::Patched
+               || value.outcome == UserPatchCoordinator::Outcome::Idle;
+    }
+
+    bool proven(const UserPatchCoordinator::Reader read, const UserPatchCoordinator::Participant& value)
+    {
+        if (value.outcome == UserPatchCoordinator::Outcome::Idle) { return true; }
+        if (value.outcome != UserPatchCoordinator::Outcome::Patched || value.proof.size == 0
+            || value.proof.size > UserPatchCoordinator::ProofSize)
+        {
+            return false;
+        }
+        UInt8 bytes[UserPatchCoordinator::ProofSize];
+        return read(value.proof.address, bytes, value.proof.size) == 0
+               && memcmp(bytes, value.proof.bytes, value.proof.size) == 0;
+    }
+
+    // 锁内只复制或改写表项；copyin 一律在锁外完成。
+    bool lookupCompleted(void* map, CompletedMap& out)
+    {
+        bool found = false;
+        IOLockLock(UserPatchCoordinator::gateLock());
+        for (UInt32 i = 0; i < CompletedSlots; ++i) {
+            if (completed[i].map == map) {
+                out   = completed[i];
+                found = true;
+                break;
+            }
+        }
+        IOLockUnlock(UserPatchCoordinator::gateLock());
+        return found;
+    }
+
+    void storeCompleted(const CompletedMap& value)
+    {
+        IOLockLock(UserPatchCoordinator::gateLock());
+        UInt32 slot = CompletedSlots;
+        for (UInt32 i = 0; i < CompletedSlots; ++i) {
+            if (completed[i].map == value.map) {
+                slot = i;
+                break;
+            }
+            if (!completed[i].map && slot == CompletedSlots) { slot = i; }
+        }
+        if (slot == CompletedSlots) {
+            slot          = completedNext;
+            completedNext = (completedNext + 1) % CompletedSlots;
+        }
+        completed[slot] = value;
+        IOLockUnlock(UserPatchCoordinator::gateLock());
+    }
+
     __attribute__((noinline))
     int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* returnValue)
     {
@@ -114,6 +179,28 @@ namespace UserPatchCoordinator
         return value;
     }
 
+    UInt32& skippedRuns()
+    {
+        static UInt32 value{0};
+        return value;
+    }
+
+    Reader& reader()
+    {
+        static Reader value{nullptr};
+        return value;
+    }
+
+    void forgetMap(void* mapKey)
+    {
+        if (!mapKey || !gateLock()) { return; }
+        IOLockLock(gateLock());
+        for (UInt32 i = 0; i < CompletedSlots; ++i) {
+            if (completed[i].map == mapKey) { completed[i] = {}; }
+        }
+        IOLockUnlock(gateLock());
+    }
+
     int coordinate(void* process, void* args, const int result, void* mapKey)
     {
         if (!active() || !mapKey) { return result; }
@@ -125,9 +212,38 @@ namespace UserPatchCoordinator
                 __atomic_fetch_add(&leaseRejections(), 1U, __ATOMIC_RELAXED);
                 return result;
             }
-            if (const auto callback = displayCallback()) { patched = callback(process, args, patched); }
-            if (const auto callback = videoCallback()) { patched = callback(process, args, patched); }
+            // 缓存头只读一次，两个参与者共用；读失败时参与者各自按旧路径读取并报告。
+            Transaction transaction{};
+            const auto  read = reader();
+            const auto  startAddress = args ? static_cast<const SharedRegionCheckArgs*>(args)->startAddress : 0ULL;
+            if (read && startAddress && read(startAddress, &transaction.base, sizeof(transaction.base)) == 0
+                && transaction.base != 0 && (transaction.base & 4095) == 0
+                && read(transaction.base, transaction.header, HeaderSize) == 0)
+            {
+                transaction.cacheRead = true;
+            }
+            // 同一 map 已完成过：同一缓存基址且两侧 proof 仍在内存中才跳过；任何不确定都走完整搜索。
+            CompletedMap previous{};
+            if (transaction.cacheRead && lookupCompleted(mapKey, previous) && previous.base == transaction.base
+                && proven(read, previous.display) && proven(read, previous.video))
+            {
+                const auto skipped = __atomic_add_fetch(&skippedRuns(), 1U, __ATOMIC_RELAXED);
+                if (skipped <= 16 || (skipped & 0xFF) == 0) {
+                    NRed::singleton().setProp32("NRedPatchCoordinatorSkippedRuns", skipped);
+                }
+                return result;
+            }
+            if (const auto callback = displayCallback()) { patched = callback(process, args, patched, transaction); }
+            if (const auto callback = videoCallback()) { patched = callback(process, args, patched, transaction); }
             __atomic_fetch_add(&coordinatedRuns(), 1U, __ATOMIC_RELAXED);
+            const bool provable = transaction.display.outcome == Outcome::Patched
+                                  || transaction.video.outcome == Outcome::Patched;
+            if (transaction.cacheRead && settled(transaction.display) && settled(transaction.video) && provable) {
+                storeCompleted({mapKey, transaction.base, transaction.display, transaction.video});
+            }
+            else if (previous.map) {
+                forgetMap(mapKey);
+            }
         }
         const auto peak = __atomic_load_n(&registry().peak, __ATOMIC_RELAXED);
         auto       reported = __atomic_load_n(&reportedPeak(), __ATOMIC_RELAXED);

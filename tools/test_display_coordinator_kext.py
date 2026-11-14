@@ -55,14 +55,26 @@ struct NRed { static NRed& singleton(); void setProp32(const char*,UInt32); };
     for module, register in [('display', 'Display'), ('video', 'Video')]:
         (WORK / f'{module}.cpp').write_text('''#include <UserPatchCoordinator.hpp>
 extern unsigned MODULECalls;
-static int callback(void*,void*,int result){++MODULECalls;return result;}
+extern unsigned long long MODULEBase, MODULEProofAddress;
+extern bool MODULEPatched;
+static const unsigned char original[4]={0x90,0x90,0x90,0x90}, replacement[4]={0x90,0xC3,0xCC,0xCC};
+struct Site { unsigned long long address; unsigned size; const unsigned char *original, *replacement; };
+struct Plan { Site value; unsigned siteCount() const { return 1; } const Site& site(unsigned) const { return value; } };
+static int callback(void*,void*,int result,UserPatchCoordinator::Transaction& transaction){
+    ++MODULECalls;
+    unsigned long long base=0; unsigned char header[UserPatchCoordinator::HeaderSize];
+    MODULEBase=transaction.sharedHeader(base,header) ? base : 0;
+    if(MODULEPatched)UserPatchCoordinator::settlePatched(transaction.MODULE,Plan{{MODULEProofAddress,4,original,replacement}});
+    return result;
+}
 void registerREGISTERModule(){UserPatchCoordinator::registerREGISTER(callback);}
 bool MODULEDefers(){return UserPatchCoordinator::deferModulePatches();}
 unsigned MODULEGroups(){return UserPatchCoordinator::requestedDisplayGroups();}
 void* MODULEState(unsigned index){
     using namespace UserPatchCoordinator;
     void* addresses[]={&displayCallback(),&videoCallback(),&activeFlag(),&gateLock(),
-                      &registry(),&nativeCalls(),&coordinatedRuns(),&leaseRejections(),&reportedPeak()};
+                      &registry(),&nativeCalls(),&coordinatedRuns(),&leaseRejections(),&reportedPeak(),
+                      &skippedRuns(),&reader()};
     return addresses[index];
 }
 '''.replace('MODULE', module).replace('REGISTER', register))
@@ -81,6 +93,21 @@ bool displayDefers(); bool videoDefers();
 unsigned displayGroups(); unsigned videoGroups();
 void* displayState(unsigned); void* videoState(unsigned);
 unsigned displayCalls=0,videoCalls=0;
+unsigned long long displayBase=0,videoBase=0,displayProofAddress=0x20010,videoProofAddress=0x20020;
+bool displayPatched=false,videoPatched=false;
+static unsigned reads=0;
+static unsigned char memory[0x100]{};
+static unsigned long long cacheBase=0x20000;
+static int readUser(unsigned long long address,void* value,unsigned long size){
+    ++reads;
+    if(address==0x1000&&size==8){std::memcpy(value,&cacheBase,8);return 0;}
+    if(address<0x20000||address+size>0x20000+sizeof(memory))return 14;
+    std::memcpy(value,memory+(address-0x20000),size);return 0;
+}
+static void patchMemory(unsigned long long address){
+    const unsigned char replacement[4]={0x90,0xC3,0xCC,0xCC};
+    std::memcpy(memory+(address-0x20000),replacement,4);
+}
 static unsigned nativeCount=0,enabled=0,skipped=0,rejected=0,routeCalls=0,lockFrees=0;
 static bool lockOK=true,routeOK=true;
 static int nativeResult=0;
@@ -140,8 +167,9 @@ int main(int argc,char** argv){
     assert(skipped==1 && enabled==0 && !hook);
     registerVideoModule();
     void* addresses[]={&displayCallback(),&videoCallback(),&activeFlag(),&gateLock(),
-                      &registry(),&nativeCalls(),&coordinatedRuns(),&leaseRejections(),&reportedPeak()};
-    for(unsigned i=0;i<9;++i){
+                      &registry(),&nativeCalls(),&coordinatedRuns(),&leaseRejections(),&reportedPeak(),
+                      &skippedRuns(),&reader()};
+    for(unsigned i=0;i<11;++i){
         if(displayState(i)!=addresses[i] || videoState(i)!=addresses[i]){
             std::fprintf(stderr,"FAIL cross-module state %u has different addresses\n",i);return 1;
         }
@@ -174,9 +202,45 @@ int main(int argc,char** argv){
     assert(hook(current_task(),&args,&value)==0 && value==123);
     assert(nativeCount==3 && nativeCalls()==3 && coordinatedRuns()==1);
     assert(displayCalls==1 && videoCalls==1);
+    // 缓存头只读一次并传给两个参与者；两侧完成且 proof 仍在内存中时，第二次调用跳过搜索。
+    setActive(true);
+    registerReader(readUser);
+    assert(reader()==readUser);
+    displayPatched=videoPatched=true;
+    patchMemory(displayProofAddress);patchMemory(videoProofAddress);
+    reads=0;
+    assert(hook(current_task(),&args,&value)==0);
+    assert(displayCalls==2 && videoCalls==2 && coordinatedRuns()==2 && skippedRuns()==0);
+    assert(displayBase==cacheBase && videoBase==cacheBase && reads==2);
+    reads=0;
+    assert(hook(current_task(),&args,&value)==0 && value==123);
+    assert(displayCalls==2 && videoCalls==2 && skippedRuns()==1 && reads==4);
+    // proof 消失（例如 map 地址被新进程复用）：回到完整搜索。
+    std::memset(memory+(videoProofAddress-0x20000),0x90,4);
+    assert(hook(current_task(),&args,&value)==0);
+    assert(displayCalls==3 && videoCalls==3 && skippedRuns()==1);
+    // 一侧未完成：不记录，下次仍完整搜索。
+    videoPatched=false;
+    assert(hook(current_task(),&args,&value)==0);
+    assert(hook(current_task(),&args,&value)==0);
+    assert(displayCalls==5 && videoCalls==5 && skippedRuns()==1);
+    // 重新完成后再跳过；forgetMap 清除后必须重新搜索。
+    videoPatched=true;patchMemory(videoProofAddress);
+    assert(hook(current_task(),&args,&value)==0);
+    assert(hook(current_task(),&args,&value)==0);
+    assert(displayCalls==6 && videoCalls==6 && skippedRuns()==2);
+    forgetMap(reinterpret_cast<void*>(0x3));
+    assert(hook(current_task(),&args,&value)==0);
+    assert(displayCalls==7 && videoCalls==7 && skippedRuns()==2);
+    // 缓存基址变化：不跳过。
+    cacheBase=0x20000+0x1000;
+    assert(hook(current_task(),&args,&value)==0);
+    assert(displayCalls==8 && videoCalls==8 && displayBase==0 && skippedRuns()==2);
+    cacheBase=0x20000;
+    assert(registry().active==0);
     clearDisplay();clearVideo();
     assert(!displayCallback() && !videoCallback());
-    std::puts("PASS cross-module coordinator: unique state, registration, defer, native error and single execution");
+    std::puts("PASS cross-module coordinator: unique state, registration, defer, native error, single execution, shared header and proven skip");
 }
 ''')
 

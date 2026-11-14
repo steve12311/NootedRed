@@ -509,7 +509,8 @@ namespace
         return selectedCount != 0;
     }
 
-    __attribute__((noinline)) int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result)
+    __attribute__((noinline)) int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result,
+                                                    UserPatchCoordinator::Transaction* coordinated = nullptr)
     {
         // 按 FairPlay 权限统一选择策略；客户端只允许 AMD 驱动侧解码项，
         // 保留 AppleGVA 和编码代码原样。
@@ -538,9 +539,11 @@ namespace
         auto*       selectedPatches = transaction.state->selected;
         UInt64      base{0};
         UInt8       header[104];
-        if (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0
+        static_assert(sizeof(header) == UserPatchCoordinator::HeaderSize);
+        const bool shared = coordinated && coordinated->sharedHeader(base, header);
+        if ((!shared && (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0))
             || base >= UserSharedCache::UserLimit - sizeof(header) || (base & (PAGE_SIZE - 1)) != 0
-            || readUser(base, header, sizeof(header)) != 0)
+            || (!shared && readUser(base, header, sizeof(header)) != 0))
         {
             stage(Stage::CacheRead, fairPlayPID);
             return result;
@@ -700,6 +703,7 @@ namespace
             }
             stage(Stage::Already, fairPlayPID);
             observeLedger(mapKey);
+            if (coordinated) { UserPatchCoordinator::settlePatched(coordinated->video, installPlan); }
             if (fairPlayDecode) { NRed::singleton().setProp32("NRedDRMVideoState", 3); }
             return result;
         }
@@ -745,6 +749,7 @@ namespace
         }
         installedLedger(mapKey);
         stage(Stage::Applied, fairPlayPID);
+        if (coordinated) { UserPatchCoordinator::settlePatched(coordinated->video, installPlan); }
         if (fairPlayDecode) { NRed::singleton().setProp32("NRedDRMVideoState", 2); }
         NRed::singleton().setProp32("NRedVCNUserDynamicApplied", 1);
         if (process != nullptr) {
@@ -787,6 +792,7 @@ namespace
     void wrappedMapDestroy(vm_map_t map)
     {
         removeLedgerMap(map);
+        UserPatchCoordinator::forgetMap(map);
         originalMapDestroy(map);
     }
 
@@ -954,9 +960,9 @@ void UserVideoDecode::init(KernelPatcher& patcher)
     NRed::singleton().setProp32("NRedDRMVideoMask", fairPlayMask());
     // 显示模块也成功注册时，协调器成为最外层 Hook；否则继续使用本模块的旧 lease。
     UserPatchCoordinator::registerVideo(
-        [](void* process, void* args, const int result)
+        [](void* process, void* args, const int result, UserPatchCoordinator::Transaction& transaction)
         {
             return patchSharedRegion(reinterpret_cast<proc_t>(process), reinterpret_cast<SharedRegionCheckArgs*>(args),
-                                     result);
+                                     result, &transaction);
         });
 }

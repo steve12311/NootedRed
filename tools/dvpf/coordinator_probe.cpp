@@ -51,7 +51,7 @@ namespace
         while (value > peak && !peakCallbacks.compare_exchange_weak(peak, value)) {}
     }
 
-    int displayCallback(void*, void*, const int result)
+    int displayCallback(void*, void*, const int result, UserPatchCoordinator::Transaction&)
     {
         const auto current = ++activeCallbacks;
         updatePeak(current);
@@ -67,7 +67,7 @@ namespace
         return result;
     }
 
-    int videoCallback(void*, void*, const int result)
+    int videoCallback(void*, void*, const int result, UserPatchCoordinator::Transaction&)
     {
         {
             std::lock_guard<std::mutex> guard(orderLock);
@@ -213,12 +213,12 @@ int main()
     resetCounters();
     nestedInvoked.store(false);
     UserPatchCoordinator::registerDisplay(
-        [](void* process, void* args, const int result)
+        [](void* process, void* args, const int result, UserPatchCoordinator::Transaction& transaction)
         {
             if (!nestedInvoked.exchange(true)) {
                 UserPatchCoordinator::coordinate(process, args, result, currentMap);
             }
-            return displayCallback(process, args, result);
+            return displayCallback(process, args, result, transaction);
         });
     callHook();
     if (!nestedInvoked.load() || displayCalls != 1 || videoCalls != 1) {

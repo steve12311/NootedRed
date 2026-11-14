@@ -340,7 +340,8 @@ struct WorkspaceBuffer
 
 // Keep this frame out of wrappedSharedRegionCheck, including in optimized Release builds.
 __attribute__((noinline))
-int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result)
+int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result,
+                      UserPatchCoordinator::Transaction* coordinated = nullptr)
 {
     if (args == nullptr || args->startAddress == 0) { stage(Stage::Argument); return result; }
     using namespace UserSurfaceSyncData;
@@ -353,9 +354,11 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     }
     UInt64      base{0};
     UInt8       header[104];
-    if (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0
+    static_assert(sizeof(header) == UserPatchCoordinator::HeaderSize);
+    const bool shared = coordinated && coordinated->sharedHeader(base, header);
+    if ((!shared && (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0))
         || base >= UserSurfaceSyncResolver::UserLimit - sizeof(header) || (base & (PAGE_SIZE - 1)) != 0
-        || readUser(base, header, sizeof(header)) != 0)
+        || (!shared && readUser(base, header, sizeof(header)) != 0))
     {
         stage(Stage::CacheRead);
         return result;
@@ -414,7 +417,11 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         publish(published.fvrcSubmitCold, "NRedFVRCSubmitCold", submitFast.hot ? 0 : 1);
     }
     if (submitGuard && !knownCache) { NRed::singleton().setProp32("NRedSubmitGuardDynamicRejected", 1); }
-    if (!renderRequested) { return result; }
+    if (!renderRequested) {
+        // 配置决定显示侧不写代码：对协调器而言已经完成。
+        if (coordinated) { coordinated->display.outcome = UserPatchCoordinator::Outcome::Idle; }
+        return result;
+    }
     {
         auto&        fast         = workspace.value->fast;
         UInt32       displayFlags = 0;
@@ -537,6 +544,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         runtime.installed(runtime.features());
         publish(published.planVerified, "NRedDisplayVPFPlanVerified", 1);
         stage(Stage::Already);
+        if (coordinated) { UserPatchCoordinator::settlePatched(coordinated->display, requestPlan); }
         return result;
     }
     publish(published.planVerified, "NRedDisplayVPFPlanVerified", 1);
@@ -578,6 +586,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     }
     runtime.installed(runtime.features());
     stage(Stage::Applied);
+    if (coordinated) { UserPatchCoordinator::settlePatched(coordinated->display, requestPlan); }
     NRed::singleton().setProp32("NRedImmediateSyncDynamicApplied", 1);
     // 仅记录已完整写入并恢复 RX 的 WindowServer，避免用全局计数代替故障进程证据。
     if (process != nullptr) {
@@ -747,9 +756,10 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
            currentKernelVersion().major(), deviceID, renderRequested, submitGuard);
     // 另一个共享缓存模块也成功安装时，由最外层协调器持有唯一 map lease 后回调。
     UserPatchCoordinator::registerDisplay(
-        [](void* process, void* args, const int result)
+        [](void* process, void* args, const int result, UserPatchCoordinator::Transaction& transaction)
         {
             return patchSharedRegion(reinterpret_cast<proc_t>(process),
-                                     reinterpret_cast<SharedRegionCheckArgs*>(args), result);
+                                     reinterpret_cast<SharedRegionCheckArgs*>(args), result, &transaction);
         });
+    UserPatchCoordinator::registerReader(readUser);
 }
