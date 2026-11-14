@@ -41,6 +41,13 @@ static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags f
     CVPixelBufferUnlockBaseAddress(image, kCVPixelBufferLock_ReadOnly);
 }
 
+static uint32_t readBits(const uint8_t* data, uint32_t* bit, uint32_t count)
+{
+    uint32_t value = 0;
+    for (uint32_t i = 0; i < count; i++, (*bit)++) value = (value << 1) | ((data[*bit / 8] >> (7 - *bit % 8)) & 1);
+    return value;
+}
+
 int main(int argc, char** argv)
 {
     @autoreleasepool {
@@ -61,8 +68,26 @@ int main(int argc, char** argv)
         const int32_t width = OSReadLittleInt16(d, 12), height = OSReadLittleInt16(d, 14);
         const uint32_t maxFrames = argc > 2 ? (uint32_t)atoi(argv[2]) : UINT32_MAX;
 
-        // vpcC: version 1, profile 0, level 3.0, 8 bit, 4:2:0 colocated, limited range, BT.709, no init data.
-        const uint8_t vpcC[12] = {1, 0, 0, 0, 0, 30, (8 << 4) | (1 << 1), 1, 1, 1, 0, 0};
+        // Profile and bit depth from the first frame's uncompressed header (a keyframe), as a browser's vpcC carries
+        // them: frame_marker(2) profile_low(1) profile_high(1) [reserved(1) for profile 3] ... then, for a keyframe,
+        // show_existing(1) frame_type(1) show_frame(1) error_resilient(1) sync_code(24) ten_or_twelve_bit(1, profile>=2).
+        uint32_t profile = 0, bitDepth = 8;
+        if (file.length > 32 + 12 + 5) {
+            const uint8_t* f = d + 32 + 12;
+            uint32_t bit = 0;
+            readBits(f, &bit, 2);
+            profile = readBits(f, &bit, 1);
+            profile |= readBits(f, &bit, 1) << 1;
+            if (profile == 3) readBits(f, &bit, 1);
+            if (!readBits(f, &bit, 1) && !readBits(f, &bit, 1)) {    // not show_existing, key frame
+                readBits(f, &bit, 2);
+                readBits(f, &bit, 24);
+                if (profile >= 2) bitDepth = readBits(f, &bit, 1) ? 12 : 10;
+            }
+        }
+        printf("first frame: profile %u, %u bit\n", profile, bitDepth);
+        // vpcC: version 1, level 3.0, 4:2:0 colocated, limited range, BT.709, no init data.
+        const uint8_t vpcC[12] = {1, 0, 0, 0, (uint8_t)profile, 30, (uint8_t)((bitDepth << 4) | (1 << 1)), 1, 1, 1, 0, 0};
         NSDictionary* extensions = @{
             (__bridge NSString*)kCMFormatDescriptionExtension_SampleDescriptionExtensionAtoms :
                 @{@"vpcC" : [NSData dataWithBytes:vpcC length:sizeof(vpcC)]}
