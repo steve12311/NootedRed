@@ -1,12 +1,4 @@
-// 共享缓存补丁的进程范围：只跳过确定不会加载 GPU 用户态驱动的系统命令行工具。
-// 纯解析逻辑不依赖内核头，可在主机上用真实可执行文件验证；内核侧读取与 Hook 接线在 UserProcessFilter.cpp。
-//
-// 规则（任何不确定都回到“补丁”）：
-//   1. 可执行文件路径位于受 SIP 保护的系统命令目录或 Xcode/CLT 工具链目录；
-//   2. x86_64 切片是 MH_EXECUTE，加载命令完整且可解析；
-//   3. 每个直接依赖都在已知不加载 Metal/GL/GVA 的库集合中（libSystem、Foundation 等）。
-//      @rpath / @executable_path、私有框架、第三方库、任何含 GPU/媒体关键词的库都视为可能使用 GPU。
-// 补丁只改写共享缓存中 Metal / GL / AppleGVA 驱动代码；进程从不加载这些映像时，跳过不会改变其行为。
+// 仅对明确列出的基础系统命令跳过共享缓存补丁；加载命令检查提供额外约束。
 #pragma once
 #include <IOKit/IOTypes.h>
 
@@ -21,7 +13,7 @@ namespace UserProcessFilter
     enum class Verdict : UInt8
     {
         Patch = 0,          // 路径不在范围内，按原逻辑补丁
-        Skip,               // 已证明不使用 GPU 用户态驱动
+        Skip,               // 白名单基础命令且依赖符合约束
         PatchFormat,        // 可执行文件无法完整解析
         PatchDependency,    // 存在可能使用 GPU 的依赖
     };
@@ -77,99 +69,51 @@ namespace UserProcessFilter
             return true;
         }
 
-        inline bool contains(const char* s, const UInt32 len, const char* token)
-        {
-            const auto n = length(token);
-            if (n == 0 || len < n) { return false; }
-            for (UInt32 i = 0; i + n <= len; ++i) {
-                UInt32 j = 0;
-                while (j < n && s[i + j] == token[j]) { ++j; }
-                if (j == n) { return true; }
-            }
-            return false;
-        }
-
         inline bool equals(const char* s, const UInt32 len, const char* other)
         {
             return length(other) == len && startsWith(s, len, other);
         }
     }    // namespace Detail
 
-    // 受 SIP 保护的系统命令目录，以及 Xcode / Command Line Tools 工具链（构建时大量启动的进程）。
     inline bool eligiblePath(const char* path, const UInt32 len)
     {
         if (path == nullptr || len == 0) { return false; }
-        constexpr const char* Prefixes[] = {
-            "/bin/",
-            "/sbin/",
-            "/usr/bin/",
-            "/usr/sbin/",
-            "/usr/libexec/",
-            "/Applications/Xcode.app/Contents/Developer/Toolchains/",
-            "/Applications/Xcode.app/Contents/Developer/usr/bin/",
-            "/Applications/Xcode.app/Contents/Developer/usr/libexec/",
-            "/System/Volumes/Data/Applications/Xcode.app/Contents/Developer/Toolchains/",
-            "/System/Volumes/Data/Applications/Xcode.app/Contents/Developer/usr/bin/",
-            "/System/Volumes/Data/Applications/Xcode.app/Contents/Developer/usr/libexec/",
-            "/Library/Developer/CommandLineTools/usr/bin/",
-            "/Library/Developer/CommandLineTools/usr/libexec/",
-            "/System/Volumes/Data/Library/Developer/CommandLineTools/usr/bin/",
-            "/System/Volumes/Data/Library/Developer/CommandLineTools/usr/libexec/",
+        constexpr const char* Paths[] = {
+            "/bin/cat",          "/bin/chmod",        "/bin/cp",           "/bin/date",         "/bin/dd",
+            "/bin/df",           "/bin/echo",         "/bin/expr",         "/bin/hostname",     "/bin/kill",
+            "/bin/link",         "/bin/ln",           "/bin/ls",           "/bin/mkdir",        "/bin/mv",
+            "/bin/pwd",          "/bin/realpath",     "/bin/rm",           "/bin/rmdir",        "/bin/sleep",
+            "/bin/sync",         "/bin/test",         "/bin/unlink",       "/usr/bin/arch",     "/usr/bin/awk",
+            "/usr/bin/base64",   "/usr/bin/basename", "/usr/bin/bunzip2",  "/usr/bin/bzip2",    "/usr/bin/cksum",
+            "/usr/bin/cmp",      "/usr/bin/col",      "/usr/bin/colrm",    "/usr/bin/column",   "/usr/bin/comm",
+            "/usr/bin/compress", "/usr/bin/cut",      "/usr/bin/diff",     "/usr/bin/dirname",  "/usr/bin/du",
+            "/usr/bin/env",      "/usr/bin/expand",   "/usr/bin/false",    "/usr/bin/find",     "/usr/bin/fold",
+            "/usr/bin/grep",     "/usr/bin/gunzip",   "/usr/bin/gzip",     "/usr/bin/head",     "/usr/bin/id",
+            "/usr/bin/join",     "/usr/bin/logname",  "/usr/bin/mktemp",   "/usr/bin/nl",       "/usr/bin/od",
+            "/usr/bin/paste",    "/usr/bin/printenv", "/usr/bin/printf",   "/usr/bin/readlink", "/usr/bin/rev",
+            "/usr/bin/sed",      "/usr/bin/seq",      "/usr/bin/sort",     "/usr/bin/split",    "/usr/bin/stat",
+            "/usr/bin/sum",      "/usr/bin/tail",     "/usr/bin/tar",      "/usr/bin/tee",      "/usr/bin/touch",
+            "/usr/bin/tr",       "/usr/bin/true",     "/usr/bin/truncate", "/usr/bin/tsort",    "/usr/bin/uname",
+            "/usr/bin/unexpand", "/usr/bin/uniq",     "/usr/bin/wc",       "/usr/bin/whoami",   "/usr/bin/xargs",
+            "/usr/bin/yes",
         };
-        for (const auto prefix : Prefixes) {
-            if (Detail::startsWith(path, len, prefix)) { return true; }
+        for (const auto candidate : Paths) {
+            if (Detail::equals(path, len, candidate)) { return true; }
         }
         return false;
     }
 
-    // 已知不会加载 Metal / GL / AppleGVA 用户态驱动的依赖。
     inline bool safeDylib(const char* name, const UInt32 len)
     {
         if (name == nullptr || len == 0) { return false; }
-        if (Detail::startsWith(name, len, "/usr/lib/")) {
-            // /usr/lib 下的底层库（含 /usr/lib/swift 覆盖层）；名称含图形/媒体/ML 关键词的一律视为不安全。
-            constexpr const char* GpuTokens[] = {
-                "Metal", "GL",     "OpenCL", "Image",   "Graphics", "Quartz", "AppKit",  "UIKit",
-                "SwiftUI", "AVF",  "AVKit",  "Media",   "Video",    "Vision", "Scene",   "Sprite",
-                "Reality", "Model", "ML",    "Espresso", "ANE",     "Speech", "Natural", "Camera",
-                "Display", "Quick", "Web",   "Map",     "Photo",    "Screen", "Surface", "MPS",
-                "Game",    "ARKit", "Avatar", "Animation", "Sky",   "Window", "Render",  "Shader",
-                "GPU",     "Accel", "Compute", "Visual",
-            };
-            for (const auto token : GpuTokens) {
-                if (Detail::contains(name, len, token)) { return false; }
-            }
-            return true;
-        }
-        // 少量只做 XPC 遥测 / 钥匙包的私有框架；SoftLinking 等动态加载框架绝不放行。
-        constexpr const char* SafePrivate[] = {
-            "/System/Library/PrivateFrameworks/CoreAnalytics.framework/",
-            "/System/Library/PrivateFrameworks/MobileKeyBag.framework/",
+        constexpr const char* Libraries[] = {
+            "/usr/lib/libSystem.B.dylib", "/usr/lib/libutil.dylib",      "/usr/lib/libncurses.5.4.dylib",
+            "/usr/lib/libbz2.1.0.dylib",  "/usr/lib/liblzma.5.dylib",    "/usr/lib/libz.1.dylib",
+            "/usr/lib/libiconv.2.dylib",  "/usr/lib/libcharset.1.dylib", "/usr/lib/libarchive.2.dylib",
+            "/usr/lib/libpcre.0.dylib",
         };
-        for (const auto prefix : SafePrivate) {
-            if (Detail::startsWith(name, len, prefix)) { return true; }
-        }
-        constexpr const char* FrameworkRoot = "/System/Library/Frameworks/";
-        if (!Detail::startsWith(name, len, FrameworkRoot)) { return false; }
-        // 只允许明确的非图形公共框架；私有框架一律视为可能使用 GPU。
-        constexpr const char* SafeFrameworks[] = {
-            "Foundation",         "CoreFoundation",    "Security",         "IOKit",
-            "SystemConfiguration", "CFNetwork",        "DiskArbitration",  "ServiceManagement",
-            "OpenDirectory",      "Network",           "Kerberos",         "GSS",
-            "CoreServices",       "CryptoTokenKit",    "LocalAuthentication", "EndpointSecurity",
-            "NetworkExtension",   "CoreWLAN",          "Combine",          "OSLog",
-            "Collaboration",      "DirectoryService",  "PCSC",             "SecurityFoundation",
-            "Accelerate",         "System",            "LDAP",             "ExceptionHandling",
-            "CryptoKit",
-        };
-        const auto rootLen = Detail::length(FrameworkRoot);
-        const char* rest   = name + rootLen;
-        const auto  restLen = len - rootLen;
-        UInt32      nameLen = 0;
-        while (nameLen < restLen && rest[nameLen] != '.' && rest[nameLen] != '/') { ++nameLen; }
-        if (nameLen == 0 || !Detail::startsWith(rest + nameLen, restLen - nameLen, ".framework/")) { return false; }
-        for (const auto framework : SafeFrameworks) {
-            if (Detail::equals(rest, nameLen, framework)) { return true; }
+        for (const auto library : Libraries) {
+            if (Detail::equals(name, len, library)) { return true; }
         }
         return false;
     }

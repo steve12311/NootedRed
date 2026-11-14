@@ -1,11 +1,9 @@
-// Fase 2: ricorda per questo avvio le cache condivise (per UUID) che la ricerca ha rifiutato,
-// così i processi successivi con la stessa cache (es. DriverKit) non rifanno una scansione completa.
-// Prudenza: un UUID viene ricordato solo dopo Confirm rifiuti, mai se è già stato accettato,
-// e ogni RecheckEvery salti si rifà comunque la ricerca; un'accettazione lo toglie dalla tabella.
+// 仅记录完整镜像表中缺少目标镜像的缓存；进程读取或函数核验失败不进入拒绝表。
 #pragma once
 #include <IOKit/IOLib.h>
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOTypes.h>
+#include <UserSharedCache.hpp>
 #include <string.h>
 
 namespace UserRejectedCaches
@@ -72,9 +70,18 @@ namespace UserRejectedCaches
             return skip;
         }
 
-        void reject(const UInt8* uuid)
+        void rejectMissingImages(const UInt8* uuid, const UserSharedCache::Input& input)
         {
-            if (!lock || !uuid) { return; }
+            if (!lock || !uuid || input.failed || !input.tableRead || input.imageCount == 0 || input.imageCount > 16
+                || !input.imageRefs)
+            {
+                return;
+            }
+            bool missing = false;
+            for (UInt32 i = 0; i < input.imageCount; ++i) {
+                if (input.imageAddresses[i] == 0) { missing = true; }
+            }
+            if (!missing) { return; }
             IOLockLock(lock);
             if (!find(accepted, uuid)) {
                 auto* entry = find(rejected, uuid);

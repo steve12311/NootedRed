@@ -31,6 +31,7 @@ namespace
     {
         void*                             map{nullptr};
         UInt64                            base{0};
+        UInt8                             header[UserPatchCoordinator::HeaderSize]{};
         UserPatchCoordinator::Participant display{}, video{};
     };
     constexpr UInt32 CompletedSlots = UserPatchCoordinator::MaxMapSlots;
@@ -46,15 +47,35 @@ namespace
     bool proven(const UserPatchCoordinator::Reader read, const UserPatchCoordinator::Participant& value)
     {
         if (value.outcome == UserPatchCoordinator::Outcome::Idle) { return true; }
-        if (value.outcome != UserPatchCoordinator::Outcome::Patched || value.proof.size == 0
-            || value.proof.size > UserPatchCoordinator::ProofSize)
+        const auto* proof = value.proof;
+        if (value.outcome != UserPatchCoordinator::Outcome::Patched || !proof || proof->siteCount == 0
+            || proof->siteCount > UserPatchCoordinator::MaxProofSites)
         {
             return false;
         }
-        UInt8 bytes[UserPatchCoordinator::ProofSize];
-        return read(value.proof.address, bytes, value.proof.size) == 0
-               && memcmp(bytes, value.proof.bytes, value.proof.size) == 0;
+        UInt8 bytes[UserPatchCoordinator::MaxProofBytes];
+        for (UInt32 i = 0; i < proof->siteCount; ++i) {
+            const auto& site = proof->sites[i];
+            if (site.size == 0 || site.size > sizeof(bytes) || read(site.address, bytes, site.size) != 0
+                || memcmp(bytes, site.bytes, site.size) != 0)
+            {
+                return false;
+            }
+        }
+        return true;
     }
+
+    void releaseCompleted(const CompletedMap& value)
+    {
+        UserPatchCoordinator::releaseProof(value.display.proof);
+        UserPatchCoordinator::releaseProof(value.video.proof);
+    }
+
+    struct CompletedSnapshot
+    {
+        CompletedMap value{};
+        ~CompletedSnapshot() { releaseCompleted(value); }
+    };
 
     // 锁内只复制或改写表项；copyin 一律在锁外完成。
     bool lookupCompleted(void* map, CompletedMap& out)
@@ -64,6 +85,8 @@ namespace
         for (UInt32 i = 0; i < CompletedSlots; ++i) {
             if (completed[i].map == map) {
                 out   = completed[i];
+                UserPatchCoordinator::retainProof(out.display.proof);
+                UserPatchCoordinator::retainProof(out.video.proof);
                 found = true;
                 break;
             }
@@ -87,8 +110,12 @@ namespace
             slot          = completedNext;
             completedNext = (completedNext + 1) % CompletedSlots;
         }
+        const auto previous = completed[slot];
         completed[slot] = value;
+        UserPatchCoordinator::retainProof(value.display.proof);
+        UserPatchCoordinator::retainProof(value.video.proof);
         IOLockUnlock(UserPatchCoordinator::gateLock());
+        releaseCompleted(previous);
     }
 
     __attribute__((noinline))
@@ -191,14 +218,42 @@ namespace UserPatchCoordinator
         return value;
     }
 
+    Proof* allocateProof()
+    {
+        auto* proof = static_cast<Proof*>(IOMalloc(sizeof(Proof)));
+        if (proof) {
+            proof->references = 1;
+            proof->siteCount  = 0;
+        }
+        return proof;
+    }
+
+    void retainProof(Proof* proof)
+    {
+        if (proof) { __atomic_fetch_add(&proof->references, 1U, __ATOMIC_RELAXED); }
+    }
+
+    void releaseProof(Proof* proof)
+    {
+        if (proof && __atomic_sub_fetch(&proof->references, 1U, __ATOMIC_ACQ_REL) == 0) {
+            IOFree(proof, sizeof(Proof));
+        }
+    }
+
     void forgetMap(void* mapKey)
     {
         if (!mapKey || !gateLock()) { return; }
+        CompletedMap previous{};
         IOLockLock(gateLock());
         for (UInt32 i = 0; i < CompletedSlots; ++i) {
-            if (completed[i].map == mapKey) { completed[i] = {}; }
+            if (completed[i].map == mapKey) {
+                previous     = completed[i];
+                completed[i] = {};
+                break;
+            }
         }
         IOLockUnlock(gateLock());
+        releaseCompleted(previous);
     }
 
     int coordinate(void* process, void* args, const int result, void* mapKey)
@@ -223,9 +278,11 @@ namespace UserPatchCoordinator
                 transaction.cacheRead = true;
             }
             // 同一 map 已完成过：同一缓存基址且两侧 proof 仍在内存中才跳过；任何不确定都走完整搜索。
-            CompletedMap previous{};
+            CompletedSnapshot snapshot{};
+            auto&             previous = snapshot.value;
             if (transaction.cacheRead && lookupCompleted(mapKey, previous) && previous.base == transaction.base
-                && proven(read, previous.display) && proven(read, previous.video))
+                && memcmp(previous.header, transaction.header, HeaderSize) == 0 && proven(read, previous.display)
+                && proven(read, previous.video))
             {
                 const auto skipped = __atomic_add_fetch(&skippedRuns(), 1U, __ATOMIC_RELAXED);
                 if (skipped <= 16 || (skipped & 0xFF) == 0) {
@@ -239,7 +296,13 @@ namespace UserPatchCoordinator
             const bool provable = transaction.display.outcome == Outcome::Patched
                                   || transaction.video.outcome == Outcome::Patched;
             if (transaction.cacheRead && settled(transaction.display) && settled(transaction.video) && provable) {
-                storeCompleted({mapKey, transaction.base, transaction.display, transaction.video});
+                CompletedMap value{};
+                value.map  = mapKey;
+                value.base = transaction.base;
+                memcpy(value.header, transaction.header, HeaderSize);
+                value.display = transaction.display;
+                value.video   = transaction.video;
+                storeCompleted(value);
             }
             else if (previous.map) {
                 forgetMap(mapKey);
@@ -262,7 +325,7 @@ namespace UserPatchCoordinator
     {
         if (active()) { return; }
         setActive(false);
-        NRed::singleton().setProp32("NRedPatchCoordinatorRevision", 1);
+        NRed::singleton().setProp32("NRedPatchCoordinatorRevision", 3);
         // 只有两个共享缓存模块同时安装时才接管；单模块保持各自旧路径。
         if (!displayCallback() || !videoCallback()) {
             NRed::singleton().setProp32("NRedPatchCoordinatorSkipped", 1);

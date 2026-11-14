@@ -40,7 +40,7 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 这些 `*Hot` 只反映最近一次解析；命中率以 `NRedFVRCHotTotal` 增量为准，
 映射检查结果见 `NRedFVRCMappingReject`。
 
-共享缓存补丁默认跳过可证明不加载 GPU 用户态驱动的系统命令（`/usr/bin` 等路径且仅依赖非图形库），
+共享缓存补丁默认仅跳过精确白名单中的基础系统命令，并额外核验直接依赖；未知程序和工具链保持补丁，
 应用和 WindowServer 始终补丁。`-NRedPatchAllProcs` 关闭该过滤，所有进程照常补丁；
 判定规则与诊断见 [进程过滤与 FVRC 复用](process-filter-fvrc.md)。
 

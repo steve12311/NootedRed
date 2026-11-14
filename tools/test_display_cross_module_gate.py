@@ -35,6 +35,9 @@ void* current_thread();
     (iokit / 'IOLib.h').write_text(r'''
 #pragma once
 #include <IOKit/IOLocks.h>
+#include <cstdlib>
+inline void* IOMalloc(unsigned long size) { return std::malloc(size); }
+inline void IOFree(void* p,unsigned long) { std::free(p); }
 inline IOLock* IOLockAlloc() { return new IOLock; }
 inline void IOLockFree(IOLock* lock) { delete lock; }
 ''')
@@ -76,12 +79,15 @@ public:
 #pragma once
 #include <map>
 #include <string>
+#include <mutex>
 #include <IOKit/IOTypes.h>
 struct NRed {
     static NRed& singleton() { static NRed instance; return instance; }
-    void setProp32(const char* key, UInt32 value) { properties()[key] = value; }
+    void setProp32(const char* key, UInt32 value) { std::lock_guard<std::mutex> guard(propertyLock()); properties()[key] = value; }
+    static std::mutex& propertyLock() { static std::mutex value; return value; }
     static std::map<std::string, UInt32>& properties() { static std::map<std::string, UInt32> value; return value; }
     static UInt32 value(const char* key) {
+        std::lock_guard<std::mutex> guard(propertyLock());
         const auto it = properties().find(key);
         return it == properties().end() ? 0 : it->second;
     }

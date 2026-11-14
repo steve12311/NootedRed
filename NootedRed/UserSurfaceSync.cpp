@@ -501,7 +501,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
             NRed::singleton().setProp32("NRedImmediateSyncDynamicRejected", 1);
             reportRejection(displayRejects, "NRedImmediateSyncRejectCount", "NRedImmediateSyncRejectPID",
                             displayRejectUUIDKeys, "Display", process, base, &header[88]);
-            rejectedCaches.reject(&header[88]);
+            rejectedCaches.rejectMissingImages(&header[88], input);
             return result;
         }
         patches = plan.patches;

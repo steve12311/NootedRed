@@ -91,6 +91,13 @@ e l'elenco delle immagini.
 **Verifica sul PC:** `NRedImmediateSyncDynamicReads` non deve più mostrare 5232 a regime;
 programma vuoto patchato da ~31 a circa 20 ms.
 
+### 当前修复状态
+
+共享缓存头仍只读取一次，proof 快捷路径保留并覆盖所有站点的完整替换字节及缓存头身份。
+快照通过引用计数保护锁外核验和淘汰，分配失败时回退完整事务。
+下面 `a1b890f` 的单站点 proof 描述与测量为历史记录；新版行为和边界见 process-filter-fvrc.md。
+拒绝表只接受完整镜像表中缺少目标镜像的结果，不缓存一般解析失败。
+
 ### Stato: fatto (`a1b890f`)
 
 - Il coordinatore legge una volta `base` e header e li passa ai due callback (`Transaction`); se la lettura

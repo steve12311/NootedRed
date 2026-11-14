@@ -3,8 +3,9 @@
 #pragma once
 #include <IOKit/IOLocks.h>
 #include <IOKit/IOTypes.h>
-#include <string.h>
 #include <UserPatchMapGate.hpp>
+#include <VPF/VerifiedPatchPlan.hpp>
+#include <string.h>
 
 class KernelPatcher;
 
@@ -15,18 +16,29 @@ namespace UserPatchCoordinator
 
     // 共享缓存头只读一次，供两个参与者复用；与 dyld_cache_header 前 104 字节一致。
     constexpr UInt32 HeaderSize = 104;
-    // 证明：一个已安装站点内与原始字节不同的一小段替换字节。
-    constexpr UInt32 ProofSize = 16;
+    constexpr UInt32 MaxProofSites = VPF::MaxPlanSites;
+    constexpr UInt32 MaxProofBytes = VPF::MaxPlanPatchSize;
 
-    // 与内核 copyin 的签名一致：user_addr_t、void*、size_t。
     using Reader = int (*)(unsigned long long address, void* value, unsigned long size);
 
+    struct ProofSite
+    {
+        UInt64 address;
+        UInt32 size;
+        UInt8  bytes[MaxProofBytes];
+    };
+
+    // 堆上不可变快照；引用计数保护锁外读取及并发淘汰。
     struct Proof
     {
-        UInt64 address{0};
-        UInt32 size{0};
-        UInt8  bytes[ProofSize]{};
+        UInt32    references;
+        UInt32    siteCount;
+        ProofSite sites[MaxProofSites];
     };
+
+    Proof* allocateProof();
+    void   retainProof(Proof* proof);
+    void   releaseProof(Proof* proof);
 
     enum class Outcome : UInt8
     {
@@ -38,7 +50,7 @@ namespace UserPatchCoordinator
     struct Participant
     {
         Outcome outcome{Outcome::Pending};
-        Proof   proof{};
+        Proof*  proof{nullptr};
     };
 
     // 单次协调事务：输入为一次性读取的缓存头，输出为两个参与者的结果。
@@ -48,6 +60,15 @@ namespace UserPatchCoordinator
         UInt8       header[HeaderSize]{};
         bool        cacheRead{false};
         Participant display{}, video{};
+
+        Transaction()                              = default;
+        Transaction(const Transaction&)            = delete;
+        Transaction& operator=(const Transaction&) = delete;
+        ~Transaction()
+        {
+            releaseProof(display.proof);
+            releaseProof(video.proof);
+        }
 
         // 参与者使用协调器已读的头；没有时（旧路径或读失败）自行读取。
         bool sharedHeader(UInt64& outBase, UInt8* outHeader) const
@@ -59,34 +80,36 @@ namespace UserPatchCoordinator
         }
     };
 
-    // 从一个站点取出包含首个差异字节的窗口；original 与 replacement 完全相同时失败。
-    inline bool makeProof(Proof& proof, const UInt64 address, const UInt8* original, const UInt8* replacement,
-                          const UInt32 size)
-    {
-        if (!original || !replacement || size == 0 || address == 0) { return false; }
-        UInt32 first = 0;
-        while (first < size && original[first] == replacement[first]) { ++first; }
-        if (first == size) { return false; }
-        const auto length = size < ProofSize ? size : ProofSize;
-        const auto start  = first + length > size ? size - length : first;
-        proof.address     = address + start;
-        proof.size        = length;
-        memcpy(proof.bytes, replacement + start, length);
-        return true;
-    }
-
-    // 用计划中第一个可区分的站点作为 proof；没有可用站点时保持 Pending。
+    // 完整保存全部站点，包括原地核验区域；超出边界或分配失败时保持 Pending。
     template<typename Plan>
     inline void settlePatched(Participant& participant, const Plan& plan)
     {
-        participant.outcome = Outcome::Pending;
-        for (UInt32 i = 0; i < plan.siteCount(); ++i) {
+        releaseProof(participant.proof);
+        participant      = {};
+        const auto count = plan.siteCount();
+        if (count == 0 || count > MaxProofSites) { return; }
+        bool differs = false;
+        for (UInt32 i = 0; i < count; ++i) {
             const auto& site = plan.site(i);
-            if (makeProof(participant.proof, site.address, site.original, site.replacement, site.size)) {
-                participant.outcome = Outcome::Patched;
+            if (!site.original || !site.replacement || site.address == 0 || site.size == 0 || site.size > MaxProofBytes
+                || site.address >= UserSharedCache::UserLimit || site.size > UserSharedCache::UserLimit - site.address)
+            {
                 return;
             }
+            if (memcmp(site.original, site.replacement, site.size) != 0) { differs = true; }
         }
+        if (!differs) { return; }
+        auto* proof = allocateProof();
+        if (!proof) { return; }
+        proof->siteCount = count;
+        for (UInt32 i = 0; i < count; ++i) {
+            const auto& site        = plan.site(i);
+            proof->sites[i].address = site.address;
+            proof->sites[i].size    = site.size;
+            memcpy(proof->sites[i].bytes, site.replacement, site.size);
+        }
+        participant.proof   = proof;
+        participant.outcome = Outcome::Patched;
     }
 
     // 回调只接收已成功返回的原生结果；参数保持调用者自己的结构布局。

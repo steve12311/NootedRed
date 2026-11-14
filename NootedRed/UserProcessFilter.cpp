@@ -1,5 +1,5 @@
 // 内核侧进程过滤：在共享缓存补丁前读取当前进程可执行文件的加载命令，
-// 只跳过 UserProcessFilter.hpp 判定为不使用 GPU 用户态驱动的系统命令。任何失败都回到补丁。
+// 只跳过 UserProcessFilter.hpp 白名单中的基础系统命令。任何失败都回到补丁。
 #include <Headers/kern_patcher.hpp>
 #include <Headers/kern_util.hpp>
 #include <IOKit/IOLib.h>
@@ -91,7 +91,7 @@ namespace UserProcessFilter
     void init(KernelPatcher& patcher)
     {
         UserPatchCoordinator::processFilter() = nullptr;
-        NRed::singleton().setProp32("NRedProcessFilterRevision", 1);
+        NRed::singleton().setProp32("NRedProcessFilterRevision", 3);
         if (checkKernelArgument("-NRedPatchAllProcs")) {
             NRed::singleton().setProp32("NRedProcessFilterDisabled", 1);
             return;
@@ -106,7 +106,7 @@ namespace UserProcessFilter
         }
         UserPatchCoordinator::processFilter() = shouldPatch;
         NRed::singleton().setProp32("NRedProcessFilterEnabled", 1);
-        SYSLOG("UserProcessFilter", "shared-cache patches skip provably non-GPU system tools");
+        SYSLOG("UserProcessFilter", "shared-cache patches skip allowlisted basic system tools");
     }
 
 }    // namespace UserProcessFilter

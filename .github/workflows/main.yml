@@ -27,6 +27,10 @@ jobs:
           python3 tools/test_display_cross_module_gate.py --sanitize
           python3 tools/test_process_filter.py
           python3 tools/test_fvrc_mapping_probe.py
+          python3 tools/test_rejected_caches.py
+          python3 tools/test_fvrc_registry.py
+          python3 tools/test_fvrc_hot_path.py
+          python3 tools/test_fvrc_video.py
       - name: Test EC backlight service
         run: |
           python3 tools/test_ec_backlight_service.py

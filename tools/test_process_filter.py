@@ -1,4 +1,4 @@
-"""验证共享缓存补丁的进程过滤：只跳过确定不加载 GPU 用户态驱动的系统命令。
+"""验证共享缓存补丁的进程过滤：仅跳过精确白名单中的基础系统命令。
 
 主机编译 NootedRed/UserProcessFilter.hpp，对合成 Mach-O 边界情况与本机真实可执行文件分类。
 --live 额外统计当前运行进程（需要 ps），并要求 WindowServer 与 /Applications 应用全部保持补丁。
@@ -64,15 +64,27 @@ static Verdict run(const char* path, Mem m) {
 
 static void synthetic() {
     const char* sys = "/usr/lib/libSystem.B.dylib";
-    const char* fnd = "/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation";
-    assert(run("/usr/bin/tool", machO({sys})) == Verdict::Skip);
-    assert(run("/usr/bin/tool", machO({sys, fnd}, 0x01000007, 2, true)) == Verdict::Skip);
+    assert(run("/usr/bin/true", machO({sys})) == Verdict::Skip);
+    assert(run("/usr/bin/true", machO({sys}, 0x01000007, 2, true)) == Verdict::Skip);
+    for(auto path:{"/bin/cp","/bin/rm","/bin/mkdir","/usr/bin/awk","/usr/bin/sed",
+                   "/usr/bin/sort","/usr/bin/tar","/usr/bin/xargs","/usr/bin/wc"}) {
+        assert(run(path,machO({sys}))==Verdict::Skip);
+    }
+    assert(run("/usr/bin/grep-extra",machO({sys}))==Verdict::Patch);
+    assert(run("/usr/bin/sed/../osascript",machO({sys}))==Verdict::Patch);
     // 路径不在范围内：保持原补丁行为。
     assert(run("/Applications/App.app/Contents/MacOS/App", machO({sys})) == Verdict::Patch);
     assert(run("/usr/local/bin/tool", machO({sys})) == Verdict::Patch);
-    assert(run("/usr/bin/../../Applications/x", machO({sys})) == Verdict::Skip || true);
+    assert(run("/usr/bin/../../Applications/x", machO({sys})) == Verdict::Patch);
+    // 直接依赖相同，也不能推断未知程序、解释器或工具链不会 dlopen GPU 框架。
+    for (auto path : {"/usr/bin/tool", "/bin/zsh", "/bin/bash", "/usr/bin/osascript",
+                      "/Library/Developer/CommandLineTools/usr/bin/dynamic-gpu-tool",
+                      "/Applications/Xcode.app/Contents/Developer/Toolchains/custom"}) {
+        assert(run(path, machO({sys})) == Verdict::Patch);
+    }
     // GPU / 媒体 / 私有 / rpath 依赖：必须补丁。
-    for (auto dep : {"/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
+    for (auto dep : {"/usr/lib/libUnknown.dylib", "/usr/lib/libxo.dylib",
+                     "/System/Library/Frameworks/Metal.framework/Versions/A/Metal",
                      "/System/Library/Frameworks/AppKit.framework/Versions/C/AppKit",
                      "/System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage",
                      "/System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox",
@@ -86,19 +98,19 @@ static void synthetic() {
                      "@executable_path/../lib/libbar.dylib", "/opt/homebrew/lib/libavcodec.dylib",
                      "/System/Library/Frameworks/FoundationX.framework/FoundationX",
                      "/System/Library/Frameworks/Foundation"}) {
-        assert(run("/usr/bin/tool", machO({sys, dep})) == Verdict::PatchDependency);
+        assert(run("/usr/bin/true", machO({sys, dep})) == Verdict::PatchDependency);
     }
     // 格式问题：保守补丁。
-    assert(run("/usr/bin/tool", machO({})) == Verdict::PatchFormat);
-    assert(run("/usr/bin/tool", machO({sys}, 0x0100000C)) == Verdict::PatchFormat);
-    assert(run("/usr/bin/tool", machO({sys}, 0x01000007, 6)) == Verdict::PatchFormat);
+    assert(run("/usr/bin/true", machO({})) == Verdict::PatchFormat);
+    assert(run("/usr/bin/true", machO({sys}, 0x0100000C)) == Verdict::PatchFormat);
+    assert(run("/usr/bin/true", machO({sys}, 0x01000007, 6)) == Verdict::PatchFormat);
     auto truncated = machO({sys}); truncated.bytes.resize(40);
-    assert(run("/usr/bin/tool", truncated) == Verdict::PatchFormat);
-    assert(run("/usr/bin/tool", Mem{}) == Verdict::PatchFormat);
+    assert(run("/usr/bin/true", truncated) == Verdict::PatchFormat);
+    assert(run("/usr/bin/true", Mem{}) == Verdict::PatchFormat);
     auto badName = machO({sys}); badName.bytes[32 + 8] = 200;
-    assert(run("/usr/bin/tool", badName) == Verdict::PatchFormat);
+    assert(run("/usr/bin/true", badName) == Verdict::PatchFormat);
     auto noNul = machO({sys}); for (size_t i = 32 + 24; i < noNul.bytes.size(); ++i) noNul.bytes[i] = 'A';
-    assert(run("/usr/bin/tool", noNul) == Verdict::PatchFormat);
+    assert(run("/usr/bin/true", noNul) == Verdict::PatchFormat);
     puts("PASS synthetic Mach-O edge cases");
 }
 
@@ -129,7 +141,7 @@ def build():
         'using UInt8=uint8_t;using UInt16=uint16_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
     source, executable = WORK / 'harness.cpp', WORK / 'harness'
     source.write_text(HARNESS)
-    subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O1', '-Wall', '-Wextra', '-Werror', '-Wno-tautological-compare',
+    subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O1', '-Wall', '-Wextra', '-Werror',
                     '-fsanitize=address,undefined', '-I' + str(WORK / 'stubs'), '-I' + str(ROOT / 'NootedRed'),
                     str(source), '-o', str(executable)], check=True, timeout=120)
     return executable
@@ -189,7 +201,7 @@ def main():
         if '--verbose' in sys.argv:
             for path, verdict in sorted(live.items()):
                 print(f'  {names[verdict]:18} {path}')
-    print('PASS process filter: only provably non-GPU system tools are skipped')
+    print('PASS process filter: only explicitly allowed system tools are skipped')
 
 
 if __name__ == '__main__':

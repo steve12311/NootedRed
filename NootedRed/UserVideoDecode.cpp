@@ -638,7 +638,7 @@ namespace
             NRed::singleton().setProp32("NRedVCNUserDynamicRejected", 1);
             reportRejection(videoRejects, "NRedVCNUserRejectCount", "NRedVCNUserRejectPID", videoRejectUUIDKeys, "Video",
                             process, base, &header[88]);
-            rejectedCaches.reject(&header[88]);
+            rejectedCaches.rejectMissingImages(&header[88], input);
             return result;
         }
         rejectedCaches.accept(&header[88]);
