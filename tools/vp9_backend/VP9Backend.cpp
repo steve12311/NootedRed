@@ -190,14 +190,11 @@ extern "C" uint32_t vp9CalculateDPBSize(void *processor) {
     const State *s = state(processor);
     if (!s) { return 0; }
     const auto g = dpbGeometry(*s);
-    const uint32_t size = DpbSlots * (g.lumaSize + g.chromaSize);
-    trace(TraceDpbSize, size);
-    return size;
+    return DpbSlots * (g.lumaSize + g.chromaSize);
 }
 
 //! CalculateContextSize: calc_ctx_size_vp9 for VCN 2 and 8 bit.
 extern "C" uint32_t vp9CalculateContextSize(void *) {
-    trace(TraceContextSize, contextSize(8));
     return contextSize(8);
 }
 
@@ -205,7 +202,6 @@ extern "C" uint32_t vp9CalculateContextSize(void *) {
 extern "C" void vp9InitHWContext(void *processor) {
     void *session = field<void *>(field<void *>(processor, Proc::Decoder), Dec::Session);
     auto *cpu = field<uint8_t *>(field<void *>(session, Sess::Context), Tex::Cpu);
-    trace(TraceInitContext, field<uint32_t>(session, Sess::ContextSize));
     memset(cpu, 0, field<uint32_t>(session, Sess::ContextSize));
     fillDefaultProbs(cpu);
 }
@@ -451,4 +447,20 @@ _vp9GetAVDFuncSubId:
     movl $0x1000, %eax
     retq
 1:  jmp _nrGetAVDFuncSubId
+)");
+
+//! Called instead of AvdCapability::getAVDFuncOutputFormatInfo from setupStaticCoreFunctions. Function 6 keeps only
+//! NV12 (the AV1 list also has 10-bit formats): the backend decodes profile 0 only, so AppleGVA must refuse a 10-bit
+//! stream when it creates the context and VideoToolbox falls back to software. The driver's own NV12 case
+//! (_nrOutputFormatNV12, which ends with pop rbp) writes the single format.
+asm(R"(
+    .text
+    .globl _vp9GetAVDFuncOutputFormatInfo
+_vp9GetAVDFuncOutputFormatInfo:
+    cmpl $6, %esi
+    jne 1f
+    pushq %rbp
+    movq %rsp, %rbp
+    jmp _nrOutputFormatNV12
+1:  jmp _nrGetAVDFuncOutputFormatInfo
 )");

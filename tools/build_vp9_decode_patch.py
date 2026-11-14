@@ -37,6 +37,7 @@ EXTERNALS = {
     "_nrGetIOSurfaceBuffer": "__ZN9VAContext18getIOSurfaceBufferEP11__IOSurfacePP15VAVendorTexturejPjb",
     "_nrSetRefCon": "__ZN9VAContext9setRefConEP14_CommandRefConP15VAVendorTexturePv",
     "_nrGetAVDFuncSubId": "__ZN13AvdCapability15getAVDFuncSubIdEj",
+    "_nrGetAVDFuncOutputFormatInfo": "__ZN13AvdCapability26getAVDFuncOutputFormatInfoEjPjP16AVD_BufferFormat",
 }
 SETUP_CORE_FUNCTIONS = "__ZN13AvdCapability24setupStaticCoreFunctionsEv"
 INIT_CAPABILITY = "__ZN13AvdCapability20initDriverCapabilityEjj"
@@ -220,6 +221,11 @@ def main():
         if cache.read(epilogue, 3) != bytes.fromhex("4489e0"):    # mov eax, r12d
             raise ValueError("AvdVAContext::DecodePicture epilogue not found")
         externals["_nrDecodePictureEpilogue"] = epilogue
+        # NV12 case of getAVDFuncOutputFormatInfo: *count = 1, formats[0] = {'NV12', 1}, return 0 (pops rbp).
+        nv12 = names[EXTERNALS["_nrGetAVDFuncOutputFormatInfo"]] + 0x5D923 - 0x5D8FA
+        if cache.read(nv12, 12) != bytes.fromhex("c70201000000c7013231564e"):
+            raise ValueError("getAVDFuncOutputFormatInfo NV12 case not found")
+        externals["_nrOutputFormatNV12"] = nv12
         chunks, defined, external_fields = link(sections, syms, placement, externals)
 
         patched = bytearray(region)
@@ -239,9 +245,15 @@ def main():
             code = cache.read(address, size)
             if code[offset:offset + len(original)] != original:
                 raise ValueError(f"unexpected bytes in {function} at {offset:#x}")
+            # Several hooks in one function share one verified function (the resolver refuses overlaps).
+            for i, (f, a, c, n, sites) in enumerate(hooks):
+                if f == function:
+                    n[offset:offset + len(replacement)] = replacement
+                    sites.append((offset, len(original)))
+                    return
             new = bytearray(code)
             new[offset:offset + len(replacement)] = replacement
-            hooks.append((function, address, code, bytes(new), offset, len(original)))
+            hooks.append((function, address, code, new, [(offset, len(original))]))
 
         # 1. kind 1 type 0x1000 (VP9) gets function type 6, the AV1 decoder (AV1 does not exist on VCN 2).
         hook(GET_FUNCTION_TYPE, 0x5DD8D - 0x5DC14, bytes.fromhex("483d00000001"), bytes.fromhex("483d00100000"))
@@ -265,6 +277,11 @@ def main():
         original = b"\xe8" + rel32(call, 5, names[EXTERNALS["_nrGetAVDFuncSubId"]])
         hook(SETUP_CORE_FUNCTIONS, call - names[SETUP_CORE_FUNCTIONS], original,
              b"\xe8" + rel32(call, 5, defined["_vp9GetAVDFuncSubId"]))
+        # 9. Output formats: function 6 offers NV12 only, so AppleGVA refuses 10-bit streams at context creation.
+        call = names[SETUP_CORE_FUNCTIONS] + 0x163C - 0x155C
+        hook(SETUP_CORE_FUNCTIONS, call - names[SETUP_CORE_FUNCTIONS],
+             b"\xe8" + rel32(call, 5, names[EXTERNALS["_nrGetAVDFuncOutputFormatInfo"]]),
+             b"\xe8" + rel32(call, 5, defined["_vp9GetAVDFuncOutputFormatInfo"]))
         # 6. Output buffer layout for kind 1: type 0x1000 takes the NV12 path AV1 had (type 0x1000 was refused).
         hook(GET_BUFFER_REQUIREMENT, 0x5E6EF - 0x5E514, bytes.fromhex("81fa00000001"), bytes.fromhex("81fa00100000"))
         # 7. Context parameter 0xb (size limits): type 0x1000 reads the limits the kernel reports for AV1.
@@ -277,9 +294,10 @@ def main():
         # ---- Resolver data: hooked functions plus the region as one function ----
         resolver = ResolverData(cache, WORK)
         records, functions = [], []
-        for function, address, code, new, offset, size in hooks:
-            index = resolver.add(address, code, new)
-            records.append((index, offset, code[offset:offset + size], new[offset:offset + size], function))
+        for function, address, code, new, sites in hooks:
+            index = resolver.add(address, code, bytes(new))
+            for offset, size in sites:
+                records.append((index, offset, code[offset:offset + size], bytes(new[offset:offset + size]), function))
         # Region references: the original ones per AV1 method (no data is decoded as code), the patched ones from
         # the unchanged bytes plus the linker's external fields. Internal targets need no rebuilding.
         image, image_base = resolver.owner(start)
@@ -363,7 +381,7 @@ def main():
             output.write_text(header)
 
         # Offline view of the result for review and tests.
-        image_copy = {"region": [start, patched.hex()], "hooks": [[a, n.hex()] for _, a, _, n, _, _ in hooks]}
+        image_copy = {"region": [start, patched.hex()], "hooks": [[a, bytes(n).hex()] for _, a, _, n, _ in hooks]}
         (WORK / "vp9-patch.json").write_text(json.dumps({
             "cacheUUID": cache.uuid.hex(), "imageBase": image_base, "sites": len(records), "pages": pages,
             "stateSize": state_size, "codeBytes": sum(s["size"] for s in sections if s["name"] == "__TEXT,__text"),

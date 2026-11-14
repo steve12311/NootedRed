@@ -20,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vp9/backend-test"
 BLOB_BASE, BLOB_SIZE, CODE, DATA, TRAMPOLINES, TABLE = 0x200000000, 0x4000, 0x100, 0x2000, 0x3000, 0x3800
 STUBS = ["_nrProcessVcnCreateDecodeSession", "_nrPrepareBitStream", "_nrGetSegFgBuffer", "_nrGetIOSurfaceBuffer",
-         "_nrSetRefCon", "_nrDecodePictureEpilogue", "_nrGetAVDFuncSubId"]
+         "_nrSetRefCon", "_nrDecodePictureEpilogue", "_nrGetAVDFuncSubId",
+         "_nrGetAVDFuncOutputFormatInfo", "_nrOutputFormatNV12"]
 
 
 def main():
