@@ -36,7 +36,12 @@ EXTERNALS = {
     "_nrGetSegFgBuffer": "__ZN9VADecoder14getSegFgBufferEv",
     "_nrGetIOSurfaceBuffer": "__ZN9VAContext18getIOSurfaceBufferEP11__IOSurfacePP15VAVendorTexturejPjb",
     "_nrSetRefCon": "__ZN9VAContext9setRefConEP14_CommandRefConP15VAVendorTexturePv",
+    "_nrGetAVDFuncSubId": "__ZN13AvdCapability15getAVDFuncSubIdEj",
 }
+SETUP_CORE_FUNCTIONS = "__ZN13AvdCapability24setupStaticCoreFunctionsEv"
+INIT_CAPABILITY = "__ZN13AvdCapability20initDriverCapabilityEjj"
+GET_BUFFER_REQUIREMENT = "__ZN12AvdVAContext20GetBufferRequirementEP31AVD_DriverBufferRequirementInfo"
+GET_CONTEXT_PARAMETER = "__ZN14AvdVAInterface19GetContextParameterEPvP20AVD_ContextParamList"
 DECODE_PICTURE = "__ZN12AvdVAContext13DecodePictureEP11AVD_CmdInfoP14_CommandRefCon"
 GET_FUNCTION_TYPE = "__ZN12AvdVAContext17GetVAFunctionTypeEP16AVD_FunctionInfo"
 CREATE_SESSION = EXTERNALS["_nrProcessVcnCreateDecodeSession"]
@@ -254,6 +259,20 @@ def main():
         replacement = (bytes.fromhex("4881f900100000") + b"\x0f\x85" + rel32(branch + 7, 6, epilogue)
                        + b"\xe9" + rel32(branch + 13, 5, defined["_vp9DecodePictureEntry"]) + b"\x90")
         hook(DECODE_PICTURE, branch - names[DECODE_PICTURE], original, replacement)
+        # 5. Capability list: AppleGVA's VP9 decoder only creates a context when the driver advertises kind 1 type
+        # 0x1000. Function 6 (AV1: 'bwar' in, NV12 out) gets type 0x1000 from a stub in the region.
+        call = names[SETUP_CORE_FUNCTIONS] + 0x15CE - 0x155C
+        original = b"\xe8" + rel32(call, 5, names[EXTERNALS["_nrGetAVDFuncSubId"]])
+        hook(SETUP_CORE_FUNCTIONS, call - names[SETUP_CORE_FUNCTIONS], original,
+             b"\xe8" + rel32(call, 5, defined["_vp9GetAVDFuncSubId"]))
+        # 6. Output buffer layout for kind 1: type 0x1000 takes the NV12 path AV1 had (type 0x1000 was refused).
+        hook(GET_BUFFER_REQUIREMENT, 0x5E6EF - 0x5E514, bytes.fromhex("81fa00000001"), bytes.fromhex("81fa00100000"))
+        # 7. Context parameter 0xb (size limits): type 0x1000 reads the limits the kernel reports for AV1.
+        hook(GET_CONTEXT_PARAMETER, 0x5D108 - 0x5D0A0, bytes.fromhex("4981f900000001"),
+             bytes.fromhex("4981f900100000"))
+        # 8. initDriverCapability keeps a function only if its codec bit is set in the hardware mask; function 6
+        # tests bit 7 (AV1, absent on VCN 2) and is dropped from the list AppleGVA sees. Test bit 6 (HEVC) instead.
+        hook(INIT_CAPABILITY, 0x13F3 - 0x10C4, bytes.fromhex("bf07000000"), bytes.fromhex("bf06000000"))
 
         # ---- Resolver data: hooked functions plus the region as one function ----
         resolver = ResolverData(cache, WORK)
@@ -281,6 +300,7 @@ def main():
 
         # Sites: changed bytes in pieces of at most MAX_SITE bytes that stay inside one page.
         changed = [i for i in range(len(region)) if region[i] != patched[i]]
+        fields = sorted({r[0] for r in original_refs} | {r[0] for r in patched_refs})
         sites, i = [], 0
         while i < len(changed):
             first = changed[i]
@@ -290,7 +310,16 @@ def main():
             while i < len(changed) and changed[i] < limit and changed[i] - last_changed <= 192:
                 last_changed = changed[i]
                 i += 1
-            sites.append((first, last_changed + 1))
+            # Never cut inside a rel32 field (original or patched): end the site before the field instead.
+            stop = last_changed + 1
+            split = [r for r in fields if r < stop < r + 4]
+            if split:
+                stop = min(split)
+                while i > 0 and changed[i - 1] >= stop:
+                    i -= 1
+                if stop <= first:
+                    raise ValueError("cannot place a site boundary outside a rel32 field")
+            sites.append((first, stop))
         for first, stop in sites:
             records.append((region_index, first, region[first:stop], bytes(patched[first:stop]), "AV1 region"))
         records.sort(key=lambda r: resolver.functions[r[0]][1] + r[1])
@@ -298,10 +327,11 @@ def main():
             raise ValueError(f"too many patch sites: {len(records)}")
         # A patched rel32 field must lie fully inside one site.
         for idx, (_, _, _, refs, prefs) in enumerate(resolver.functions):
-            for offset, *_ in prefs:
+            for offset, *_ in list(refs) + list(prefs):
                 covering = [r for r in records if r[0] == idx and r[1] <= offset + 3 and offset < r[1] + len(r[2])]
                 if covering and not (covering[0][1] <= offset and offset + 4 <= covering[0][1] + len(covering[0][2])):
-                    raise ValueError("rel32 field split between sites")
+                    raise ValueError(f"rel32 field split between sites: function {idx} offset {offset:#x}, "
+                                     f"site {covering[0][1]:#x}+{len(covering[0][2]):#x} ({covering[0][4]})")
 
         # ---- Header ----
         header = ("// Generated by tools/build_vp9_decode_patch.py from tools/vp9_backend/VP9Backend.cpp; do not edit.\n"

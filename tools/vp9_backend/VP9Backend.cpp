@@ -44,6 +44,18 @@ inline void *operator new(size_t, void *where) noexcept { return where; }
 
 namespace {
 
+//! Progress report for -NRedVP9Trace: shared_region_check_np with a tagged argument, which NootedRed's syscall hook
+//! records (NRedVP9T<code>N/V in ioreg) and answers with EINVAL without running the real call. Harmless without the
+//! kext: the kernel rejects the bogus address.
+enum TraceCode : uint32_t {
+    TraceCreate = 1, TraceCreateResult, TraceDpbSize, TraceContextSize, TraceInitContext, TraceTargetArea,
+    TraceBitstream, TraceMessage, TraceDecodeEntry, TraceDecodeResult, TraceDecoderResult
+};
+__attribute__((noinline)) void trace(uint32_t code, uint64_t value) {
+    uint64_t arg = (0x5639ULL << 48) | (static_cast<uint64_t>(code) << 40) | (value & 0xFFFFFFFFFFULL);
+    asm volatile("syscall" : "+D"(arg) : "a"(0x2000126) : "rcx", "rdx", "r11", "memory", "cc");
+}
+
 template<typename T>
 T &field(void *base, size_t offset) {
     return *reinterpret_cast<T *>(static_cast<uint8_t *>(base) + offset);
@@ -169,6 +181,7 @@ extern "C" int vp9ProcessCreateDecodeSession(void *processor, void *build) {
     s->maxHeight = field<uint32_t>(decoder, Dec::Height);
     // Profile 0 at up to 4096x2304 for now (VCN 2 decodes up to 8192x4352; the DPB below grows with the size).
     if (s->maxWidth - 1 < 4096 && s->maxHeight - 1 < 4096) { s->magic = StateMagic; }
+    trace(TraceCreate, (s->maxWidth << 16) | (s->maxHeight & 0xFFFF));
     return nrProcessVcnCreateDecodeSession(processor, build);
 }
 
@@ -177,16 +190,22 @@ extern "C" uint32_t vp9CalculateDPBSize(void *processor) {
     const State *s = state(processor);
     if (!s) { return 0; }
     const auto g = dpbGeometry(*s);
-    return DpbSlots * (g.lumaSize + g.chromaSize);
+    const uint32_t size = DpbSlots * (g.lumaSize + g.chromaSize);
+    trace(TraceDpbSize, size);
+    return size;
 }
 
 //! CalculateContextSize: calc_ctx_size_vp9 for VCN 2 and 8 bit.
-extern "C" uint32_t vp9CalculateContextSize(void *) { return contextSize(8); }
+extern "C" uint32_t vp9CalculateContextSize(void *) {
+    trace(TraceContextSize, contextSize(8));
+    return contextSize(8);
+}
 
 //! initHWContext: called by VADecoder when it (re)allocates the context buffer.
 extern "C" void vp9InitHWContext(void *processor) {
     void *session = field<void *>(field<void *>(processor, Proc::Decoder), Dec::Session);
     auto *cpu = field<uint8_t *>(field<void *>(session, Sess::Context), Tex::Cpu);
+    trace(TraceInitContext, field<uint32_t>(session, Sess::ContextSize));
     memset(cpu, 0, field<uint32_t>(session, Sess::ContextSize));
     fillDefaultProbs(cpu);
 }
@@ -199,26 +218,39 @@ extern "C" void vp9GetDecodeTargetArea(void *processor, void *, int32_t *rect) {
     rect[3] = static_cast<int32_t>(s ? s->height : 0);
 }
 
-//! SetBitstreamFields(P, source, destination, build): copy the frame into the driver's bitstream ring.
-extern "C" int vp9SetBitstreamFields(void *processor, void *params, void *, void *destination, void *build) {
+//! SetBitstreamFields(P, source, destination, build): the frame for the decoder. In direct mode (config bit, as in
+//! AvdHevcDecDataProcessor) the VCN reads AppleGVA's buffer in place at the frame's offset in it; otherwise the frame
+//! is copied into the driver's bitstream ring.
+extern "C" int vp9SetBitstreamFields(void *processor, void *params, void *source, void *destination, void *build) {
     void *decoder = field<void *>(processor, Proc::Decoder);
     const auto *frame = field<const uint8_t *>(params, Pic::Frame);
     const uint64_t size = field<uint64_t>(params, Pic::FrameSize);
-    // The direct mode (decoder reads AppleGVA's buffer in place) is not supported: it would need the offset of the
-    // frame inside that buffer, which the AV1 path never sets.
-    if (!state(processor) || !frame || size == 0 || size > field<uint32_t>(decoder, Dec::MaxBitstream) ||
-        (configFlags(processor, Cfg::Flags94) & Cfg::DirectBitstream)) {
+    const bool direct = configFlags(processor, Cfg::Flags94) & Cfg::DirectBitstream;
+    void *texture = direct ? source : destination;
+    auto *cpu = texture ? field<uint8_t *>(texture, Tex::Cpu) : nullptr;
+    // Direct: the frame must lie inside the source buffer (AppleGVA passes its start, offset 0).
+    if (!state(processor) || !frame || size == 0 || size > field<uint32_t>(decoder, Dec::MaxBitstream) || !cpu ||
+        (direct && frame < cpu)) {
+        trace(TraceBitstream, 0x100);
         return 1;
     }
     void *session = field<void *>(decoder, Dec::Session);
-    auto *cpu = field<uint8_t *>(destination, Tex::Cpu);
-    memcpy(cpu, frame, size);
+    const auto offset = static_cast<uint32_t>(frame - cpu);
+    if (direct) {
+        cpu = const_cast<uint8_t *>(frame);
+    } else {
+        memcpy(cpu, frame, size);
+    }
     field<uint8_t *>(session, Sess::Bitstream) = cpu;
     field<uint32_t>(session, Sess::BitstreamSize) = static_cast<uint32_t>(size);
-    if (nrPrepareBitStream(processor, static_cast<uint8_t *>(decoder) + Dec::Decrypt)) { return 1; }
+    if (nrPrepareBitStream(processor, static_cast<uint8_t *>(decoder) + Dec::Decrypt)) {
+        trace(TraceBitstream, 0x200);
+        return 1;
+    }
+    trace(TraceBitstream, size);
     field<uint32_t>(build, Build::BitstreamOn) = 1;
-    field<void *>(build, Build::Bitstream) = destination;
-    field<uint32_t>(build, Build::BitstreamOffset) = 0;
+    field<void *>(build, Build::Bitstream) = texture;
+    field<uint32_t>(build, Build::BitstreamOffset) = direct ? offset : 0;
     return 0;
 }
 
@@ -229,7 +261,10 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
     void *decoder = field<void *>(processor, Proc::Decoder);
     void *session = field<void *>(decoder, Dec::Session);
     field<uint8_t>(session, Sess::Dirty) = 0;
-    if (!s || !target) { return 1; }
+    if (!s || !target) {
+        trace(TraceMessage, 0x100);
+        return 1;
+    }
 
     // Sizes first: VADecoder allocates the DPB and the context after Process, from these and the dirty flag.
     const uint32_t dpbSize = vp9CalculateDPBSize(processor), ctxSize = vp9CalculateContextSize(processor);
@@ -255,7 +290,10 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
                                            field<uint32_t>(session, Sess::BitstreamSize),
                                            field<Surface>(params, Pic::Target), refs, false,
                                            *reinterpret_cast<Message *>(msg + OffsetVp9), *probs, &h);
-    if (status != Status::Ok || h.bitDepth != 8 || h.width > s->maxWidth || h.height > s->maxHeight) { return 1; }
+    if (status != Status::Ok || h.bitDepth != 8 || h.width > s->maxWidth || h.height > s->maxHeight) {
+        trace(TraceMessage, 0x200 | static_cast<uint32_t>(status));
+        return 1;
+    }
     s->width = h.width, s->height = h.height;
     field<uint32_t>(decoder, Dec::Width) = h.width;
     field<uint32_t>(decoder, Dec::Height) = h.height;
@@ -276,7 +314,10 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
     const auto g = dpbGeometry(*s);
     const uint32_t pitchBytes = field<uint32_t>(target, Tex::Pitch), rows = field<uint32_t>(target, Tex::Height);
     const uint32_t bytesPerElement = field<uint32_t>(target, Tex::BytesPerElement);
-    if (!bytesPerElement || rows < h.height || pitchBytes < h.width) { return 1; }
+    if (!bytesPerElement || rows < h.height || pitchBytes < h.width) {
+        trace(TraceMessage, 0x300);
+        return 1;
+    }
     auto *decode = reinterpret_cast<DecodeMessage *>(msg + OffsetDecode);
     decode->streamType = CodecVP9;
     decode->decodeFlags = FlagUseDynamicDpb | FlagUsePal;
@@ -324,6 +365,7 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
         field<uint32_t>(build, Build::ItOn) = 1;
         field<void *>(build, Build::It) = field<void *>(session, Sess::ItTexture);
     }
+    trace(TraceMessage, (h.width << 16) | h.height);
     return 0;
 }
 
@@ -357,16 +399,28 @@ void *poolTexture(void *context, const uint8_t *frame, uint64_t size) {
 extern "C" int vp9DecodePicture(void *context, void *command, void *refCon) {
     void *decoder = field<void *>(command, Cmd::Decoder);
     void *params = field<void *>(command, Cmd::Params);
-    if (!decoder || !params) { return 5; }
+    trace(TraceDecodeEntry, params ? field<uint32_t>(params, Pic::FrameSize) : 0);
+    if (!decoder || !params) {
+        trace(TraceDecodeResult, 0x105);
+        return 5;
+    }
     void *bitstream =
         poolTexture(context, field<const uint8_t *>(params, Pic::Frame), field<uint64_t>(params, Pic::FrameSize));
     void *surface = field<void *>(params, Pic::Target);
-    if (!bitstream || !surface) { return 5; }
+    if (!bitstream || !surface) {
+        trace(TraceDecodeResult, 0x200 | (bitstream ? 0 : 1) | (surface ? 0 : 2));
+        return 5;
+    }
     void *va = field<void *>(context, Ctx::Va);
     void *output = nullptr;
-    if (nrGetIOSurfaceBuffer(va, surface, &output, 0, nullptr, true)) { return 1; }
+    if (nrGetIOSurfaceBuffer(va, surface, &output, 0, nullptr, true)) {
+        trace(TraceDecodeResult, 0x301);
+        return 1;
+    }
     using DecodeFn = int (*)(void *, void *, void *, void *);
-    (*reinterpret_cast<DecodeFn *>(field<uint8_t *>(decoder, 0) + 0x48))(decoder, params, bitstream, output);
+    const int decoded =
+        (*reinterpret_cast<DecodeFn *>(field<uint8_t *>(decoder, 0) + 0x48))(decoder, params, bitstream, output);
+    trace(TraceDecoderResult, static_cast<uint32_t>(decoded));
     nrSetRefCon(va, refCon, field<void *>(decoder, 0xF0), command);
     return 0;
 }
@@ -383,4 +437,18 @@ _vp9DecodePictureEntry:
     callq _vp9DecodePicture
     movl %eax, %r12d
     jmp _nrDecodePictureEpilogue
+)");
+
+//! Called instead of AvdCapability::getAVDFuncSubId from setupStaticCoreFunctions. Function 6 is the AV1 decoder
+//! (kind 1, type 0x1000000), which VCN 2 cannot run; it is advertised as VP9 (type 0x1000) so that AppleGVA's VP9
+//! capability lookup finds it. Its formats ('bwar' in, NV12 out) are the ones AppleGVA's VP9 decoder asks for.
+asm(R"(
+    .text
+    .globl _vp9GetAVDFuncSubId
+_vp9GetAVDFuncSubId:
+    cmpl $6, %esi
+    jne 1f
+    movl $0x1000, %eax
+    retq
+1:  jmp _nrGetAVDFuncSubId
 )");

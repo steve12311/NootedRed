@@ -60,6 +60,20 @@ static void check(const char* label){
   for(unsigned f=0;f<count;f++){
    const auto&fn=UserVP9DecodeData::ResolverFunctions[f];const auto address=plan.images[fn.image].address+fn.rva;
    assert(UserCacheResolver::matches(input,address,fn,f,true,UserVP9DecodeData::Patches,UserVP9DecodeData::ResolverLocations,UserVP9DecodeResolver::PatchCount));
+   // A hook that only retargets a call changes nothing but a rel32 field, which the byte match skips (it is
+   // checked as a reference); every other function must stop matching its original variant.
+   bool referenceOnly=true;
+   for(unsigned p=0;p<UserVP9DecodeResolver::PatchCount;p++){
+    const auto&loc=UserVP9DecodeData::ResolverLocations[p];if(loc.function!=f)continue;
+    const auto&g=UserVP9DecodeData::Patches[p];
+    for(size_t i=0;i<g.size;i++){
+     if(g.original[i]==g.patched[i])continue;
+     bool covered=false;const auto at=loc.offset+i;
+     for(unsigned r=0;r<fn.originalCount;r++)covered|=fn.originalRefs[r].offset<=at&&at<fn.originalRefs[r].offset+4;
+     referenceOnly&=covered;
+    }
+   }
+   if(referenceOnly)continue;
    assert(!UserCacheResolver::matches(input,address,fn,f,false,UserVP9DecodeData::Patches,UserVP9DecodeData::ResolverLocations,UserVP9DecodeResolver::PatchCount));
   }
   assert(!UserVP9DecodeResolver::resolve(input,base,UserVP9DecodeData::CacheUUID,plan));
