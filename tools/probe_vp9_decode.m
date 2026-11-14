@@ -3,7 +3,7 @@
 // Build: clang -fobjc-arc -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework Foundation \
 //        tools/probe_vp9_decode.m -o build/vp9/probe_vp9_decode
 // Input: ffmpeg -i clip.webm -c copy -f ivf clip.ivf
-// VP9_DUMP=path writes the visible luma of each output frame, for comparison with a software decode.
+// VP9_DUMP=path writes the visible luma and CbCr (NV12) of each output frame, for comparison with ffmpeg -pix_fmt nv12.
 // VP9_INPROCESS=1 runs the decoder inside this process (VTApplyRestrictions), so it can be debugged with lldb.
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
@@ -18,7 +18,7 @@ extern OSStatus VTApplyRestrictions(uint32_t restrictions) __attribute__((weak_i
 static atomic_uint okFrames, badFrames;
 static atomic_int  lastError;
 static uint64_t    digest = 1469598103934665603ULL;
-static FILE*       dump;    // VP9_DUMP=path: visible luma of every output frame, in output order
+static FILE*       dump;    // VP9_DUMP=path: visible luma then CbCr of every output frame, in output order
 
 static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags flags, CVImageBufferRef image,
                     CMTime pts, CMTime duration)
@@ -38,6 +38,13 @@ static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags f
     for (size_t y = 0; base && y < h; y++)
         for (size_t x = 0; x < w; x++) digest = (digest ^ base[y * stride + x]) * 1099511628211ULL;
     for (size_t y = 0; dump && base && y < h; y++) fwrite(base + y * stride, 1, w, dump);
+    // Then the interleaved CbCr plane (NV12), visible part only: the dump matches ffmpeg -pix_fmt nv12.
+    if (dump && CVPixelBufferGetPlaneCount(image) > 1) {
+        const uint8_t* uv = CVPixelBufferGetBaseAddressOfPlane(image, 1);
+        size_t uvStride = CVPixelBufferGetBytesPerRowOfPlane(image, 1);
+        size_t uvW = CVPixelBufferGetWidthOfPlane(image, 1), uvH = CVPixelBufferGetHeightOfPlane(image, 1);
+        for (size_t y = 0; uv && y < uvH; y++) fwrite(uv + y * uvStride, 1, uvW * 2, dump);
+    }
     CVPixelBufferUnlockBaseAddress(image, kCVPixelBufferLock_ReadOnly);
 }
 
