@@ -186,6 +186,8 @@ Le fasi V0 e V1 dicono presto se il progetto si può fare: conviene fare quelle,
   la decodifica in processo (lldb) dà luma identica a ffmpeg su tutte le clip a 8 bit. Col kext installato (decoder fuori
   processo) il risultato è lo stesso. Il profilo 2 a 10 bit
   ora viene rifiutato alla creazione della sessione (provato anche col kext installato). Anche la crominanza e
-  quattro clip 1080p sono identiche bit per bit a ffmpeg. Dettagli in
+  quattro clip 1080p sono identiche bit per bit a ffmpeg, così come il 4K (fino a 4096x2160) e clip lunghe (2 minuti a
+  1080p, 5 minuti a 720p). Gli stream oltre i 4096 pixel e i fotogrammi che il driver non decodifica ora falliscono
+  in modo esplicito invece di uscire corrotti. Dettagli in
   [VP9 V0](vp9-v0-findings.md#v3--prima-prova-sulla-macchina-e-gate-delle-capability-14112026) e
   [decodifica in processo](vp9-v0-findings.md#v3--decodifica-in-processo-e-primi-fotogrammi-corretti-14112026).

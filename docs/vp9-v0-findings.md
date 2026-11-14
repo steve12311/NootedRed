@@ -488,4 +488,54 @@ Y di `yuv420p`; `-pix_fmt gray` espande il range e falsa il confronto). La cromi
 - Prova col kext installato (decoder in `VTDecoderXPCService`): su 12 clip a 8 bit (le 8 precedenti più le 4 a
   1080p), 585 fotogrammi, nessuno scartato. **Luma e crominanza sono identiche bit per bit a ffmpeg** su ogni
   fotogramma, compresa la clip a dimensioni dispari 350x198.
-- Ancora da fare: 4K, clip lunghe, cambio di risoluzione a metà stream.
+
+### V3 — 4K, clip lunghe, cambio di risoluzione ed errori (14/11/2026)
+
+**Prova.** Clip generate in locale con libvpx-vp9 (`build/vp9-4k/`, `build/vp9-long/`, `build/vp9-resize/`). Il
+confronto con `ffmpeg -pix_fmt nv12` avviene in streaming con `tools/compare_vp9_decode.py`: il probe scrive il dump in
+una FIFO e il confronto procede fotogramma per fotogramma, separando luma e crominanza. Così le clip lunghe non
+richiedono dump da diversi GB.
+
+**4K, col kext installato.** `rt-4k` 3840x2160 (realtime, 2 colonne di tile, 60 fotogrammi), `good-altref-4k`
+3840x2160 (altref, row-mt, 30) e `dci-4096` 4096x2160 (rumore, 30): luma e crominanza identiche a ffmpeg su ogni
+fotogramma.
+
+**Clip lunghe.**
+- `1080p-2min`: 3600 fotogrammi, GOP 150, rumore. Tutti identici a ffmpeg, in 55 s (circa 65 fps, dump e confronto
+  compresi).
+- `720p-5min-onekf`: 9000 fotogrammi con un solo keyframe, rumore. Tutti identici in 66 s: nessuna deriva lungo
+  cinque minuti di riferimenti a catena.
+
+**Oltre il limite: corruzione silenziosa, corretta.**
+- `over-4352` 4352x2448: col kext installato la sessione veniva creata e ogni fotogramma risultava "ok", ma il
+  contenuto era sbagliato (PSNR 4,9 dB). La creazione non marcava lo stato come valido, quindi ogni
+  `SetBitstreamFields` falliva (traccia 0x100) e `VADecoder::DecodePicture` restituiva 3.
+- Il ramo AV1 originale di `AvdVAContext::DecodePicture` ignora quel risultato: chiama comunque `setRefCon` e
+  restituisce 0. Il fotogramma veniva quindi consegnato con una superficie che la VCN non aveva mai scritto.
+- **Correzione 1.** `vp9ProcessCreateDecodeSession` restituisce 1 sopra i 4096 pixel, prima del messaggio di
+  creazione del driver. VideoToolbox restituisce `-12907` alla creazione e il client ripiega sul software.
+- **Correzione 2.** Se `VADecoder::DecodePicture` fallisce, `vp9DecodePicture` restituisce 5 (il codice d'errore del
+  ramo originale) senza `setRefCon`. È stato provato forzando con lldb un ritorno 3 sul decimo fotogramma:
+  - Prima della correzione: 30 fotogrammi "ok", di cui 20 corrotti (PSNR fino a 24 dB) senza alcun errore.
+  - Con ritorno 1: i 10 fotogrammi precedenti restano corretti, poi 19 invii falliscono in modo sincrono con
+    `-17690`.
+  - Con ritorno 5: gli errori arrivano nel callback come `-12911` (`kVTVideoDecoderMalfunctionErr`).
+  - In entrambi i casi AppleGVA considera finita la sessione e non chiama più il driver: il client deve ricrearla o
+    ripiegare sul software. Si è scelto 5 perché il codice è documentato.
+- Il generatore resta a 32 siti su 9 pagine, codice 6121/6140 B. L'harness offline ora verifica il rifiuto di
+  4352x2448, 1920x4100 e 8192x4320 senza chiamate al driver, l'accettazione di 4096x2160 e il fallimento del
+  fotogramma senza `setRefCon`.
+- Le due correzioni sono provate prima in processo (lldb, byte scritti in memoria), poi col kext installato (decoder
+  in `VTDecoderXPCService`, `NRedVP9State=2`). `over-4352` dà `VTDecompressionSessionCreate = -12907`. Le 16 clip a
+  8 bit (comprese 1080p, 4K e `1080p-2min`) e `720p-5min-onekf` restano identiche a ffmpeg in luma e crominanza.
+
+**Cambio di risoluzione a metà stream** (keyframe con la nuova dimensione):
+- 640x360 → 1280x720: AppleGVA rifiuta ogni fotogramma più grande della sessione con `-12909`, prima del backend.
+  L'errore è esplicito e i fotogrammi precedenti sono corretti.
+- 1280x720 → 640x360: i fotogrammi sono decodificati e la zona 640x360 in alto a sinistra è identica a ffmpeg, ma
+  AppleGVA li consegna in buffer 1280x720 con clean aperture 1280x720. Un client che non ricrea la sessione al cambio
+  di formato mostrerebbe l'immagine piccola in un angolo. La dimensione del buffer la decide AppleGVA, non il
+  backend: è un limite noto.
+- Un fotogramma con l'header compresso corrotto viene scartato da AppleGVA con `-12909`; gli altri restano decodificati.
+
+Il probe ora stampa dimensione del buffer e clean aperture del primo fotogramma e a ogni loro cambio.

@@ -60,7 +60,7 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 实验参数 `-NRedVP9`（VP9 计划 V3 阶段，仅 macOS 26 且共享缓存 UUID 为 `31374756…16a1`，需同时设置 `-NRedVideoFix`）：
 视频补丁安装后，在同一进程的 AMD 视频驱动中写入 VP9 解码后端（复用 AV1 区域，profile 0／8 位）。状态见
 `NRedVP9State`（1 已启用，2 缓存已核验，3 缓存被拒，4 写入失败，5 系统不支持，6 内存不足）及
-`NRedVP9Applied`／`NRedVP9Already`。真机上 8 位测试片段（含 1080p）的亮度和色度与 ffmpeg 逐位一致；profile 2（10 位）在创建会话时被拒绝（`-12907`）。
+`NRedVP9Applied`／`NRedVP9Already`。真机上 8 位测试片段（含 1080p、4096x2160 及 5 分钟长片段）的亮度和色度与 ffmpeg 逐位一致；超过 4096 的尺寸在创建会话时被拒绝（`-12907`），驱动解码失败的帧报告为错误而非输出；profile 2（10 位）在创建会话时被拒绝（`-12907`）。
 仍只用 `tools/probe_vp9_decode.m` 测试，不要用浏览器。
 
 诊断参数 `-NRedVP9Trace`（需同时设置 `-NRedVP9`）：VP9 后端以带标记的 `shared_region_check_np` 调用报告各步骤，
