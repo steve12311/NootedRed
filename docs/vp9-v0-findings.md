@@ -376,3 +376,85 @@ massimo 448 byte e 32 patch per gruppo, quindi un gruppo `UserVP9Decode` separat
 - se il firmware accetta il DPB Tier 1;
 - se `VAVcnDecoder::Init` ha un controllo AV1 sulle capacità;
 - la correttezza dei fotogrammi decodificati.
+
+### V3 — Prima prova sulla macchina e gate delle capability (14/11/2026)
+
+**Risultato della prima prova.** Avvio regolare, `NRedVP9State=2`, `NRedVP9Applied=16`. `probe_vp9_decode`:
+`VTIsHardwareDecodeSupported=1`, ma `VTDecompressionSessionCreate=-12907` con
+`GVA error: ailed to create context`. Con `-NRedVP9Trace` il backend non lascia nessuna traccia, mentre il
+canale di traccia funziona (provato anche sotto il profilo sandbox di `VTDecoderXPC`): il driver non arriva mai
+al backend.
+
+**Causa.** La conclusione di V1 ("rifiuta `GetVAFunctionType`") era incompleta: prima ancora c'è un controllo di
+AppleGVA.
+
+- La funzione VP9 che crea il contesto (AppleGVA `0x…5dad80`) cerca nella lista capability del driver una voce
+  `kind 1, type 0x1000` (ricerca di classe `0x80`, `0x…5aef4c`). Se non la trova restituisce `0xb` senza
+  chiamare il driver.
+- Poi controlla il formato del bitstream `'bwar'` (altrimenti `0xc`) e il formato di uscita, NV12 per 8 bit
+  4:2:0 (altrimenti `0xd`).
+- La lista viene da `AvdCapability::setupStaticCoreFunctions`: 41 funzioni, voci da `0x438` byte (`+0` kind,
+  `+8` type, `+0x28` formati d'ingresso, `+0x22c` formati d'uscita, `+0x430` buddy). Nelle tabelle id/subId non
+  c'è nessuna voce `1/0x1000`.
+- La funzione 6 è AV1 (`1/0x1000000`): ingresso `'bwar'`, uscite NV12, `x420` e due varianti 10 bit, buddy 20 come
+  HEVC. Sono proprio i formati che AppleGVA VP9 chiede.
+
+**Correzione (ancora dietro `-NRedVP9`).** La funzione 6 diventa VP9. Tre agganci in più, quindi 30 siti su 9
+pagine e codice backend 6081/6140 B:
+
+5. In `setupStaticCoreFunctions` la `call getAVDFuncSubId` va a uno stub nella regione, `_vp9GetAVDFuncSubId`.
+   Lo stub restituisce `0x1000` per l'indice 6 e salta all'originale per gli altri. La tabella sta in
+   `__TEXT,__const`, dove il resolver non cerca, quindi non si patcha direttamente.
+6. `AvdVAContext::GetBufferRequirement`: `cmp edx, 0x1000000` → `0x1000`. Senza questo cambio, il layout NV12
+   del buffer d'uscita verrebbe rifiutato per il tipo `0x1000`.
+7. `AvdVAInterface::GetContextParameter` (parametro `0xb`): `cmp r9, 0x1000000` → `0x1000`. VP9 legge i limiti
+   che il kernel riporta per AV1.
+
+`checkCapabilityList` resta com'è: per un tipo `0x1000` non applica controlli sulle dimensioni. Il dispositivo
+smette di dichiarare AV1, che su VCN 2 non esiste comunque.
+
+**Prove offline.** `test_vp9_backend`, `test_vp9_message`, `test_vp9_probe`, `test_vp9_resolver_live` e
+`test_vpf_video_equivalence` sono verdi. L'hook 5 cambia solo il rel32 di una `call`: il confronto byte lo salta,
+perché è verificato come riferimento, quindi il test live non chiede che la funzione smetta di combaciare con
+l'originale. `test_video_cache_dynamic.py` era già rotto su HEAD per un harness non aggiornato
+(`UserRejectedCaches`, VP9), indipendentemente da questo cambio.
+
+### V3 — Decodifica in processo e primi fotogrammi corretti (14/11/2026)
+
+**Debug senza riavvii.**
+- `VTApplyRestrictions(1)` (esportata da VideoToolbox) fa girare il decoder dentro il processo chiamante.
+  `probe_vp9_decode` la usa con `VP9_INPROCESS=1`, e con `VP9_DUMP=file` salva la luma di ogni fotogramma.
+- Firmato con `get-task-allow`, il probe si può seguire con lldb. Le pagine del backend scritte dal kext sono
+  visibili in ogni processo. Per provare un backend nuovo si scrivono i byte generati (`vp9-patch.json`) nella
+  memoria del processo, senza reinstallare né riavviare.
+
+**Altri due ostacoli, trovati così.**
+- `AvdCapability::initDriverCapability` tiene una funzione solo se il bit del suo codec è acceso nella maschera
+  hardware `[cap+0xb370]`. La funzione 6 controlla il bit 7 (AV1), assente su VCN 2, quindi non arrivava mai
+  nella lista che vede AppleGVA, che conteneva 22 voci. Aggancio 8: la funzione 6 controlla il bit 6 (HEVC).
+- Il driver usa il bitstream diretto (`cfg+0x94` bit `0x80`): il VCN legge in place il buffer di AppleGVA. Il
+  backend lo rifiutava (traccia `Bitstream:0x100`). Ora fa come `AvdHevcDecDataProcessor::SetBitstreamFields`:
+  passa al comando la texture sorgente e l'offset del frame al suo interno (qui 0).
+
+**Risultato (lldb, backend scritto in memoria).** Su tutte le 8 clip a 8 bit (`probe-352x288`, `basic`,
+`altref-cyclic-aq`, `complexity-aq-kf`, `error-resilient-odd` 350x198, `lossless`, `tiles-variance-aq` 1280x720,
+`two-pass-altref`) ogni fotogramma viene decodificato senza errori. La luma è identica bit per bit a ffmpeg (piano
+Y di `yuv420p`; `-pix_fmt gray` espande il range e falsa il confronto). La crominanza non è ancora confrontata.
+
+**Generatore.**
+- 31 siti su 9 pagine. Codice backend 6139/6140 B: per far posto a questi cambi ho tolto due tracce. Non resta
+  margine.
+- Corretto un bug latente: un sito della regione poteva finire a metà di un campo rel32 *originale*, e in quel
+  caso il resolver del kext rifiutava la cache. Ora il taglio cade prima del campo, e il controllo copre anche i
+  riferimenti originali.
+
+### V3 — Prova col kext installato (14/11/2026)
+
+- Avvio regolare, `NRedVP9State=2`. `probe_vp9_decode` nel modo normale (decoder in `VTDecoderXPCService`):
+  `VTDecompressionSessionCreate = 0` su tutte le 8 clip a 8 bit. Tutti i fotogrammi sono decodificati e la luma è
+  identica bit per bit a ffmpeg. Le tracce `NRedVP9T*` confermano che il decoder fuori processo passa dal backend.
+- **Aperto: profilo 2 (10 bit).** `profile2-p010` crea la sessione, ma ogni fotogramma fallisce con `-12909`.
+  Non ci sono crash e lo stato VP9 resta valido. Prima di provare un browser bisogna rifiutare il profilo 2 già
+  alla creazione della sessione, così VideoToolbox ripiega sul software invece di dare fotogrammi rotti.
+- Ancora da fare: confronto della crominanza, clip più lunghe e risoluzioni maggiori (1080p/4K), cambio di
+  risoluzione a metà stream.
