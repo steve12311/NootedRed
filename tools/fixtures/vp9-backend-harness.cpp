@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <sys/mman.h>
+#include <utility>
 #include <vector>
 
 #include "vp9-backend-symbols.h"    // BlobBase, BlobSize, TableOffset, Sym* offsets, StateSize (generated)
@@ -66,10 +67,10 @@ static void stubSetRefCon(void *va, void *refCon, void *tex, void *cmd) {
     refConArgs[0] = va, refConArgs[1] = refCon, refConArgs[2] = tex, refConArgs[3] = cmd;
 }
 static void *decodeArgs[4];
-static int decodeCalls;
+static int decodeCalls, decodeResult;
 static int stubDecoderDecode(void *decoder, void *params, void *bitstream, void *output) {
     decodeArgs[0] = decoder, decodeArgs[1] = params, decodeArgs[2] = bitstream, decodeArgs[3] = output;
-    return decodeCalls++, 0;
+    return decodeCalls++, decodeResult;
 }
 
 struct Driver {
@@ -308,10 +309,17 @@ static void testGuards() {
     CHECK(fn<BitstreamFn>(SymBitstream)(d.processor, P, nullptr, ring, build) == 1, "direct bitstream mode");
     at<uint8_t>(d.config, 0x94) = 0;
     CHECK(fn<MessageFn>(SymMessage)(d.processor, P, nullptr, build, 0, 0) == 1, "no target");
-    // Sessions larger than 4096 are refused.
-    Driver big = makeDriver(8192, 4320);
-    fn<CreateFn>(SymCreate)(big.processor, build);
-    CHECK(fn<SizeFn>(SymDpb)(big.processor) == 0, "8K session refused");
+    // Sessions larger than 4096 are refused before the driver's create message.
+    const int creates = createCalls;
+    for (const auto [w, h] : {std::pair {8192u, 4320u}, {4352u, 2448u}, {1920u, 4100u}}) {
+        Driver big = makeDriver(w, h);
+        CHECK(fn<CreateFn>(SymCreate)(big.processor, build) != 0 && createCalls == creates, "%ux%u create refused", w,
+              h);
+        CHECK(fn<SizeFn>(SymDpb)(big.processor) == 0, "%ux%u session has no state", w, h);
+    }
+    Driver dci = makeDriver(4096, 2160);
+    CHECK(fn<CreateFn>(SymCreate)(dci.processor, build) == 0 && fn<SizeFn>(SymDpb)(dci.processor) > 0,
+          "4096x2160 accepted");
 
     // AvdVAContext::DecodePicture branch.
     void *context = zalloc(0x400);
@@ -340,6 +348,14 @@ static void testGuards() {
     at<uint64_t>(P, 8) = 0x100;
     at<void *>(P, 0x1250) = nullptr;
     CHECK(fn<DecodeFn>(SymDecode)(context, command, nullptr) == 5 && decodeCalls == 1, "no output surface");
+    // A frame the decoder failed is failed, not completed (its surface was never written).
+    at<void *>(P, 0x1250) = reinterpret_cast<void *>(0x5A5);
+    refConArgs[1] = nullptr;
+    decodeResult = 3;
+    CHECK(fn<DecodeFn>(SymDecode)(context, command, reinterpret_cast<void *>(0xBEEF)) == 5 && decodeCalls == 2 &&
+              refConArgs[1] == nullptr,
+          "decoder failure fails the frame");
+    decodeResult = 0;
     printf("guards and DecodePicture branch checked\n");
 }
 

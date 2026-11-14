@@ -179,9 +179,11 @@ extern "C" int vp9ProcessCreateDecodeSession(void *processor, void *build) {
     new (&s->session) Session();
     s->maxWidth = field<uint32_t>(decoder, Dec::Width);
     s->maxHeight = field<uint32_t>(decoder, Dec::Height);
-    // Profile 0 at up to 4096x2304 for now (VCN 2 decodes up to 8192x4352; the DPB below grows with the size).
-    if (s->maxWidth - 1 < 4096 && s->maxHeight - 1 < 4096) { s->magic = StateMagic; }
     trace(TraceCreate, (s->maxWidth << 16) | (s->maxHeight & 0xFFFF));
+    // Up to 4096x4096 for now (VCN 2 decodes up to 8192x4352; the DPB below grows with the size). A larger stream is
+    // refused here: without a session every frame would fail, and the frames would still reach the client.
+    if (s->maxWidth - 1 >= 4096 || s->maxHeight - 1 >= 4096) { return 1; }
+    s->magic = StateMagic;
     return nrProcessVcnCreateDecodeSession(processor, build);
 }
 
@@ -391,7 +393,7 @@ void *poolTexture(void *context, const uint8_t *frame, uint64_t size) {
 }    // namespace
 
 //! Same steps as the AV1 branch: bitstream texture, output texture, VADecoder::DecodePicture, setRefCon.
-//! Returns the value AvdVAContext::DecodePicture returns.
+//! Returns the value AvdVAContext::DecodePicture returns: 5 when the frame was not decoded.
 extern "C" int vp9DecodePicture(void *context, void *command, void *refCon) {
     void *decoder = field<void *>(command, Cmd::Decoder);
     void *params = field<void *>(command, Cmd::Params);
@@ -417,6 +419,10 @@ extern "C" int vp9DecodePicture(void *context, void *command, void *refCon) {
     const int decoded =
         (*reinterpret_cast<DecodeFn *>(field<uint8_t *>(decoder, 0) + 0x48))(decoder, params, bitstream, output);
     trace(TraceDecoderResult, static_cast<uint32_t>(decoded));
+    // The AV1 branch ignores this result and completes the frame, whose surface the VCN never wrote. Fail it instead
+    // with the branch's own 5 (no refCon then): VideoToolbox reports kVTVideoDecoderMalfunctionErr for it and later
+    // frames, so the client recreates the session or falls back to software instead of showing corrupt frames.
+    if (decoded) { return 5; }
     nrSetRefCon(va, refCon, field<void *>(decoder, 0xF0), command);
     return 0;
 }
