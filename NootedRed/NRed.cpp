@@ -31,6 +31,7 @@
 #include <Regs/SMU.hpp>
 #include <UserOpenGL.hpp>
 #include <UserPatchCoordinator.hpp>
+#include <UserProcessFilter.hpp>
 #include <UserSurfaceSync.hpp>
 #include <UserVideoDecode.hpp>
 #include <VCN.hpp>
@@ -70,6 +71,7 @@ void NRed::init()
             singleton().processPatcher();
             UserPatchCoordinator::configureDisplay(checkKernelArgument("-NRedDisplayFix"),
                                                    currentKernelVersion().major());
+            UserProcessFilter::init(patcher);
             UserSurfaceSync::init(patcher);
             UserOpenGL::init(patcher);
             UserVideoDecode::init(patcher);

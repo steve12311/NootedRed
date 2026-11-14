@@ -5,6 +5,7 @@
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserPatchCoordinator.hpp>
 #include <UserPatchMemory.hpp>
+#include <UserRejectedCaches.hpp>
 #include <UserSubmitGuardData.hpp>
 #include <UserSurfaceSync.hpp>
 #include <UserSurfaceSyncData.hpp>
@@ -70,7 +71,7 @@ UInt32 seenStages{0}, appliedCount{0}, errorCount{0}, windowServerCount{0}, weat
 UInt32 submitGuardCount{0};
 struct Published {
     UInt64 uuid[4], matched, reads, planState, planSites, planVerified;
-    UInt64 fvrcDisplay, fvrcDisplayCold, fvrcSubmit, fvrcSubmitCold;
+    UInt64 fvrcDisplay, fvrcDisplayCold, fvrcSubmit, fvrcSubmitCold, fvrcReject, fvrcHotTotal;
     UInt64 groupsEnabled, groupsRejected, renderState, scratchState, submitState;
 } published{};
 bool              srdShared{false}, legacyBlend{false}, computeScratch{false}, submitGuard{false};
@@ -120,6 +121,46 @@ void error(const kern_return_t value)
         }
     }
 }
+
+
+// Fase 2 diagnostica: conteggio sempre attivo (pubblicato ai primi 16 e poi ogni 256);
+// con -NRedRejectTrace registra pid, nome, base e UUID della cache dei primi 32 rifiuti.
+bool rejectTrace{false};
+struct RejectSite
+{
+    UInt32 count{0};
+};
+
+void reportRejection(RejectSite& site, const char* countKey, const char* pidKey, const char* const* uuidKeys,
+                     const char* what, proc_t process,
+                     const UInt64 base, const UInt8* uuid)
+{
+    const auto count = __atomic_add_fetch(&site.count, 1U, __ATOMIC_RELAXED);
+    if (count <= 16 || (count & 0xFF) == 0) { NRed::singleton().setProp32(countKey, count); }
+    // UUID dell'ultimo rifiuto: con la tabella dei rifiuti questo percorso è raro.
+    for (UInt32 i = 0; i < 4; ++i) {
+        UInt32 value;
+        memcpy(&value, uuid + i * 4, sizeof(value));
+        NRed::singleton().setProp32(uuidKeys[i], value);
+    }
+    if (!rejectTrace || count > 32) { return; }
+    const auto pid = process != nullptr ? proc_pid(process) : -1;
+    char       name[32]{};
+    if (pid > 0) { proc_name(pid, name, sizeof(name)); }
+    name[sizeof(name) - 1] = '\0';
+    if (pid > 0) { NRed::singleton().setProp32(pidKey, static_cast<UInt32>(pid)); }
+    SYSLOG("UserSurfaceSync", "%s rejected #%u pid=%d name=%s base=0x%llX uuid=%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-"
+                   "%02X%02X%02X%02X%02X%02X",
+           what, count, pid, name, base, uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5], uuid[6], uuid[7],
+           uuid[8], uuid[9], uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]);
+}
+RejectSite submitRejects, displayRejects;
+UserRejectedCaches::Table rejectedCaches;
+UInt32                    rejectedSkips{0};
+const char* const         submitRejectUUIDKeys[]  = {"NRedSubmitGuardRejectUUID0", "NRedSubmitGuardRejectUUID1",
+                                                     "NRedSubmitGuardRejectUUID2", "NRedSubmitGuardRejectUUID3"};
+const char* const         displayRejectUUIDKeys[] = {"NRedImmediateSyncRejectUUID0", "NRedImmediateSyncRejectUUID1",
+                                                     "NRedImmediateSyncRejectUUID2", "NRedImmediateSyncRejectUUID3"};
 
 using UserPatchMemory::Page;
 
@@ -340,7 +381,8 @@ struct WorkspaceBuffer
 
 // Keep this frame out of wrappedSharedRegionCheck, including in optimized Release builds.
 __attribute__((noinline))
-int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result)
+int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result,
+                      UserPatchCoordinator::Transaction* coordinated = nullptr)
 {
     if (args == nullptr || args->startAddress == 0) { stage(Stage::Argument); return result; }
     using namespace UserSurfaceSyncData;
@@ -353,9 +395,11 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     }
     UInt64      base{0};
     UInt8       header[104];
-    if (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0
+    static_assert(sizeof(header) == UserPatchCoordinator::HeaderSize);
+    const bool shared = coordinated && coordinated->sharedHeader(base, header);
+    if ((!shared && (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0))
         || base >= UserSurfaceSyncResolver::UserLimit - sizeof(header) || (base & (PAGE_SIZE - 1)) != 0
-        || readUser(base, header, sizeof(header)) != 0)
+        || (!shared && readUser(base, header, sizeof(header)) != 0))
     {
         stage(Stage::CacheRead);
         return result;
@@ -397,6 +441,15 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         memcpy(&value, header + 88 + i * 4, sizeof(value));
         publish(published.uuid[i], uuidKeys[i], value);
     }
+    // Fase 2: cache già rifiutata più volte in questo avvio (es. DriverKit): nessuna nuova scansione.
+    if (renderRequested && rejectedCaches.shouldSkip(&header[88])) {
+        const auto skipped = __atomic_add_fetch(&rejectedSkips, 1U, __ATOMIC_RELAXED);
+        if (skipped <= 16 || (skipped & 0xFF) == 0) {
+            NRed::singleton().setProp32("NRedImmediateSyncRejectSkips", skipped);
+        }
+        stage(Stage::CacheMismatch);
+        return result;
+    }
     // Darwin 23/24/25 始终核验完整提交方法；UUID 只用于诊断和已核验位置缓存。
     UInt64               submitOffset{0};
     auto&                submitFast    = workspace.value->submitFast;
@@ -413,8 +466,17 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         publish(published.fvrcSubmit, "NRedFVRCSubmitHot", submitFast.hot ? 1 : 0);
         publish(published.fvrcSubmitCold, "NRedFVRCSubmitCold", submitFast.hot ? 0 : 1);
     }
-    if (submitGuard && !knownCache) { NRed::singleton().setProp32("NRedSubmitGuardDynamicRejected", 1); }
-    if (!renderRequested) { return result; }
+    if (submitGuard && !knownCache) {
+        NRed::singleton().setProp32("NRedSubmitGuardDynamicRejected", 1);
+        reportRejection(submitRejects, "NRedSubmitGuardRejectCount", "NRedSubmitGuardRejectPID", submitRejectUUIDKeys,
+                        "SubmitGuard", process,
+                        base, &header[88]);
+    }
+    if (!renderRequested) {
+        // 配置决定显示侧不写代码：对协调器而言已经完成。
+        if (coordinated) { coordinated->display.outcome = UserPatchCoordinator::Outcome::Idle; }
+        return result;
+    }
     {
         auto&        fast         = workspace.value->fast;
         UInt32       displayFlags = 0;
@@ -425,9 +487,21 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         const bool resolved = UserSurfaceSyncResolver::resolveMetal(input, base, deviceID, plan, major, &fast);
         publish(published.fvrcDisplay, "NRedFVRCDisplayHot", fast.hot ? 1 : 0);
         publish(published.fvrcDisplayCold, "NRedFVRCDisplayCold", fast.hot ? 0 : 1);
+        // 诊断：最近一次映射身份检查结果，以及累计热路径次数（前 16 次逐次、之后每 256 次发布一次）。
+        publish(published.fvrcReject, "NRedFVRCMappingReject",
+                __atomic_load_n(&VPF::lastMappingReject, __ATOMIC_RELAXED));
+        if (const auto hot = VPF::ResolutionDiagnostics::counters.load(VPF::ResolutionEvent::Hot);
+            hot <= 16 || (hot & 0xFF) == 0)
+        {
+            publish(published.fvrcHotTotal, "NRedFVRCHotTotal", hot > 0xFFFFFFFFULL ? 0xFFFFFFFFU : static_cast<UInt32>(hot));
+        }
+        if (resolved) { rejectedCaches.accept(&header[88]); }
         if (!resolved) {
             stage(Stage::CacheMismatch);
             NRed::singleton().setProp32("NRedImmediateSyncDynamicRejected", 1);
+            reportRejection(displayRejects, "NRedImmediateSyncRejectCount", "NRedImmediateSyncRejectPID",
+                            displayRejectUUIDKeys, "Display", process, base, &header[88]);
+            rejectedCaches.rejectMissingImages(&header[88], input);
             return result;
         }
         patches = plan.patches;
@@ -529,6 +603,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         runtime.installed(runtime.features());
         publish(published.planVerified, "NRedDisplayVPFPlanVerified", 1);
         stage(Stage::Already);
+        if (coordinated) { UserPatchCoordinator::settlePatched(coordinated->display, requestPlan); }
         return result;
     }
     publish(published.planVerified, "NRedDisplayVPFPlanVerified", 1);
@@ -570,6 +645,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
     }
     runtime.installed(runtime.features());
     stage(Stage::Applied);
+    if (coordinated) { UserPatchCoordinator::settlePatched(coordinated->display, requestPlan); }
     NRed::singleton().setProp32("NRedImmediateSyncDynamicApplied", 1);
     // 仅记录已完整写入并恢复 RX 的 WindowServer，避免用全局计数代替故障进程证据。
     if (process != nullptr) {
@@ -649,6 +725,7 @@ int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* r
         if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d coordinated", ticket, pid); }
         return result;
     }
+    if (!UserPatchCoordinator::processAllowed(process)) { return result; }
     if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d patch-enter", ticket, pid); }
     const auto patchedResult = patchSharedRegion(process, args, result);
     if (trace) { SYSLOG("UserSurfaceSync", "shared-region call=%u pid=%d patch-return=%d", ticket, pid, patchedResult); }
@@ -661,6 +738,8 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
 {
     UserPatchCoordinator::clearDisplay();
     VPF::ResolutionDiagnostics::setEnabled(!checkKernelArgument("-NRedNoFVRC"));
+    rejectTrace = checkKernelArgument("-NRedRejectTrace");
+    NRed::singleton().setProp32("NRedRejectedCacheTable", rejectedCaches.init() ? 1 : 0);
     NRed::singleton().setProp32("NRedFVRCEnabled", VPF::ResolutionDiagnostics::enabled() ? 1 : 0);
     if (VPF::ResolutionDiagnostics::enabled()) {
         VPF::resolutionCache.init();
@@ -738,9 +817,10 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
            currentKernelVersion().major(), deviceID, renderRequested, submitGuard);
     // 另一个共享缓存模块也成功安装时，由最外层协调器持有唯一 map lease 后回调。
     UserPatchCoordinator::registerDisplay(
-        [](void* process, void* args, const int result)
+        [](void* process, void* args, const int result, UserPatchCoordinator::Transaction& transaction)
         {
             return patchSharedRegion(reinterpret_cast<proc_t>(process),
-                                     reinterpret_cast<SharedRegionCheckArgs*>(args), result);
+                                     reinterpret_cast<SharedRegionCheckArgs*>(args), result, &transaction);
         });
+    UserPatchCoordinator::registerReader(readUser);
 }

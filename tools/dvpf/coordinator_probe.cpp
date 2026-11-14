@@ -51,7 +51,7 @@ namespace
         while (value > peak && !peakCallbacks.compare_exchange_weak(peak, value)) {}
     }
 
-    int displayCallback(void*, void*, const int result)
+    int displayCallback(void*, void*, const int result, UserPatchCoordinator::Transaction&)
     {
         const auto current = ++activeCallbacks;
         updatePeak(current);
@@ -67,7 +67,7 @@ namespace
         return result;
     }
 
-    int videoCallback(void*, void*, const int result)
+    int videoCallback(void*, void*, const int result, UserPatchCoordinator::Transaction&)
     {
         {
             std::lock_guard<std::mutex> guard(orderLock);
@@ -75,6 +75,42 @@ namespace
         }
         ++videoCalls;
         return result;
+    }
+
+    struct ProofTestSite
+    {
+        UInt64       address;
+        UInt32       size;
+        const UInt8* original;
+        const UInt8* replacement;
+    };
+    struct ProofTestPlan
+    {
+        ProofTestSite        sites[2];
+        UInt32               siteCount() const { return 2; }
+        const ProofTestSite& site(UInt32 i) const { return sites[i]; }
+    };
+    UInt8         proofOriginal[64]{}, proofReplacement[64]{};
+    ProofTestPlan proofPlan()
+    {
+        return {{{0x500000, 64, proofOriginal, proofReplacement}, {0x501000, 64, proofOriginal, proofReplacement}}};
+    }
+    int proofReader(unsigned long long address, void* value, unsigned long size)
+    {
+        if (address == 0x1000 && size == 8) {
+            const UInt64 base = 0x400000;
+            std::memcpy(value, &base, 8);
+            return 0;
+        }
+        if (address == 0x400000 && size == UserPatchCoordinator::HeaderSize) {
+            std::memset(value, 0xA5, size);
+            return 0;
+        }
+        if ((address == 0x500000 || address == 0x501000) && size == 64) {
+            std::memcpy(value, proofReplacement, size);
+            return 0;
+        }
+        return 14;
     }
 
     void resetCounters()
@@ -213,12 +249,12 @@ int main()
     resetCounters();
     nestedInvoked.store(false);
     UserPatchCoordinator::registerDisplay(
-        [](void* process, void* args, const int result)
+        [](void* process, void* args, const int result, UserPatchCoordinator::Transaction& transaction)
         {
             if (!nestedInvoked.exchange(true)) {
                 UserPatchCoordinator::coordinate(process, args, result, currentMap);
             }
-            return displayCallback(process, args, result);
+            return displayCallback(process, args, result, transaction);
         });
     callHook();
     if (!nestedInvoked.load() || displayCalls != 1 || videoCalls != 1) {
@@ -226,6 +262,38 @@ int main()
         return 1;
     }
     UserPatchCoordinator::registerDisplay(displayCallback);
+
+    // 多 map 的证明发布、读取、淘汰及销毁并发执行；同 map 仍由 lease 串行化。
+    std::memset(proofReplacement, 0xC3, sizeof(proofReplacement));
+    UserPatchCoordinator::registerReader(proofReader);
+    UserPatchCoordinator::registerDisplay(
+        [](void*, void*, int r, UserPatchCoordinator::Transaction& tx)
+        {
+            UserPatchCoordinator::settlePatched(tx.display, proofPlan());
+            return r;
+        });
+    UserPatchCoordinator::registerVideo(
+        [](void*, void*, int r, UserPatchCoordinator::Transaction& tx)
+        {
+            UserPatchCoordinator::settlePatched(tx.video, proofPlan());
+            return r;
+        });
+    std::vector<std::thread> proofWorkers;
+    for (unsigned t = 0; t < 8; ++t) {
+        proofWorkers.emplace_back(
+            [t]
+            {
+                for (unsigned i = 0; i < 200; ++i) {
+                    currentMap = reinterpret_cast<void*>(0x10000 + (t * 200 + i) % 96);
+                    callHook();
+                    if ((i % 3) == 0) { UserPatchCoordinator::forgetMap(currentMap); }
+                }
+            });
+    }
+    for (auto& thread : proofWorkers) { thread.join(); }
+    for (unsigned i = 0; i < 96; ++i) { UserPatchCoordinator::forgetMap(reinterpret_cast<void*>(0x10000 + i)); }
+    if (UserPatchCoordinator::registry().active != 0) { return 1; }
+    std::puts("PASS concurrent multi-site proof snapshots: publish, retain, eviction, forgetMap and same-map leases");
 
     // 只有一个模块注册时必须跳过协调器，保留旧路径。
     UserPatchCoordinator::setActive(false);

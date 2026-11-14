@@ -135,8 +135,41 @@ namespace VPF
         return (deviceID & 0xFFFFU) | (flags << 16);
     }
 
-    // mach/vm_region.h 的 SM_TRUESHARED；VPF 层不包含内核 VM 头，由调用方适配。
+    // mach/vm_region.h 的 SM_TRUESHARED / SM_COW；VPF 层不包含内核 VM 头，由调用方适配。
     constexpr UInt8 MappingShareTrueShared = 5;
+    // 共享缓存 __TEXT 在 Darwin 23-25 的机器级共享子映射中报告为 SM_COW，且原始对象自带
+    // shadow 链（Tahoe 实测 shadow_depth=2，所有进程同一 object_id）。进程私自写入的页会被
+    // 拆分为私有条目并换成新的顶层对象，因此“同一 object_id + 不可写”才是原始内容的证据；
+    // COW 只接受不超过 MappingCowMaxShadow 的基线 shadow 深度，TRUESHARED 仍要求 0。
+    constexpr UInt8  MappingShareCow     = 1;
+    constexpr UInt32 MappingCowMaxShadow = 4;
+
+    // 最近一次 inspectMapping 拒绝的原因，仅供诊断：低 8 位为原因码，8-15 位为 share_mode，
+    // 16-23 位为 shadow_depth（截断）。0 表示最近一次检查通过。
+    enum MappingReject : UInt32
+    {
+        MappingRejectNone = 0,
+        MappingRejectArgument,
+        MappingRejectRegions,
+        MappingRejectProbe,
+        MappingRejectSubmap,
+        MappingRejectShareMode,
+        MappingRejectShadow,
+        MappingRejectWritable,
+        MappingRejectObject,
+        MappingRejectMixed,
+        MappingRejectEmpty,
+    };
+    inline UInt32 lastMappingReject{0};
+
+    inline void recordMappingReject(const UInt32 code, const UInt8 shareMode = 0, const UInt32 shadowDepth = 0)
+    {
+        const UInt32 shadow = shadowDepth > 0xFF ? 0xFF : shadowDepth;
+        __atomic_store_n(&lastMappingReject, code | (static_cast<UInt32>(shareMode) << 8) | (shadow << 16),
+                         __ATOMIC_RELAXED);
+    }
+
+    inline bool cleanShareMode(const UInt8 mode) { return mode == MappingShareTrueShared || mode == MappingShareCow; }
 
     struct MappingInfo
     {
@@ -161,13 +194,15 @@ namespace VPF
         bool   writable;
     };
 
-    // 要求整个范围由同一非私有只读共享对象覆盖；任何 COW/私有页或混合对象都拒绝。
+    // 要求整个范围由同一只读共享对象覆盖（TRUESHARED 且无 shadow，或基线 shadow 的 COW）；
+    // 可写条目、对象或 shadow 深度不一致（私有写入产生的新顶层对象）都拒绝。
     inline bool inspectMapping(const MappingProbe probe, void* context, const UInt64 address, const UInt64 size,
                                MappingFacts& facts)
     {
         if (!probe || address == 0 || size == 0 || address >= UserSharedCache::UserLimit
             || size > UserSharedCache::UserLimit - address)
         {
+            recordMappingReject(MappingRejectArgument);
             return false;
         }
         constexpr UInt32 MaxLevels = 8;
@@ -178,42 +213,72 @@ namespace VPF
         } levels[MaxLevels];
         UInt32 levelCount = 0, depth = 0, regions = 0;
         UInt64 cursor = address, end = address + size;
-        UInt32 objectId = 0;
-        bool   found    = false;
+        UInt32 objectId  = 0;
+        UInt8  shareMode   = 0;
+        UInt32 shadowDepth = 0;
+        bool   found       = false;
         while (cursor < end) {
-            if (++regions > 4096) { return false; }
+            if (++regions > 4096) {
+                recordMappingReject(MappingRejectRegions);
+                return false;
+            }
             MappingInfo info{};
             if (!probe(context, cursor, depth, info) || info.start > cursor || info.size == 0
                 || info.size > UserSharedCache::UserLimit - info.start)
             {
+                recordMappingReject(MappingRejectProbe);
                 return false;
             }
             const UInt64 regionEnd = info.start + info.size;
-            if (regionEnd <= cursor) { return false; }
+            if (regionEnd <= cursor) {
+                recordMappingReject(MappingRejectProbe);
+                return false;
+            }
             if (info.isSubmap) {
                 // 子映射只用于找到叶子区域；实际证据必须来自叶子条目。
-                if (levelCount == MaxLevels || info.depth >= MaxLevels) { return false; }
+                if (levelCount == MaxLevels || info.depth >= MaxLevels) {
+                    recordMappingReject(MappingRejectSubmap);
+                    return false;
+                }
                 levels[levelCount++] = {depth, regionEnd};
                 depth                = info.depth + 1;
                 continue;
             }
-            if (info.shareMode != MappingShareTrueShared || info.shadowDepth != 0 || info.writable
-                || info.objectId == 0)
-            {
+            if (!cleanShareMode(info.shareMode)) {
+                recordMappingReject(MappingRejectShareMode, info.shareMode, info.shadowDepth);
+                return false;
+            }
+            if (info.shareMode == MappingShareCow ? info.shadowDepth > MappingCowMaxShadow : info.shadowDepth != 0) {
+                recordMappingReject(MappingRejectShadow, info.shareMode, info.shadowDepth);
+                return false;
+            }
+            if (info.writable) {
+                recordMappingReject(MappingRejectWritable, info.shareMode, info.shadowDepth);
+                return false;
+            }
+            if (info.objectId == 0) {
+                recordMappingReject(MappingRejectObject, info.shareMode, info.shadowDepth);
                 return false;
             }
             if (!found) {
-                objectId = info.objectId;
-                found    = true;
+                objectId    = info.objectId;
+                shareMode   = info.shareMode;
+                shadowDepth = info.shadowDepth;
+                found       = true;
             }
-            else if (info.objectId != objectId) {
+            else if (info.objectId != objectId || info.shadowDepth != shadowDepth) {
+                recordMappingReject(MappingRejectMixed, info.shareMode, info.shadowDepth);
                 return false;
             }
             cursor = regionEnd;
             while (levelCount != 0 && cursor >= levels[levelCount - 1].end) { depth = levels[--levelCount].depth; }
         }
-        if (!found) { return false; }
-        facts = {objectId, MappingShareTrueShared, 0, false};
+        if (!found) {
+            recordMappingReject(MappingRejectEmpty);
+            return false;
+        }
+        recordMappingReject(MappingRejectNone, shareMode, shadowDepth);
+        facts = {objectId, shareMode, shadowDepth, false};
         return true;
     }
 

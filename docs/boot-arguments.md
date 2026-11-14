@@ -37,6 +37,12 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 映射身份使用短 VM 查询，保留共享对象、COW、完整函数及引用核验；不统计共享区域的驻留页。
 `NRedFVRCEnabled=1` 和 `NRedFVRCCacheReady=1` 表示缓存策略及存储已启用，
 实际复用可检查 `NRedFVRCDisplayHot`、`NRedFVRCSubmitHot`、`NRedFVRCDecodeHot`、`NRedFVRCGuardHot`。
+这些 `*Hot` 只反映最近一次解析；命中率以 `NRedFVRCHotTotal` 增量为准，
+映射检查结果见 `NRedFVRCMappingReject`。
+
+共享缓存补丁默认仅跳过精确白名单中的基础系统命令，并额外核验直接依赖；未知程序和工具链保持补丁，
+应用和 WindowServer 始终补丁。`-NRedPatchAllProcs` 关闭该过滤，所有进程照常补丁；
+判定规则与诊断见 [进程过滤与 FVRC 复用](process-filter-fvrc.md)。
 
 插件全局关闭 `-NRedOff`、调试参数及上游的 `AMDBacklight` 设置不在本次更名范围内；
 `AMDBacklight=0` 仍会阻止 EC 服务启动。

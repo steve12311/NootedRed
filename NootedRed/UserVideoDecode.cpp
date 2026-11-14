@@ -4,6 +4,7 @@
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserPatchCoordinator.hpp>
+#include <UserRejectedCaches.hpp>
 #include <UserPatchMapGate.hpp>
 #include <UserPatchMemory.hpp>
 #include <UserPatchPolicy.hpp>
@@ -220,6 +221,44 @@ namespace
             }
         }
     }
+
+
+    // Fase 2 diagnostica: conteggio sempre attivo (pubblicato ai primi 16 e poi ogni 256);
+    // con -NRedRejectTrace registra pid, nome, base e UUID della cache dei primi 32 rifiuti.
+    bool rejectTrace{false};
+    struct RejectSite
+    {
+        UInt32 count{0};
+    };
+
+    void reportRejection(RejectSite& site, const char* countKey, const char* pidKey, const char* const* uuidKeys,
+                     const char* what, proc_t process,
+                         const UInt64 base, const UInt8* uuid)
+    {
+        const auto count = __atomic_add_fetch(&site.count, 1U, __ATOMIC_RELAXED);
+        if (count <= 16 || (count & 0xFF) == 0) { NRed::singleton().setProp32(countKey, count); }
+    // UUID dell'ultimo rifiuto: con la tabella dei rifiuti questo percorso è raro.
+    for (UInt32 i = 0; i < 4; ++i) {
+        UInt32 value;
+        memcpy(&value, uuid + i * 4, sizeof(value));
+        NRed::singleton().setProp32(uuidKeys[i], value);
+    }
+        if (!rejectTrace || count > 32) { return; }
+        const auto pid = process != nullptr ? proc_pid(process) : -1;
+        char       name[32]{};
+        if (pid > 0) { proc_name(pid, name, sizeof(name)); }
+        name[sizeof(name) - 1] = '\0';
+        if (pid > 0) { NRed::singleton().setProp32(pidKey, static_cast<UInt32>(pid)); }
+        SYSLOG("UserVideoDecode", "%s rejected #%u pid=%d name=%s base=0x%llX uuid=%02X%02X%02X%02X-%02X%02X-%02X%02X-%02X%02X-"
+                       "%02X%02X%02X%02X%02X%02X",
+               what, count, pid, name, base, uuid[0], uuid[1], uuid[2], uuid[3], uuid[4], uuid[5], uuid[6], uuid[7],
+               uuid[8], uuid[9], uuid[10], uuid[11], uuid[12], uuid[13], uuid[14], uuid[15]);
+    }
+    RejectSite                videoRejects;
+    UserRejectedCaches::Table rejectedCaches;
+    UInt32                    rejectedSkips{0};
+    const char* const         videoRejectUUIDKeys[] = {"NRedVCNUserRejectUUID0", "NRedVCNUserRejectUUID1",
+                                                       "NRedVCNUserRejectUUID2", "NRedVCNUserRejectUUID3"};
 
     using UserPatchMemory::Page;
 
@@ -509,7 +548,8 @@ namespace
         return selectedCount != 0;
     }
 
-    __attribute__((noinline)) int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result)
+    __attribute__((noinline)) int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result,
+                                                    UserPatchCoordinator::Transaction* coordinated = nullptr)
     {
         // 按 FairPlay 权限统一选择策略；客户端只允许 AMD 驱动侧解码项，
         // 保留 AppleGVA 和编码代码原样。
@@ -538,9 +578,11 @@ namespace
         auto*       selectedPatches = transaction.state->selected;
         UInt64      base{0};
         UInt8       header[104];
-        if (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0
+        static_assert(sizeof(header) == UserPatchCoordinator::HeaderSize);
+        const bool shared = coordinated && coordinated->sharedHeader(base, header);
+        if ((!shared && (readUser(args->startAddress, &base, sizeof(base)) != 0 || base == 0))
             || base >= UserSharedCache::UserLimit - sizeof(header) || (base & (PAGE_SIZE - 1)) != 0
-            || readUser(base, header, sizeof(header)) != 0)
+            || (!shared && readUser(base, header, sizeof(header)) != 0))
         {
             stage(Stage::CacheRead, fairPlayPID);
             return result;
@@ -561,6 +603,15 @@ namespace
             UInt32 value;
             memcpy(&value, header + 88 + i * 4, sizeof(value));
             publish(published.uuid[i], uuidKeys[i], value);
+        }
+        // Fase 2: cache già rifiutata più volte in questo avvio (es. DriverKit): nessuna nuova scansione.
+        if (rejectedCaches.shouldSkip(&header[88])) {
+            const auto skipped = __atomic_add_fetch(&rejectedSkips, 1U, __ATOMIC_RELAXED);
+            if (skipped <= 16 || (skipped & 0xFF) == 0) {
+                NRed::singleton().setProp32("NRedVCNUserRejectSkips", skipped);
+            }
+            stage(Stage::CacheMismatch, fairPlayPID);
+            return result;
         }
         DynamicBuffer dynamicBuffer;
         auto&         input = transaction.state->input;
@@ -585,8 +636,12 @@ namespace
         if (!UserVideoDecodeResolver::resolve(input, base, devicePatches, *dynamicBuffer.plan, major, &fast)) {
             stage(Stage::CacheMismatch, fairPlayPID);
             NRed::singleton().setProp32("NRedVCNUserDynamicRejected", 1);
+            reportRejection(videoRejects, "NRedVCNUserRejectCount", "NRedVCNUserRejectPID", videoRejectUUIDKeys, "Video",
+                            process, base, &header[88]);
+            rejectedCaches.rejectMissingImages(&header[88], input);
             return result;
         }
+        rejectedCaches.accept(&header[88]);
         const auto* patches = dynamicBuffer.plan->patches;
         publish(published.matched, "NRedVCNUserDynamicMatched", 1);
         publish(published.reads, "NRedVCNUserDynamicReads", dynamicBuffer.plan->reads);
@@ -700,6 +755,7 @@ namespace
             }
             stage(Stage::Already, fairPlayPID);
             observeLedger(mapKey);
+            if (coordinated) { UserPatchCoordinator::settlePatched(coordinated->video, installPlan); }
             if (fairPlayDecode) { NRed::singleton().setProp32("NRedDRMVideoState", 3); }
             return result;
         }
@@ -745,6 +801,7 @@ namespace
         }
         installedLedger(mapKey);
         stage(Stage::Applied, fairPlayPID);
+        if (coordinated) { UserPatchCoordinator::settlePatched(coordinated->video, installPlan); }
         if (fairPlayDecode) { NRed::singleton().setProp32("NRedDRMVideoState", 2); }
         NRed::singleton().setProp32("NRedVCNUserDynamicApplied", 1);
         if (process != nullptr) {
@@ -787,6 +844,7 @@ namespace
     void wrappedMapDestroy(vm_map_t map)
     {
         removeLedgerMap(map);
+        UserPatchCoordinator::forgetMap(map);
         originalMapDestroy(map);
     }
 
@@ -833,6 +891,7 @@ namespace
             if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d coordinated", ticket, pid); }
             return result;
         }
+        if (!UserPatchCoordinator::processAllowed(process)) { return result; }
         if (trace) { SYSLOG("UserVideoDecode", "shared-region call=%u pid=%d patch-enter", ticket, pid); }
         if (!guardLock) { return result; }
         auto* identity = getTaskMap ? static_cast<void*>(getTaskMap(current_task())) : nullptr;
@@ -877,6 +936,8 @@ void UserVideoDecode::init(KernelPatcher& patcher)
         SYSLOG("UserVideoDecode", "VCN capability rejected: device=0x%X reason=%u", deviceID, rejected);
         return;
     }
+    rejectTrace            = checkKernelArgument("-NRedRejectTrace");
+    NRed::singleton().setProp32("NRedVCNRejectedCacheTable", rejectedCaches.init() ? 1 : 0);
     darwinMajor            = currentKernelVersion().major();
     const auto* candidates = darwinMajor == 23 ? UserSonomaVideoData::findDevice(deviceID) :
                              darwinMajor == 24 ? UserSequoiaVideoData::findDevice(deviceID) :
@@ -953,9 +1014,9 @@ void UserVideoDecode::init(KernelPatcher& patcher)
     NRed::singleton().setProp32("NRedDRMVideoMask", fairPlayMask());
     // 显示模块也成功注册时，协调器成为最外层 Hook；否则继续使用本模块的旧 lease。
     UserPatchCoordinator::registerVideo(
-        [](void* process, void* args, const int result)
+        [](void* process, void* args, const int result, UserPatchCoordinator::Transaction& transaction)
         {
             return patchSharedRegion(reinterpret_cast<proc_t>(process), reinterpret_cast<SharedRegionCheckArgs*>(args),
-                                     result);
+                                     result, &transaction);
         });
 }

@@ -2,6 +2,9 @@
 #pragma once
 #include <VPF/ResolutionIdentity.hpp>
 #include <string.h>
+#if defined(KERNEL)
+#include <IOKit/IOLocks.h>
+#endif
 
 namespace VPF
 {
@@ -71,6 +74,9 @@ namespace VPF
 
     // 固定容量；满表不淘汰、不覆盖。发布与快照复制都在短锁内完成，
     // 临界区只有固定结构复制，不读取用户内存、不等待其它 map。
+    // Nel kernel il lock è un IOSimpleLock (lck_spin): disattiva la prelazione, quindi chi tiene il lock
+    // non può essere sospeso mentre gli altri girano a vuoto (carico ~30–50 all'avvio).
+    // Fuori dal kernel (test host) resta lo spin atomico originale.
     struct VerifiedResolutionCache
     {
         static constexpr UInt32 Capacity = 32;
@@ -79,8 +85,18 @@ namespace VPF
         UInt32               guard;
         ResolutionCacheEntry entries[Capacity];
         UInt64               stats[static_cast<UInt32>(ResolutionStat::Count)];
+#if defined(KERNEL)
+        IOSimpleLock* lock;
 
+        // Senza lock la cache resta spenta: ogni processo fa la ricerca completa, come senza FVRC.
+        void init()
+        {
+            if (!lock) { lock = IOSimpleLockAlloc(); }
+            __atomic_store_n(&ready, lock ? 1U : 0U, __ATOMIC_RELEASE);
+        }
+#else
         void init() { ready = 1; }
+#endif
 
         void record(const ResolutionStat stat, const UInt64 amount = 1)
         {
@@ -131,6 +147,10 @@ namespace VPF
         }
 
     private:
+#if defined(KERNEL)
+        void acquire() { IOSimpleLockLock(lock); }
+        void release() { IOSimpleLockUnlock(lock); }
+#else
         void acquire()
         {
             while (__atomic_exchange_n(&guard, 1U, __ATOMIC_ACQUIRE) != 0) {
@@ -138,6 +158,7 @@ namespace VPF
             }
         }
         void release() { __atomic_store_n(&guard, 0U, __ATOMIC_RELEASE); }
+#endif
 
         static bool valid(const CachedResolution& value)
         {
@@ -227,6 +248,22 @@ namespace VPF
             for (UInt32 i = 0; i < Capacity; ++i) {
                 auto& entry = entries[i];
                 if (entry.state == 0 || entry.value.key != value.key) { continue; }
+                if (entry.state == 1) {
+                    const bool entryProven = entry.value.proof == ProofClass::ReusableImmutableIdentity;
+                    const bool valueProven = value.proof == ProofClass::ReusableImmutableIdentity;
+                    // HintOnly 来自映射不干净的进程（例如同一进程已被补丁、读到已改写的变体），
+                    // 不能否定干净映射上得到的证明；反之干净证明直接取代提示，即使提示布局不同。
+                    if (entryProven && !valueProven) {
+                        record(ResolutionStat::Duplicate);
+                        return PublishResult::Duplicate;
+                    }
+                    if (!entryProven && valueProven) {
+                        entry.value = value;
+                        record(ResolutionStat::Upgraded);
+                        record(ResolutionStat::Published);
+                        return PublishResult::Published;
+                    }
+                }
                 if (entry.state == 1 && sameLayout(entry.value, value)) {
                     if (value.proof == ProofClass::ReusableImmutableIdentity
                         && entry.value.proof == ProofClass::HintOnly)

@@ -47,6 +47,9 @@ static kern_return_t query(vm_map_t, mach_vm_address_t* address, mach_vm_size_t*
     if (mode == 4) { info.share_mode = SM_COW; }
     if (mode == 5) { info.shadow_depth = 1; }
     if (mode == 6) { info.object_id = 0; }
+    if (mode == 7) { info.share_mode = SM_COW; info.shadow_depth = 5; }
+    if (mode == 9) { info.share_mode = SM_COW; info.shadow_depth = 2; }
+    if (mode == 8) { info.share_mode = SM_PRIVATE; }
     return KERN_SUCCESS;
 }
 int main() {
@@ -61,12 +64,26 @@ int main() {
     for (mode = 1; mode <= 2; ++mode) {
         assert(!probeMapping(&state, 0x100001000ULL, 1, info));
     }
-    for (mode = 3; mode <= 6; ++mode) {
+    // 共享缓存 __TEXT 实际以 SM_COW 上报；未产生 shadow 时仍是缓存文件原始对象，可复用。
+    mode = 4;
+    assert(VPF::inspectMapping(probeMapping, &state, 0x100001000ULL, 0x800000, facts));
+    assert(facts.objectId == 0x1234 && facts.shareMode == SM_COW && facts.shadowDepth == 0 && !facts.writable);
+    assert((VPF::lastMappingReject & 0xFF) == VPF::MappingRejectNone);
+    // Tahoe 实测：机器级共享子映射的原始缓存对象为 SM_COW 且 shadow_depth=2。
+    mode = 9;
+    assert(VPF::inspectMapping(probeMapping, &state, 0x100001000ULL, 0x800000, facts));
+    assert(facts.objectId == 0x1234 && facts.shareMode == SM_COW && facts.shadowDepth == 2);
+    for (mode = 3; mode <= 8; ++mode) {
+        if (mode == 4) { continue; }
         assert(!VPF::inspectMapping(probeMapping, &state, 0x100001000ULL, 0x800000, facts));
+        assert((VPF::lastMappingReject & 0xFF) != VPF::MappingRejectNone);
     }
+    mode = 7;
+    assert(!VPF::inspectMapping(probeMapping, &state, 0x100001000ULL, 0x800000, facts));
+    assert((VPF::lastMappingReject & 0xFF) == VPF::MappingRejectShadow);
     state.query = nullptr;
     assert(!probeMapping(&state, 0x100001000ULL, 1, info));
-    puts("PASS real Mach ABI: short query, large shared region, submap identity, failure and truncated reply");
+    puts("PASS real Mach ABI: short query, large shared region, submap identity, clean COW reuse, shadow/private rejection, failure and truncated reply");
 }
 '''.replace('PROBE', probe)
         path, executable = WORK / f'{module}.cpp', WORK / module

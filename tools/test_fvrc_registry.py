@@ -103,6 +103,15 @@ static void basic(){
  assert(resolutionCache.publish(makeValue(keepKey))==PublishResult::Published);
  assert(resolutionCache.publish(makeValue(keepKey,0x11000,ProofClass::HintOnly))==PublishResult::Duplicate);
  assert(resolutionCache.lookup(keepKey,snapshot)&&snapshot.proof==ProofClass::ReusableImmutableIdentity);
+ // 已补丁进程的 HintOnly（不同变体/位置）不能禁用干净证明；干净证明可取代不同布局的提示。
+ const auto dirtyKey=makeKey(uint32_t(FunctionGroup::DisplayConstructor),4,14);
+ assert(resolutionCache.publish(makeValue(dirtyKey))==PublishResult::Published);
+ assert(resolutionCache.publish(makeValue(dirtyKey,0x12000,ProofClass::HintOnly))==PublishResult::Duplicate);
+ assert(resolutionCache.lookup(dirtyKey,snapshot)&&snapshot.proof==ProofClass::ReusableImmutableIdentity);
+ const auto hintFirstKey=makeKey(uint32_t(FunctionGroup::VideoDecode),5,15);
+ assert(resolutionCache.publish(makeValue(hintFirstKey,0x12000,ProofClass::HintOnly))==PublishResult::Published);
+ assert(resolutionCache.publish(makeValue(hintFirstKey,0x11000))==PublishResult::Published);
+ assert(resolutionCache.lookup(hintFirstKey,snapshot)&&snapshot.proof==ProofClass::ReusableImmutableIdentity);
  printf("PASS basic: full-field key compare, layout identity, publish/snapshot, invalid rejection, conflict disable, proof upgrade\n");
 }
 static void capacity(){
@@ -190,14 +199,55 @@ int main(int argc,char** argv){
  return 0;
 }
 '''
-    path, executable = WORK / 'test.cpp', WORK / 'test'
-    path.write_text(source)
-    subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O2', '-fsanitize=address,undefined',
-                    '-fno-omit-frame-pointer', '-Wall', '-Wextra', '-Werror', '-pthread',
-                    '-I' + str(WORK / 'stubs'), '-I' + str(ROOT / 'NootedRed'),
-                    str(path), '-o', str(executable)], check=True, timeout=60)
-    for scenario in ('basic', 'capacity', 'concurrency'):
-        subprocess.run([str(executable), scenario], check=True, timeout=60)
+    # Variante kernel (-DKERNEL): IOSimpleLock simulato con uno spin che conta le sezioni critiche,
+    # così il test verifica anche che il lock venga davvero preso e rilasciato.
+    (stub / 'IOLocks.h').write_text('''#pragma once
+#include <atomic>
+#include <cassert>
+#include <cstdlib>
+struct IOSimpleLock { std::atomic<bool> held{false}; };
+inline std::atomic<unsigned> simpleLockAcquires{0}, simpleLockAllocs{0};
+inline bool simpleLockAllocOK = true;
+inline IOSimpleLock* IOSimpleLockAlloc(){ if(!simpleLockAllocOK) return nullptr; ++simpleLockAllocs; return new IOSimpleLock; }
+inline void IOSimpleLockLock(IOSimpleLock* lock){ while(lock->held.exchange(true,std::memory_order_acquire)){} ++simpleLockAcquires; }
+inline void IOSimpleLockUnlock(IOSimpleLock* lock){ assert(lock->held.load()); lock->held.store(false,std::memory_order_release); }
+''')
+    kernel_check = r'''
+#ifdef KERNEL
+static void kernelLock(){
+ // Allocazione fallita: cache spenta, nessun lock preso, lookup sempre miss.
+ VerifiedResolutionCache off{};
+ simpleLockAllocOK=false;off.init();simpleLockAllocOK=true;
+ assert(!off.ready&&!off.lock);
+ CachedResolution snapshot{};
+ const auto key=makeKey(uint32_t(FunctionGroup::VideoDecode),0x99,0x99);
+ assert(off.publish(makeValue(key))==PublishResult::Disabled&&!off.lookup(key,snapshot));
+ // init ripetuto non alloca un secondo lock; ogni operazione prende il lock una volta.
+ VerifiedResolutionCache on{};
+ const auto allocs=simpleLockAllocs.load();
+ on.init();on.init();
+ assert(on.ready&&on.lock&&simpleLockAllocs==allocs+1);
+ const auto before=simpleLockAcquires.load();
+ assert(on.publish(makeValue(key))==PublishResult::Published&&on.lookup(key,snapshot));
+ assert(simpleLockAcquires==before+2&&!on.lock->held.load());
+ printf("PASS kernel lock: IOSimpleLock allocated once, taken per operation, disabled when allocation fails\n");
+}
+#endif
+int main('''
+    variants = [('spin', [], ('basic', 'capacity', 'concurrency')),
+                ('kernel', ['-DKERNEL'], ('basic', 'capacity', 'concurrency', 'kernel'))]
+    for name, flags, scenarios in variants:
+        path, executable = WORK / f'test-{name}.cpp', WORK / f'test-{name}'
+        variant = source.replace('int main(', kernel_check, 1).replace(
+            'else return 2;', 'else if(strcmp(scenario,"kernel")==0){\n#ifdef KERNEL\n kernelLock();\n#else\n return 2;\n#endif\n }\n else return 2;', 1)
+        path.write_text(variant)
+        subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O2', '-fsanitize=address,undefined',
+                        '-fno-omit-frame-pointer', '-Wall', '-Wextra', '-Werror', '-pthread', *flags,
+                        '-I' + str(WORK / 'stubs'), '-I' + str(ROOT / 'NootedRed'),
+                        str(path), '-o', str(executable)], check=True, timeout=60)
+        print(f'{name}:', flush=True)
+        for scenario in scenarios:
+            subprocess.run([str(executable), scenario], check=True, timeout=60)
 
 
 if __name__ == '__main__':
