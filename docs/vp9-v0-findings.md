@@ -228,3 +228,102 @@ forzato. I vettori ufficiali `vp90-2-*` di libvpx li coprirebbero (da scaricare:
   fuori linea (senza: 8,3 KB di codice).
 - Il resto del comando (messaggio di decodifica generico, buffer DPB/contesto/bitstream, registri) resta al codice
   `Vcn2DecCommand` che il driver AMD usa già per HEVC.
+
+## V3 — Progetto dell'integrazione (studio del driver, 14/11/2026)
+
+Indirizzi come offset nell'immagine di `AMDRadeonVADriver2` della cache attuale (UUID `31374756…`, base
+`0x7ffb10afe000`). Il generatore li ritrova per hash, come gli altri patch: gli offset servono solo da riferimento.
+
+### Percorso di un fotogramma AV1 (quello che riusiamo)
+
+1. `AvdVAContext::GetVAFunctionType` (`0x5DC14`): `kind 1` → tipo funzione. `0x1000000` (AV1) → 6; ogni altro tipo
+   sconosciuto → `0x13` (rifiuto). Il confronto è un solo `cmp rax, 0x1000000` a `0x5DD8D`.
+2. `AvdVAContext::CreateContext` (`0x5DA7E`): tipi 0–6 → `CreateDecoder(tipo, w = info+0x20, h = info+0x24, …)`.
+   `VAFactory::createDecoder`: tipo 6 → `VAVcnDecoder` con `[dec+0x78] = 6`; `VAVcnDecoder::Init` mette 7 nella
+   sessione (`+0x58`, struttura di `0x2B8` byte, campo `+4`).
+3. `ProcessVcnCreateDecodeSession` (`0x15E94`): il codec del messaggio di creazione si legge da una tabella sul
+   campo `+4`; l'indice 7 scrive `0x13` (AV1) con `mov dword [rax], 0x13` a `0x15F77`. Buffer del messaggio per il
+   tipo 6: `0x1008` byte (tabella a `0x87FA0`).
+4. `VAFactory::createDecodeDataProcessor`: tipo 6 → `operator new(0x48)` (`mov edi, 0x48` a `0x0DE9A`), poi il
+   costruttore di `AvdVcnAv1DecDataProcessor` (`0x427F2`).
+5. `AvdVAContext::DecodePicture` (`0x5EAC2`), ramo AV1 a `0x5ED3A`: `decoder = cmd+0x18`, `pic = cmd+0x20`; il
+   bitstream è la texture `[pool + idx·8 + 0x20]` con `idx = [[pic+0x60]]`, l'uscita viene da
+   `getIOSurfaceBuffer(ctx+8, pic+0x18, …)`; poi `VADecoder::DecodePicture(pic, bs, out)` (vtable `+0x48`) e
+   `setRefCon`.
+6. `VADecoder::DecodePicture` (`0x892C`): `processor->Process` (vtable `+0x20`), poi alloca DPB (`sessione+0x38`,
+   dimensione `+0x30` da `CalculateDPBSize`) e contesto (`sessione+0x1D0`, dimensione `+0x1C8` da
+   `CalculateContextSize`), chiama `initHWContext` (vtable `+0x60`) per il tipo 6, costruisce e invia il comando.
+
+### Metodi del processore AV1 (vtable `+0x10 + 8·n`)
+
+| Slot | Metodo | Offset | Uso per il VP9 |
+| --- | --- | --- | --- |
+| `+0x20` | `Process` | `0x428AC` | invariato: chiama i tre metodi sotto, `build[0] = 2`, contatore `+0x20` |
+| `+0x40` | `CalculateDPBSize` | `0x4292A` | DPB VP9 (sotto) |
+| `+0x48` | `CalculateContextSize` | `0x42992` | `VP9Message::contextSize` (10 857 728 / +65 536 a 10 bit) |
+| `+0x58` | `getDecodeTargetArea` | `0x45040` | larghezza/altezza del fotogramma VP9 |
+| `+0x60` | `initHWContext` | `0x4428C` | probabilità predefinite VP9 nel contesto (`fillDefaultProbs`) |
+| `+0x68` | `SetBitstreamFields` | `0x4299E` | copia `P+0` / `P+8` nel buffer del bitstream |
+| `+0x70` | `SetDecodeMessageFields` | `0x42A80` (3840 B) | messaggio VP9 (sotto) |
+
+Gli altri slot (`ProcessDecodeStatus`, `needDecodeAndCopy`, `SetDecodeFeedbackFields`, …) sono della classe base e
+restano.
+
+### Il messaggio che il driver costruisce (HEVC e AV1 a confronto)
+
+Stesso schema di Mesa (`ac_vcn_dec.c`). Buffer del messaggio `sessione+0xE0`:
+
+- header: `0x28`, dimensione totale e numero di buffer da `proc+0x34/+0x38`, `msg_type 1`, feedback = `proc+0x20`;
+- indice: `DECODE (2, 0xBC)`, codec (`0x0D` HEVC `0x118`, `0x11` AV1 `0xDF8`), `DRM (3, 0x44)`, `0x0F` (`0xA8`);
+- `rvcn_dec_message_decode_t`: `stream_type` (`0x10` HEVC, `0x13` AV1), dimensioni `dec+0x7C/+0x80`, `bsd_size =
+  sessione+0x2B0`, `dpb_size = sessione+0x30`, `dt_size = pitch·h·3/2`, `hw_ctxt_size = sessione+0x1C8`, pitch
+  allineati a 64, `dt_pitch/uv_pitch` dalla texture d'uscita, offset del croma `+0x88..+0x94`.
+
+`_uvd_command_build_info` (gli indirizzi del comando):
+
+| Campo | Buffer | AV1 |
+| --- | --- | --- |
+| `+0x04/+0x08` | messaggio | `sessione + 0x98 + 8·[sessione+0xD8]` |
+| `+0x10/+0x18` | DPB | `sessione+0x38` |
+| `+0x20/+0x28/+0x30` | bitstream | da `SetBitstreamFields` |
+| `+0x70/+0x78/+0x80` | uscita | texture d'uscita, offset 0 |
+| `+0x90/+0x98` | tabella di probabilità | anello `sessione + 0x1F0 + 8·[sessione+0x270]` |
+| `+0xA0/+0xA8` | contesto | `sessione+0x1D0` |
+| `+0xB0/+0xB8` | IT (solo con il flag DRM `0x80`) | `sessione+0x1E0` |
+
+Per il VP9 Mesa usa gli stessi buffer: contesto con le probabilità predefinite, `rvcn_dec_vp9_probs_segment_t`
+(2560 byte) nel `PROB_TBL_BUFFER`, che nel driver è l'anello AV1 `+0x1F0`. Va verificato che quell'anello sia
+grande almeno 2560 byte (la struttura AV1 è più grande, quindi è atteso).
+
+### DPB: Tier 1 come Mesa
+
+Mesa su VCN ≤ 2.6 usa per il VP9 il **Tier 1** (`USE_DYNAMIC_DPB | USE_PAL`, messaggio `DYNAMIC_DPB 0x10`): 9 slot
+in un solo buffer, ognuno luma `pitch·altezza` poi croma, con pitch, altezze e dimensioni scritti nel messaggio. Il
+Tier 0 (DPB statico) chiede a Mesa 8192×4320×1,5×9 byte (~477 MB), perché il firmware usa allora un passo fisso:
+troppo per un'APU e rischioso se sottodimensionato. Quindi:
+
+- `CalculateDPBSize` = 9 × (luma + croma) con pitch e altezza allineati a 64 (×1,5 sui campioni a 10 bit);
+- il messaggio VP9 ha le voci `DECODE`, `VP9 (0x0E, 120 B)`, `DYNAMIC_DPB (0x10, 116 B)`, più `DRM` e `0x0F`
+  lasciati come fa il driver; `stream_type 0x11`, `decode_flags = 0x9`, `dpbArraySize = 9`, `dpbReserved0[0] = 64`.
+
+### Patch previsti (tutti dietro `-NRedVP9`)
+
+| # | Dove | Cosa |
+| --- | --- | --- |
+| 1 | `GetVAFunctionType` | `cmp rax, 0x1000000` → `0x1000`: il VP9 prende il tipo 6 (l'AV1 non esiste su VCN 2) |
+| 2 | `ProcessVcnCreateDecodeSession` | codec di creazione `0x13` → `0x11` |
+| 3 | `createDecodeDataProcessor` | `new(0x48)` → `new(0x48 + stato VP9)`: lo stato di `VP9Message::Session` vive nel processore |
+| 4 | `AvdVAContext::DecodePicture` | tipo `0x1000` → ramo AV1 con bitstream `P+0/+8`, uscita `P+0x1250`, riferimenti `P+0x1260 + i·0x1258` |
+| 5 | codice AV1 `0x427C0`–`0x45070` | i metodi della tabella sopra riscritti in C++ (`VP9Message.hpp` + collegamento), agli stessi indirizzi |
+
+Il punto 5 è il più grande (~9 KB): serve un generatore nuovo che compili il backend come codice indipendente dalla
+posizione, ne risolva le chiamate verso il driver per hash e lo spezzi nei blocchi del sistema di patch (oggi al
+massimo 448 byte e 32 patch per gruppo, quindi un gruppo `UserVP9Decode` separato o blocchi più grandi).
+
+### Ancora da verificare prima di scrivere il codice
+
+- dimensione dell'anello di probabilità `sessione+0x1F0` e dei buffer del messaggio (`0x1008` basta: 0x18 + 5·16 +
+  0xBC + 0x78 + 0x74 + 0x44 + 0xA8 = 0x2B4 byte);
+- come il driver passa le superfici dei riferimenti: con il Tier 1 il VCN li legge dal DPB, quindi le superfici a
+  `P+0x1260` servono solo a tenere allineati gli slot di `render_pic_list`;
+- `swizzle` e `array_mode` del DPB e dell'uscita: copiare quelli che il driver usa per HEVC su VCN 2.
