@@ -477,3 +477,15 @@ Y di `yuv420p`; `-pix_fmt gray` espande il range e falsa il confronto). La cromi
 - Prova col kext installato (decoder in `VTDecoderXPCService`, 14/11/2026): le due clip a 10 bit danno
   `VTDecompressionSessionCreate = -12907`. Le 8 clip a 8 bit creano la sessione, nessun fotogramma viene scartato
   e la luma è identica a ffmpeg. `NRedVP9State` resta 2.
+
+### V3 — Crominanza e clip 1080p (14/11/2026)
+
+- Il probe con `VP9_DUMP` ora scrive, dopo la luma, anche il piano CbCr interlacciato (parte visibile), nello stesso
+  formato di `ffmpeg -pix_fmt nv12`. Così si confrontano Y e CbCr separatamente.
+- Nuove clip 1920x1080 generate in locale con libvpx-vp9 (`build/vp9-1080p/`): `rt-tiles` (realtime, 2 colonne di
+  tile, 90 fotogrammi), `good-altref` (altref, lag 16, 60), `crf-noise-aq` (rumore, crf 30, aq 3, row-mt, 60),
+  `bars60-gop20` (60 fps, GOP 20, 120).
+- Prova col kext installato (decoder in `VTDecoderXPCService`): su 12 clip a 8 bit (le 8 precedenti più le 4 a
+  1080p), 585 fotogrammi, nessuno scartato. **Luma e crominanza sono identiche bit per bit a ffmpeg** su ogni
+  fotogramma, compresa la clip a dimensioni dispari 350x198.
+- Ancora da fare: 4K, clip lunghe, cambio di risoluzione a metà stream.
