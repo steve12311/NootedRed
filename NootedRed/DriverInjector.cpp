@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // IOKit Personality Injector
 //
 // Copyright © 2025 ChefKiss. Licensed under the Thou Shalt Not Profit License version 1.5.
@@ -61,6 +62,7 @@ bool DriverInjector::wrapAddDrivers(void* const self, OSArray* const array, cons
         const auto toInjectCount = checkKernelArgument("-NRedNoAccel") ? 2 : arrsize(singleton().drivers);
         for (size_t identifierIndex = 0; identifierIndex < toInjectCount; identifierIndex += 1) {
             auto& driver = singleton().drivers[identifierIndex];
+            if (usingSequoiaDonor() && identifierIndex == 1) { continue; }
 
             if ((singleton().matchedDrivers & getBit(identifierIndex)) != 0
                 || !bundleIdentifier->isEqualTo(driver.identifier))

@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // Version-independent interface to the `AMDRadeonX5000_AMDHWDisplay` class
 //
 // Copyright © 2025 ChefKiss. Licensed under the Thou Shalt Not Profit License version 1.5.
@@ -213,7 +214,7 @@ struct AMDHWDisplayState
 
             Constants()
             {
-                if (currentKernelVersion() >= MACOS_13) {
+                if (appleDriverVersion() >= MACOS_13) {
                     this->isAccelBackedShift     = 5;
                     this->isIOFBFlipEnabledShift = 6;
                     this->isWSAASupportedShift   = 7;
@@ -369,7 +370,7 @@ private:
 
         Constants()
         {
-            if (currentKernelVersion() <= MACOS_10_14_X) {
+            if (appleDriverVersion() <= MACOS_10_14_X) {
                 this->vftGetCurrentDisplayOffset            = 0x220;
                 this->vftSetCurrentDisplayOffset            = 0x228;
                 this->vftWriteWaitForVLine                  = 0x250;
@@ -386,7 +387,7 @@ private:
                 this->vftGetNumberOfSupportedDisplays       = 0x1F8;
             }
             else {
-                if (currentKernelVersion() >= MACOS_13) {
+                if (appleDriverVersion() >= MACOS_13) {
                     this->vftWriteWaitForVLine                  = 0x1C8;
                     this->vftInit                               = 0x1F8;
                     this->vftGetPixelMode                       = 0x210;
@@ -398,7 +399,7 @@ private:
                     this->vftGetFlipOption                      = 0x258;
                 }
                 else {
-                    if (currentKernelVersion() >= MACOS_11) {
+                    if (appleDriverVersion() >= MACOS_11) {
                         this->vftInit          = 0x278;
                         this->vftGetFlipOption = 0x2E8;
                     }
@@ -421,7 +422,7 @@ private:
                 }
             }
 
-            if (currentKernelVersion() >= MACOS_13) {
+            if (appleDriverVersion() >= MACOS_13) {
                 this->scalerFlags            = 0x500;
                 this->isDCN                  = 0x518;
                 this->wsaaAttributes         = 0x570;
@@ -431,7 +432,7 @@ private:
                 this->isDCN                  = 0x47DC;
                 this->scalerFlags            = 0x47C4;
                 this->vftGetMirroredDisplays = 0x198;
-                if (currentKernelVersion() >= MACOS_11) { this->wsaaAttributes = 0x4810; }
+                if (appleDriverVersion() >= MACOS_11) { this->wsaaAttributes = 0x4810; }
                 else {
                     this->wsaaAttributes = 0x47E8;
                 }
@@ -462,12 +463,12 @@ public:
     auto& isDCN() { return constants.isDCN(this); }
     auto& vrrTimestampInfo()
     {
-        assert(currentKernelVersion() < MACOS_13 && currentKernelVersion() >= MACOS_11);
+        assert(appleDriverVersion() < MACOS_13 && appleDriverVersion() >= MACOS_11);
         return getMember<AMDVRRTimestampInfo>(this, 0x47E0);
     }
     auto& vrrTimestampInfoVentura()
     {
-        assert(currentKernelVersion() >= MACOS_13);
+        assert(appleDriverVersion() >= MACOS_13);
         return getMember<AMDVRRTimestampInfoVentura>(this, 0x520);
     }
     auto& wsaaAttributes() { return constants.wsaaAttributes(this); }

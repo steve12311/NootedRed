@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // AMDRadeonX5000HWLibs Patches
 //
 // Copyright © 2022-2025 ChefKiss. Licensed under the Thou Shalt Not Profit License version 1.5.
@@ -480,7 +481,7 @@ X5000HWLibs& X5000HWLibs::singleton() { return moduleInstance; }
 
 X5000HWLibs::X5000HWLibs()
 {
-    if (currentKernelVersion() <= MACOS_10_15_X) {
+    if (appleDriverVersion() <= MACOS_10_15_X) {
         this->pspCommandDataField      = 0xB00;
         this->smuInternalSWInitField   = 0x378;
         this->smuInternalHWInitField   = 0x380;
@@ -495,7 +496,7 @@ X5000HWLibs::X5000HWLibs()
         this->sdmaGetFwConstantsField  = 0x270;
         this->sdmaStartEngineField     = 0x298;
     }
-    else if (currentKernelVersion().majorMatches(MACOS_11)) {
+    else if (appleDriverVersion().majorMatches(MACOS_11)) {
         this->fwDirField                = 0xB8;
         this->smuSwInitialisedFieldBase = 0x280;
         this->smuInternalSWInitField    = 0x638;
@@ -516,7 +517,7 @@ X5000HWLibs::X5000HWLibs()
         this->sdmaGetFwConstantsField   = 0x270;
         this->sdmaStartEngineField      = 0x298;
     }
-    else if (currentKernelVersion().majorMatches(MACOS_12)) {
+    else if (appleDriverVersion().majorMatches(MACOS_12)) {
         this->fwDirField                = 0xB0;
         this->smuSwInitialisedFieldBase = 0x280;
         this->smuInternalSWInitField    = 0x648;
@@ -556,7 +557,7 @@ X5000HWLibs::X5000HWLibs()
         this->sdmaGetFwConstantsField   = 0x2C8;
         this->sdmaStartEngineField      = 0x2F0;
 
-        if (currentKernelVersion() <= MACOS_13_4) {
+        if (appleDriverVersion() <= MACOS_13_4) {
             this->dmcuEnablePSPFWLoadField = 0x248;
             this->dmcuABMLevelField        = 0x24C;
         }
@@ -570,6 +571,8 @@ X5000HWLibs::X5000HWLibs()
 void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mach_vm_address_t slide, const size_t size)
 {
     if (kextRadeonX5000HWLibs.loadIndex != id) { return; }
+    static const UInt8 donorUUID[16] = {0x76,0xb8,0x2a,0x2f,0xb5,0x78,0x33,0xfe,0x94,0xb0,0x0b,0x00,0x7d,0xb0,0x0f,0x94};
+    requireDonorUUID(slide, size, donorUUID);
 
     NRed::singleton().hwLateInit();
 
@@ -578,7 +581,7 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
     AMDDeviceTypeEntry*    orgDeviceTypeTable = nullptr;
     AMDDeviceCapabilities* orgDevCapTable     = nullptr;
 
-    if (currentKernelVersion() >= MACOS_11) {
+    if (appleDriverVersion() >= MACOS_11) {
         PenguinWizardry::PatternSolveRequest solveRequests[] = {
             {"__ZL15deviceTypeTable", orgDeviceTypeTable, kDeviceTypeTablePattern},
             {"__ZN11AMDFirmware14createFirmwareEPhjjPKc", this->orgCreateFirmware, kCreateFirmwarePattern,
@@ -632,7 +635,7 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
     this->smuCgsReadIndirectRegister = patcher.solveSymbol<decltype(this->smuCgsReadIndirectRegister)>(
         id, "_smu_cgs_read_indirect_register", slide, size, true);
 
-    if (currentKernelVersion() <= MACOS_10_15_X) {
+    if (appleDriverVersion() <= MACOS_10_15_X) {
         PenguinWizardry::PatternRouteRequest request{"__ZN16AmdTtlFwServices7getIpFwEjPKcP10_TtlFwInfo", wrapGetIpFw,
                                                      this->orgGetIpFw};
         PANIC_COND(!request.route(patcher, id, slide, size), "HWLibs", "Failed to route getIpFw");
@@ -645,12 +648,12 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
             {"_psp_bootloader_is_sos_running_3_1", pspIsSosRunning, kPspBootloaderIsSosRunning31Pattern},
             {"_psp_security_feature_caps_set_3_1",
              NRed::singleton().getAttributes().isRenoir() ? pspSecurityFeatureCapsSet12 : pspSecurityFeatureCapsSet10,
-             currentKernelVersion() >= MACOS_13 ? kPspSecurityFeatureCapsSet31Pattern13 :
+             appleDriverVersion() >= MACOS_13 ? kPspSecurityFeatureCapsSet31Pattern13 :
                                                   kPspSecurityFeatureCapsSet31Pattern},
         };
         PANIC_COND(!PenguinWizardry::PatternRouteRequest::routeAll(patcher, id, requests, slide, size), "HWLibs",
                    "Failed to route symbols (>10.15)");
-        if (currentKernelVersion() >= MACOS_14_4) {
+        if (appleDriverVersion() >= MACOS_14_4) {
             PenguinWizardry::PatternRouteRequest pspRequests[] = {
                 {"_psp_bootloader_load_sysdrv_3_1", retOK, kPspBootloaderLoadSysdrv31Pattern1404},
                 {"_psp_bootloader_set_ecc_mode_3_1", retOK, kPspBootloaderSetEccMode31Pattern1404},
@@ -674,7 +677,7 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
         }
     }
 
-    if (currentKernelVersion() >= MACOS_14_4) {
+    if (appleDriverVersion() >= MACOS_14_4) {
         PenguinWizardry::PatternRouteRequest request{"_psp_cmd_km_submit", wrapPspCmdKmSubmit, this->orgPspCmdKmSubmit,
                                                      kPspCmdKmSubmitPattern1404, kPspCmdKmSubmitPatternMask1404};
         PANIC_COND(!request.route(patcher, id, slide, size), "HWLibs", "Failed to route psp_cmd_km_submit (14.4+)");
@@ -794,7 +797,7 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
     DBGLOG("HWLibs", "Applied DDI Caps patches");
 
     // TODO: Replace this hack with a simple hook.
-    if (currentKernelVersion() <= MACOS_10_15_X) {
+    if (appleDriverVersion() <= MACOS_10_15_X) {
         if (NRed::singleton().getAttributes().isRenoir()) {
             const PenguinWizardry::MaskedLookupPatch patches[] = {
                 {&kextRadeonX5000HWLibs, kPspSwInit1Original1015, kPspSwInit1Patched1015, 1},
@@ -810,7 +813,7 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
                                                        kGcSwInitOriginalMask,  kGcSwInitPatched,
                                                        kGcSwInitPatchedMask,   1};
         PANIC_COND(!patch.apply(patcher, slide, size), "HWLibs", "Failed to apply gc_sw_init spoof patch");
-        if (currentKernelVersion() >= MACOS_14_4) {
+        if (appleDriverVersion() >= MACOS_14_4) {
             const PenguinWizardry::MaskedLookupPatch patches[] = {
                 {&kextRadeonX5000HWLibs, kPspSwInit1Original1404, kPspSwInit1Patched1404, 1},
                 {&kextRadeonX5000HWLibs, kPspSwInit2Original1404, kPspSwInit2OriginalMask1404, kPspSwInit2Patched1404,
@@ -830,7 +833,7 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
     }
 
     // TODO: Replace this hack with a simple hook.
-    if (currentKernelVersion() >= MACOS_14_4) {
+    if (appleDriverVersion() >= MACOS_14_4) {
         const PenguinWizardry::MaskedLookupPatch patches[] = {
             {&kextRadeonX5000HWLibs, kCreatePowerTuneServices1Original1404, kCreatePowerTuneServices1Patched1404, 1},
             {&kextRadeonX5000HWLibs, kCreatePowerTuneServices2Original1404, kCreatePowerTuneServices2Mask1404,
@@ -840,7 +843,7 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
                    "Failed to apply PowerTuneServices patches (>=14.4)");
     }
     else {
-        if (currentKernelVersion() >= MACOS_12) {
+        if (appleDriverVersion() >= MACOS_12) {
             const PenguinWizardry::MaskedLookupPatch patch{&kextRadeonX5000HWLibs, kCreatePowerTuneServices1Original12,
                                                            kCreatePowerTuneServices1Patched12, 1};
             PANIC_COND(!patch.apply(patcher, slide, size), "HWLibs", "Failed to apply PowerTuneServices patch (<14.4)");
@@ -856,7 +859,7 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
         PANIC_COND(!patch.apply(patcher, slide, size), "HWLibs", "Failed to apply PowerTune patch");
     }
 
-    if (currentKernelVersion() >= MACOS_13) {
+    if (appleDriverVersion() >= MACOS_13) {
         const PenguinWizardry::MaskedLookupPatch patch{&kextRadeonX5000HWLibs, kCailQueryAdapterInfoOriginal,
                                                        kCailQueryAdapterInfoPatched, 1};
         PANIC_COND(!patch.apply(patcher, slide, size), "HWLibs", "Failed to apply CailQueryAdapterInfo patch");
@@ -1152,7 +1155,7 @@ CAILResult X5000HWLibs::wrapSmuInitFunctionPointerList(void* const ctx, const SW
         default: return ret;
     }
 
-    if (currentKernelVersion() <= MACOS_10_15_X) {
+    if (appleDriverVersion() <= MACOS_10_15_X) {
         singleton().smuInternalSWInitField(ctx) = reinterpret_cast<void*>(smuInternalSwInitOld);
     }
     else {

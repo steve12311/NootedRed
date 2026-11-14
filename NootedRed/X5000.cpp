@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // AMDRadeonX5000 Patches
 //
 // Copyright © 2022-2025 ChefKiss. Licensed under the Thou Shalt Not Profit License version 1.5.
@@ -67,7 +68,7 @@ X5000& X5000::singleton() { return moduleInstance; }
 
 X5000::X5000()
 {
-    if (currentKernelVersion() <= MACOS_10_14_X) {
+    if (appleDriverVersion() <= MACOS_10_14_X) {
         this->pm4EngineField               = 0x330;
         this->sdma0EngineField             = 0x338;
         this->supportedDisplayCountField   = 0x2C;
@@ -84,7 +85,7 @@ X5000::X5000()
         this->hwChannelHWInterfaceField    = 0x18;
         this->hwChannelSubmitCommandBuffer = 0x180;
     }
-    else if (currentKernelVersion().majorMatches(MACOS_10_15)) {
+    else if (appleDriverVersion().majorMatches(MACOS_10_15)) {
         this->pm4EngineField               = 0x348;
         this->sdma0EngineField             = 0x350;
         this->supportedDisplayCountField   = 0x2C;
@@ -108,7 +109,7 @@ X5000::X5000()
         this->familyTypeField   = 0x308;
         this->chipSettingsField = 0x5B10;
 
-        if (currentKernelVersion() <= MACOS_12_X) {
+        if (appleDriverVersion() <= MACOS_12_X) {
             this->supportedDisplayCountField   = 0x2C;
             this->seCountField                 = 0x5C;
             this->shCountField                 = 0x64;
@@ -134,7 +135,7 @@ X5000::X5000()
             this->hasGetAllClockLimitsField  = 0xBE;
             this->dccDisplayableSupportField = 0xC0;
             this->hwChannelHWInterfaceField  = 0x20;
-            if (currentKernelVersion() >= MACOS_14) { this->hwChannelSubmitCommandBuffer = 0x188; }
+            if (appleDriverVersion() >= MACOS_14) { this->hwChannelSubmitCommandBuffer = 0x188; }
             else {
                 this->hwChannelSubmitCommandBuffer = 0x190;
             }
@@ -145,6 +146,8 @@ X5000::X5000()
 void X5000::processKext(KernelPatcher& patcher, const size_t id, const mach_vm_address_t slide, const size_t size)
 {
     if (kextRadeonX5000.loadIndex != id) { return; }
+    static const UInt8 donorUUID[16] = {0x41,0xc4,0x32,0x19,0x29,0x4b,0x39,0x32,0xb7,0x7e,0x68,0x82,0x45,0x33,0xe8,0x00};
+    requireDonorUUID(slide, size, donorUUID);
 
     NRed::singleton().hwLateInit();
     KernelDisplayEvidence::captureKext(KernelDisplayEvidence::Kext::X5000, slide, size);
@@ -155,7 +158,7 @@ void X5000::processKext(KernelPatcher& patcher, const size_t id, const mach_vm_a
     void*             pm4ComputeChannelVT;
 
     PenguinWizardry::PatternSolveRequest solveRequests[] = {
-        {currentKernelVersion() <= MACOS_10_15_X ?
+        {appleDriverVersion() <= MACOS_10_15_X ?
              "__ZZN37AMDRadeonX5000_AMDGraphicsAccelerator22getAdditionalQueueListEPPK18_"
              "AMDQueueSpecifierE27additionalQueueList_Default" :
              "__ZZN37AMDRadeonX5000_AMDGraphicsAccelerator19createAccelChannelsEbE12channelTypes",
@@ -196,7 +199,7 @@ void X5000::processKext(KernelPatcher& patcher, const size_t id, const mach_vm_a
     PANIC_COND(!PenguinWizardry::PatternRouteRequest::routeAll(patcher, id, requests, slide, size), "X5000",
                "Failed to route symbols");
 
-    if (currentKernelVersion() >= MACOS_11) {
+    if (appleDriverVersion() >= MACOS_11) {
         PenguinWizardry::PatternSolveRequest solveRequest{"__ZN30AMDRadeonX5000_AMDGFX9Hardware15notifyGfxAccessEv",
                                                           this->notifyGfxAccess};
         PANIC_COND(!solveRequest.solve(patcher, id, slide, size), "X5000", "Failed to resolve notifyGfxAccess");
@@ -217,34 +220,34 @@ void X5000::processKext(KernelPatcher& patcher, const size_t id, const mach_vm_a
         KernelDisplayEvidence::publish();
     }
 
-    if (currentKernelVersion() >= MACOS_13_4) {
+    if (appleDriverVersion() >= MACOS_13_4) {
         PenguinWizardry::PatternRouteRequest request{
             "__ZN37AMDRadeonX5000_AMDGraphicsAccelerator23obtainAccelChannelGroupE11SS_"
             "PRIORITYP27AMDRadeonX5000_AMDAccelTask",
             wrapObtainAccelChannelGroup1304, this->orgObtainAccelChannelGroup};
         PANIC_COND(!request.route(patcher, id, slide, size), "X5000", "Failed to route obtainAccelChannelGroup");
     }
-    else if (currentKernelVersion() >= MACOS_11) {
+    else if (appleDriverVersion() >= MACOS_11) {
         PenguinWizardry::PatternRouteRequest request{
             "__ZN37AMDRadeonX5000_AMDGraphicsAccelerator23obtainAccelChannelGroupE11SS_PRIORITY",
             wrapObtainAccelChannelGroup, this->orgObtainAccelChannelGroup};
         PANIC_COND(!request.route(patcher, id, slide, size), "X5000", "Failed to route obtainAccelChannelGroup");
     }
 
-    if (currentKernelVersion() >= MACOS_14_4) {
+    if (appleDriverVersion() >= MACOS_14_4) {
         const PenguinWizardry::MaskedLookupPatch patch{
             &kextRadeonX5000,          kAddrLibCreateOriginal1404,    kAddrLibCreateOriginalMask1404,
             kAddrLibCreatePatched1404, kAddrLibCreatePatchedMask1404, 1};
         PANIC_COND(!patch.apply(patcher, slide, size), "X5000", "Failed to apply 14.4+ Addr::Lib::Create patch");
     }
-    else if (currentKernelVersion() <= MACOS_10_15_X || currentKernelVersion() >= MACOS_13_4) {
+    else if (appleDriverVersion() <= MACOS_10_15_X || appleDriverVersion() >= MACOS_13_4) {
         const PenguinWizardry::MaskedLookupPatch patch{&kextRadeonX5000, kAddrLibCreateOriginal, kAddrLibCreatePatched,
                                                        1};
         PANIC_COND(!patch.apply(patcher, slide, size), "X5000", "Failed to apply Addr::Lib::Create patch");
     }
 
-    if (currentKernelVersion() <= MACOS_10_15_X) {
-        if (currentKernelVersion().majorMatches(MACOS_10_15)) {
+    if (appleDriverVersion() <= MACOS_10_15_X) {
+        if (appleDriverVersion().majorMatches(MACOS_10_15)) {
             const PenguinWizardry::MaskedLookupPatch patch{&kextRadeonX5000, kCreateAccelChannelsOriginal,
                                                            kCreateAccelChannelsPatched, 2};
             PANIC_COND(!patch.apply(patcher, slide, size), "X5000", "Failed to patch createAccelChannels");
@@ -284,7 +287,7 @@ void X5000::processKext(KernelPatcher& patcher, const size_t id, const mach_vm_a
     else {
         const PenguinWizardry::MaskedLookupPatch patch{
             &kextRadeonX5000,       kStartHWEnginesOriginal, kStartHWEnginesMask,
-            kStartHWEnginesPatched, kStartHWEnginesMask,     currentKernelVersion() >= MACOS_13 ? 2U : 1};
+            kStartHWEnginesPatched, kStartHWEnginesMask,     appleDriverVersion() >= MACOS_13 ? 2U : 1};
         PANIC_COND(!patch.apply(patcher, orgStartHWEngines, PAGE_SIZE), "X5000", "Failed to patch startHWEngines");
 
         if (NRed::singleton().getAttributes().isRenoir()) {
@@ -293,10 +296,10 @@ void X5000::processKext(KernelPatcher& patcher, const size_t id, const mach_vm_a
             const PenguinWizardry::MaskedLookupPatch patches[] = {
                 {&kextRadeonX5000, reinterpret_cast<const UInt8*>(&findBpp64),
                  reinterpret_cast<const UInt8*>(&replBpp64), sizeof(UInt32),
-                 currentKernelVersion() >= MACOS_13_4 ? 2U : 4},
+                 appleDriverVersion() >= MACOS_13_4 ? 2U : 4},
                 {&kextRadeonX5000, reinterpret_cast<const UInt8*>(&findNonBpp64),
                  reinterpret_cast<const UInt8*>(&replNonBpp64), sizeof(UInt32),
-                 currentKernelVersion() >= MACOS_13_4 ? 2U : 4},
+                 appleDriverVersion() >= MACOS_13_4 ? 2U : 4},
             };
             PANIC_COND(!PenguinWizardry::MaskedLookupPatch::applyAll(patcher, patches, slide, size), "X5000",
                        "Failed to patch swizzle mode");
@@ -307,7 +310,7 @@ void X5000::processKext(KernelPatcher& patcher, const size_t id, const mach_vm_a
         // createAccelChannels: stop at SDMA0
         orgChannelTypes[5] = 1;
         // getPagingChannel: get only SDMA0
-        orgChannelTypes[currentKernelVersion() >= MACOS_12 ? 12 : 11] = 0;
+        orgChannelTypes[appleDriverVersion() >= MACOS_12 ? 12 : 11] = 0;
         MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock);
         DBGLOG("X5000", "Applied SDMA1 patches");
     }
@@ -368,7 +371,7 @@ void X5000::wrapSetupAndInitializeHWCapabilities(void* const self)
     singleton().hasVCN0Field(self)               = VCN::ready();
     singleton().hasSDMAPagingQueueField(self)    = false;
     singleton().hasGetAllClockLimitsField(self)  = false;
-    if (currentKernelVersion() >= MACOS_10_15) { singleton().dccDisplayableSupportField(self) = true; }
+    if (appleDriverVersion() >= MACOS_10_15) { singleton().dccDisplayableSupportField(self) = true; }
 }
 
 // TODO: Investigate why this is needed.
@@ -486,7 +489,7 @@ namespace
                                                 const FramebufferInfo* const       fbInfo,
                                                 const IOTimingInformation&         timingInfo)
         {
-            assert(currentKernelVersion() >= MACOS_11);
+            assert(appleDriverVersion() >= MACOS_11);
 
             if (!fbInfo->isOnline) { return; }
 
@@ -507,7 +510,7 @@ namespace
 
         static void _calcAndSetVrrTimestampInfoDummy(AMDRadeonX5000_AMDHWDisplay*, const FramebufferInfo*,
                                                      const IOTimingInformation&)
-        { assert(currentKernelVersion() <= MACOS_10_15_X); }
+        { assert(appleDriverVersion() <= MACOS_10_15_X); }
 
     public:
         static const Constants singleton;
@@ -519,11 +522,11 @@ namespace
 
         explicit Constants()
         {
-            if (currentKernelVersion() < MACOS_11) { return; }
+            if (appleDriverVersion() < MACOS_11) { return; }
 
             this->calcAndSetVrrTimestampInfo = _calcAndSetVrrTimestampInfo;
             this->setVrrTimestampInfo =
-                currentKernelVersion() >= MACOS_13 ? _setVrrTimestampInfoVentura : _setVrrTimestampInfo;
+                appleDriverVersion() >= MACOS_13 ? _setVrrTimestampInfoVentura : _setVrrTimestampInfo;
         }
     };
 
