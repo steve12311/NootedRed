@@ -196,3 +196,7 @@ Le fasi V0 e V1 dicono presto se il progetto si può fare: conviene fare quelle,
   parti uguali e restano identiche a ffmpeg, anche insieme a decodifiche HEVC e H.264 in hardware. Manca la
   conformità sui vettori di prova di libvpx, che vanno scaricati. Dettagli in
   [VP9 V0](vp9-v0-findings.md#v4--prestazioni-e-decodifiche-in-parallelo-14112026).
+- **V5 — in corso.** Prima prova di 5,5 minuti: YouTube in Chrome (4K e 1440p, attraverso `VTDecoderXPCService`) e in
+  Safari (1080p e 4K, dentro `com.apple.WebKit.GPU`) usa il decoder VP9 hardware. Immagine corretta, nessun errore di
+  decodifica, nessun problema del kernel. Mancano l'ora di riproduzione, le schede multiple e la sospensione. Dettagli in
+  [VP9 V0](vp9-v0-findings.md#v5--prima-prova-nei-browser-14112026).

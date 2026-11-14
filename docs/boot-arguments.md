@@ -54,14 +54,15 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 
 实验参数 `-NRedVP9Probe`（VP9 计划 V1 阶段，需同时设置 `-NRedVideoFix`）：VCN 桥接就绪后在加速器上发布
 `IOGVAXDecode`、`IOGVAVP9Decode`、`IOGVAVP9DecodeCapabilities`（仅 profile 0），结果见 `NRedVP9Probe`
-（1 已发布，0 写入失败，2 不满足条件）。驱动尚无 VP9 解码后端，浏览器会改选 VP9 而无法播放：
+（1 已发布，0 写入失败，2 不满足条件）。浏览器会因此改选 VP9：若未同时设置 `-NRedVP9`，驱动没有 VP9 解码后端，
+视频无法播放。两者同时设置时，Chrome 和 Safari 在 YouTube 上使用 VP9 硬件解码（V5 测试中）。
 只在测试时开启，见 [VP9 硬解 V0 结论](vp9-v0-findings.md)。
 
 实验参数 `-NRedVP9`（VP9 计划 V3 阶段，仅 macOS 26 且共享缓存 UUID 为 `31374756…16a1`，需同时设置 `-NRedVideoFix`）：
 视频补丁安装后，在同一进程的 AMD 视频驱动中写入 VP9 解码后端（复用 AV1 区域，profile 0／8 位）。状态见
 `NRedVP9State`（1 已启用，2 缓存已核验，3 缓存被拒，4 写入失败，5 系统不支持，6 内存不足）及
 `NRedVP9Applied`／`NRedVP9Already`。真机上 8 位测试片段（含 1080p、4096x2160 及 5 分钟长片段）的亮度和色度与 ffmpeg 逐位一致；超过 4096 的尺寸在创建会话时被拒绝（`-12907`），驱动解码失败的帧报告为错误而非输出；profile 2（10 位）在创建会话时被拒绝（`-12907`）。
-仍只用 `tools/probe_vp9_decode.m` 测试，不要用浏览器。
+浏览器测试（V5）可用 `tools/monitor_vp9_browser.py` 记录解码器活动。
 
 诊断参数 `-NRedVP9Trace`（需同时设置 `-NRedVP9`）：VP9 后端以带标记的 `shared_region_check_np` 调用报告各步骤，
 内核只记录 `VTDecoderXPC*` 进程的调用并返回 `EINVAL`。每个代码的次数与最后一个值发布为 `NRedVP9T<nn>N`／

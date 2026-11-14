@@ -563,3 +563,32 @@ di `VTDecoderXPCService`, letto con `ps` durante la prova. Le clip sono generate
   danno `framemd5` identici al software. Anche le clip VP9 restano identiche.
 - Due sessioni 4K60 insieme stanno appena sopra il tempo reale (75 fps ciascuna).
 
+### V5 — Prima prova nei browser (14/11/2026)
+
+**Prova.** Kext installato con `-NRedVP9Probe -NRedVP9 -NRedVP9Trace`. YouTube in Chrome e poi in Safari, mentre
+`tools/monitor_vp9_browser.py` registra le tracce `NRedVP9T*`, la CPU dei processi e i log di VideoToolbox e del
+kernel. La sessione è durata 5,5 minuti, con circa 5 minuti di riproduzione VP9 nei due browser.
+
+**Chrome.**
+- Le 5 sessioni VP9 vengono tutte dal processo GPU di Chrome, attraverso `VTDecoderXPCService`: quattro in 3840x2160 e
+  una in 2560x1440. 7565 fotogrammi entrano in `DecodePicture`, senza rifiuti né fallimenti di
+  `VADecoder::DecodePicture`.
+- Ogni sessione si chiude in modo pulito (AppleGVA: pool, pipeline e acceleratori rilasciati). `NRedVP9State` resta 2.
+- Nessun messaggio del kernel su VCN, reset della GPU o NootedRed. Immagine corretta e fluida, anche nei salti e nei
+  cambi di qualità (osservazione dell'utente).
+- All'avvio del video Chrome apre e chiude in pochi millisecondi cinque sessioni che AppleGVA rifiuta con `-12900`
+  (`GVAVideoDecoder`, riga 1128, dopo "resolution constrains: 64x64"). Nessuna arriva al backend (nessuna traccia di
+  creazione in quel momento): sembrano sondaggi di capacità di Chrome e la riproduzione parte normalmente subito dopo.
+
+**Safari.**
+- YouTube riceve `vp09`. WebKit decodifica dentro il proprio processo `com.apple.WebKit.GPU`, non in
+  `VTDecoderXPCService`: per questo le tracce `NRedVP9T*` (registrate solo per `VTDecoderXPC*`) non lo vedono.
+- I log di WebKit mostrano 7 sessioni VP9 di AppleGVA con `vp09 (HW decoder)`, in 1920x1080, 854x446 e 3840x2160, e
+  nessun errore. Il kernel registra le chiamate di `com.apple.WebKit.GPU` al contesto video AMD (`AMDNavi10VideoContext`).
+
+**CPU durante la registrazione** (5,5 minuti): `VTDecoderXPCService` 6,8 s (2,1% di un core), `com.apple.WebKit.GPU`
+14,6 s (4,5%). Il resto è il lavoro abituale dei browser: `com.apple.WebKit.WebContent` 17,1% e Chrome 11,2%.
+
+**Ancora da fare per chiudere V5:** un'ora di riproduzione, schede multiple e sospensione e risveglio con un video
+aperto. Per avere anche Safari nei contatori, la traccia dovrebbe registrare anche `com.apple.WebKit.GPU`.
+
