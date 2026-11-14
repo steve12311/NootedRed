@@ -1,0 +1,146 @@
+{
+  "name": "sequoia-24H32-darwin27.2",
+  "donor_build": "24H32",
+  "cache_uuid": "42ec2890bc40317ebb2745142bff7f26",
+  "target_darwin": "27.2",
+  "devices": [
+    "15D8",
+    "15DD",
+    "15E7",
+    "1636",
+    "1638",
+    "164C"
+  ],
+  "drivers": [
+    {
+      "id": "com.apple.kext.AMDRadeonX6000Framebuffer",
+      "version": "7.0.0",
+      "path": "AMDRadeonX6000Framebuffer.kext/Contents/MacOS/AMDRadeonX6000Framebuffer",
+      "uuid": "3bcdf852-f0aa-3149-83c1-357de4c29196",
+      "dependencies": {
+        "com.apple.AppleGraphicsDeviceControl": "3.22.0",
+        "com.apple.iokit.IOACPIFamily": "1.4",
+        "com.apple.iokit.IOGraphicsFamily": "2.4.1",
+        "com.apple.iokit.IOPCIFamily": "2.9",
+        "com.apple.kpi.bsd": "15.0.0",
+        "com.apple.kpi.iokit": "15.0.0",
+        "com.apple.kpi.libkern": "15.0.0",
+        "com.apple.kpi.mach": "15.0.0",
+        "com.apple.kpi.unsupported": "15.0.0"
+      }
+    },
+    {
+      "id": "com.apple.kext.AMDRadeonX5000",
+      "version": "7.0.0",
+      "path": "AMDRadeonX5000.kext/Contents/MacOS/AMDRadeonX5000",
+      "uuid": "41c43219-294b-3932-b77e-68824533e800",
+      "dependencies": {
+        "com.apple.iokit.IOAcceleratorFamily2": "2.0.0",
+        "com.apple.iokit.IOGraphicsFamily": "1.0.0b1",
+        "com.apple.iokit.IOPCIFamily": "1.0.0b1",
+        "com.apple.iokit.IOSurface": "87.0",
+        "com.apple.kpi.bsd": "8.0.0",
+        "com.apple.kpi.iokit": "8.0.0",
+        "com.apple.kpi.libkern": "8.0.0",
+        "com.apple.kpi.mach": "8.0.0",
+        "com.apple.kpi.unsupported": "8.0.0"
+      }
+    },
+    {
+      "id": "com.apple.kext.AMDRadeonX5000HWServices",
+      "version": "7.0.0",
+      "path": "AMDRadeonX5000HWServices.kext/Contents/MacOS/AMDRadeonX5000HWServices",
+      "uuid": "e23242f3-2ce1-3a21-88de-93e5b36b4a47",
+      "dependencies": {
+        "com.apple.iokit.IOACPIFamily": "1.4",
+        "com.apple.iokit.IOGraphicsFamily": "2.4.1",
+        "com.apple.iokit.IOPCIFamily": "2.9",
+        "com.apple.kpi.bsd": "15.0.0",
+        "com.apple.kpi.iokit": "15.0.0",
+        "com.apple.kpi.libkern": "15.0.0",
+        "com.apple.kpi.mach": "15.0.0",
+        "com.apple.kpi.unsupported": "15.0.0"
+      }
+    },
+    {
+      "id": "com.apple.kext.AMDRadeonX5400HWLibs",
+      "version": "1.0",
+      "path": "AMDRadeonX5000HWServices.kext/Contents/PlugIns/AMDRadeonX5400HWLibs.kext/Contents/MacOS/AMDRadeonX5400HWLibs",
+      "uuid": "c3d6c4c5-070a-3f98-a484-713e8cadebb3",
+      "dependencies": {
+        "com.apple.iokit.IOPCIFamily": "2.9",
+        "com.apple.kpi.bsd": "16.0",
+        "com.apple.kpi.iokit": "16.0",
+        "com.apple.kpi.libkern": "16.0",
+        "com.apple.kpi.mach": "16.0"
+      }
+    },
+    {
+      "id": "com.apple.kext.AMDRadeonX5200HWLibs",
+      "version": "1.0",
+      "path": "AMDRadeonX5000HWServices.kext/Contents/PlugIns/AMDRadeonX5200HWLibs.kext/Contents/MacOS/AMDRadeonX5200HWLibs",
+      "uuid": "bacfb96d-bde9-3e3d-b6f5-5294016daf97",
+      "dependencies": {
+        "com.apple.iokit.IOPCIFamily": "2.9",
+        "com.apple.kpi.bsd": "16.0",
+        "com.apple.kpi.iokit": "16.0",
+        "com.apple.kpi.libkern": "16.0",
+        "com.apple.kpi.mach": "16.0"
+      }
+    },
+    {
+      "id": "com.apple.kext.AMDRadeonX5700HWLibs",
+      "version": "1.0",
+      "path": "AMDRadeonX5000HWServices.kext/Contents/PlugIns/AMDRadeonX5700HWLibs.kext/Contents/MacOS/AMDRadeonX5700HWLibs",
+      "uuid": "bb864bdc-bb30-3bd7-a559-9c0261c88115",
+      "dependencies": {
+        "com.apple.iokit.IOPCIFamily": "2.9",
+        "com.apple.kpi.bsd": "16.0",
+        "com.apple.kpi.iokit": "16.0",
+        "com.apple.kpi.libkern": "16.0",
+        "com.apple.kpi.mach": "16.0"
+      }
+    },
+    {
+      "id": "com.apple.kext.AMDRadeonX5000HWLibs",
+      "version": "1.0",
+      "path": "AMDRadeonX5000HWServices.kext/Contents/PlugIns/AMDRadeonX5000HWLibs.kext/Contents/MacOS/AMDRadeonX5000HWLibs",
+      "uuid": "76b82a2f-b578-33fe-94b0-0b007db00f94",
+      "dependencies": {
+        "com.apple.iokit.IOPCIFamily": "2.9",
+        "com.apple.kpi.bsd": "16.0",
+        "com.apple.kpi.iokit": "16.0",
+        "com.apple.kpi.libkern": "16.0",
+        "com.apple.kpi.mach": "16.0"
+      }
+    },
+    {
+      "id": "com.apple.kext.AMDRadeonX5100HWLibs",
+      "version": "1.0",
+      "path": "AMDRadeonX5000HWServices.kext/Contents/PlugIns/AMDRadeonX5100HWLibs.kext/Contents/MacOS/AMDRadeonX5100HWLibs",
+      "uuid": "5615358e-877d-35bc-8c35-5d7bdd087c62",
+      "dependencies": {
+        "com.apple.iokit.IOPCIFamily": "2.9",
+        "com.apple.kpi.bsd": "16.0",
+        "com.apple.kpi.iokit": "16.0",
+        "com.apple.kpi.libkern": "16.0",
+        "com.apple.kpi.mach": "16.0"
+      }
+    },
+    {
+      "id": "com.apple.kext.AMDRadeonServiceManager",
+      "version": "7.0.0",
+      "path": "AMDRadeonServiceManager.kext/Contents/MacOS/AMDRadeonServiceManager",
+      "uuid": "d9883c57-42c0-3094-8e4e-17728ab64093",
+      "dependencies": {
+        "com.apple.iokit.IOPCIFamily": "1.0.0b1",
+        "com.apple.kpi.bsd": "8.0",
+        "com.apple.kpi.iokit": "8.0",
+        "com.apple.kpi.libkern": "8.0"
+      }
+    }
+  ],
+  "target_builds": [
+    "26B123"
+  ]
+}

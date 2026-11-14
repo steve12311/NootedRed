@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // Decompiled AMDRadeonX6000Framebuffer ATOMBIOS Parser Types
 //
 // Copyright © 2026 ChefKiss. Licensed under the Thou Shalt Not Profit License version 1.5.
@@ -8,7 +9,7 @@
 
 void* AmdAtomFwHelper::getImage(const UInt32 imageOffset, const UInt32 imageSize) const
 {
-    if (currentKernelVersion() >= MACOS_11) {
+    if (appleDriverVersion() >= MACOS_11) {
         if (imageOffset + imageSize > bigsur.m_biosSize) { return nullptr; }
         return &bigsur.m_biosImage[imageOffset];
     }

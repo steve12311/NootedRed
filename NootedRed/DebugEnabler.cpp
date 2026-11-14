@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // Debug Log Enablement Patches
 //
 // Copyright © 2024-2025 ChefKiss. Licensed under the Thou Shalt Not Profit License version 1.5.
@@ -140,7 +141,7 @@ void DebugEnabler::processX6000FB(KernelPatcher& patcher, const size_t id, const
 
     if (checkKernelArgument("-NRedDebugUltra")) {
         // Enable all Display Core logs
-        if (currentKernelVersion() <= MACOS_10_15_X) {
+        if (appleDriverVersion() <= MACOS_10_15_X) {
             const PenguinWizardry::MaskedLookupPatch patch{&kextRadeonX6000Framebuffer,
                                                            kInitPopulateDcInitDataCatalinaOriginal,
                                                            kInitPopulateDcInitDataCatalinaPatched, 1};
@@ -165,7 +166,7 @@ void DebugEnabler::processX5000HWLibs(KernelPatcher& patcher, const size_t id, c
                                       const size_t size)
 {
     // TODO: Find them using a call pattern.
-    if (currentKernelVersion() <= MACOS_11_X) {
+    if (appleDriverVersion() <= MACOS_11_X) {
         PenguinWizardry::PatternRouteRequest requests[] = {
             {"_dmcu_assertion", ipAssertion}, {"_gc_assertion", ipAssertion},    {"_gvm_assertion", ipAssertion},
             {"_mes_assertion", ipAssertion},  {"_psp_assertion", ipAssertion},   {"_sdma_assertion", ipAssertion},
@@ -175,13 +176,13 @@ void DebugEnabler::processX5000HWLibs(KernelPatcher& patcher, const size_t id, c
                    "Failed to route HWLibs debug symbols");
 
         // This function does not exist on macOS Catalina and below
-        if (currentKernelVersion().majorMatches(MACOS_11)) {
+        if (appleDriverVersion().majorMatches(MACOS_11)) {
             PenguinWizardry::PatternRouteRequest request{"_vcn_assertion", ipAssertion};
             PANIC_COND(!request.route(patcher, id, slide, size), "DebugEnabler", "Failed to route vcn_assertion");
         }
 
         // This function was left unimplemented on macOS Catalina and below.
-        if (currentKernelVersion() <= MACOS_10_15_X) {
+        if (appleDriverVersion() <= MACOS_10_15_X) {
             PenguinWizardry::PatternRouteRequest request{"__ZN14AmdTtlServices14cosDebugAssertEPvPKcS2_jS2_",
                                                          cosDebugAssert};
             PANIC_COND(!request.route(patcher, id, slide, size), "DebugEnabler", "Failed to route cosDebugAssert");
@@ -192,7 +193,7 @@ void DebugEnabler::processX5000HWLibs(KernelPatcher& patcher, const size_t id, c
         &kextRadeonX5000HWLibs, kAtiPowerPlayServicesConstructorPattern, kAtiPowerPlayServicesConstructorPatternMask,
         kAtiPowerPlayServicesConstructorPatched, 1};
     PANIC_COND(!atiPpSvcCtrPatch.apply(patcher, slide, size), "DebugEnabler", "Failed to apply MCIL debugLevel patch");
-    if (currentKernelVersion() >= MACOS_11) {
+    if (appleDriverVersion() >= MACOS_11) {
         const PenguinWizardry::MaskedLookupPatch amdLogPspPatch{&kextRadeonX5000HWLibs, kAmdLogPspPattern,
                                                                 kAmdLogPspMask, kAmdLogPspPatched, 1};
         PANIC_COND(!amdLogPspPatch.apply(patcher, slide, size), "DebugEnabler", "Failed to apply amd_log_psp patch");

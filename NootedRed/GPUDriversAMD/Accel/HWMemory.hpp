@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // Version-independent interface to the `AMDRadeonX5000_AMDHWMemory` class
 //
 // Copyright © 2025 ChefKiss. Licensed under the Thou Shalt Not Profit License version 1.5.
@@ -13,7 +14,7 @@ class AMDRadeonX5000_AMDHWMemory
     {
         ObjectField<UInt64 (*)(AMDRadeonX5000_AMDHWMemory*)> vtGetVisibleSize;
 
-        Constants() { this->vtGetVisibleSize = currentKernelVersion() >= MACOS_11 ? 0x1D8 : 0x1F8; }
+        Constants() { this->vtGetVisibleSize = appleDriverVersion() >= MACOS_11 ? 0x1D8 : 0x1F8; }
     };
 
     static Constants constants;

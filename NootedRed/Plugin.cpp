@@ -23,6 +23,13 @@ PluginConfiguration ADDPR(config){
     &bootargBeta,
     1,
     KernelVersion::Catalina,
-    KernelVersion::Tahoe,
-    []() { NRed::singleton().init(); },
+    static_cast<KernelVersion>(27),
+    []() {
+        if (version_major >= 27 && (version_major != 27 || version_minor != 2
+            || !checkKernelArgument("-NRedDonor24"))) {
+            SYSLOG("DonorProfile", "Darwin 27 requires the explicit 27.2 Sequoia donor profile");
+            return;
+        }
+        NRed::singleton().init();
+    },
 };

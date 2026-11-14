@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // Master Logic
 //
 // Copyright © 2022-2025 ChefKiss. Licensed under the Thou Shalt Not Profit License version 1.5.
@@ -55,15 +56,15 @@ void NRed::init()
     SYSLOG("NRed", "| Change the world for the better.                                |");
     SYSLOG("NRed", "|-----------------------------------------------------------------|");
 
-    Backlight::singleton().init();
+    if (!usingSequoiaDonor()) { Backlight::singleton().init(); }
     VCN::init();
     UserOpenGL::registerKext();
 
     lilu.onKextLoadForce(&kextRadeonX6000Framebuffer);
     lilu.onKextLoadForce(&kextRadeonX5000HWLibs);
     lilu.onKextLoadForce(&kextRadeonX5000);
-    lilu.onKextLoadForce(&kextAGDP);
-    lilu.onKextLoadForce(&kextAppleGFXHDA);
+    if (!usingSequoiaDonor()) { lilu.onKextLoadForce(&kextAGDP); }
+    if (!usingSequoiaDonor()) { lilu.onKextLoadForce(&kextAppleGFXHDA); }
 
     lilu.onPatcherLoadForce(
         [](void* const, KernelPatcher& patcher)
@@ -86,11 +87,11 @@ void NRed::init()
         [](void* const, KernelPatcher& patcher, const size_t id, const mach_vm_address_t slide, const size_t size)
         {
             UserOpenGL::processKext(patcher, id, slide, size);
-            AGDP::singleton().processKext(patcher, id, slide, size);
-            Backlight::singleton().processKext(patcher, id, slide, size);
+            if (!usingSequoiaDonor()) { AGDP::singleton().processKext(patcher, id, slide, size); }
+            if (!usingSequoiaDonor()) { Backlight::singleton().processKext(patcher, id, slide, size); }
             DebugEnabler::singleton().processKext(patcher, id, slide, size);
             X6000FB::singleton().processKext(patcher, id, slide, size);
-            AppleGFXHDA::singleton().processKext(patcher, id, slide, size);
+            if (!usingSequoiaDonor()) { AppleGFXHDA::singleton().processKext(patcher, id, slide, size); }
             X5000HWLibs::singleton().processKext(patcher, id, slide, size);
             VCN::processKext(patcher, id, slide, size);
             X5000::singleton().processKext(patcher, id, slide, size);
@@ -208,6 +209,20 @@ void NRed::processPatcher()
         WIOKit::awaitPublishing(device);
     }
 
+    if (usingSequoiaDonor() && checkKernelArgument("-NRedBootController")) {
+        // The donor's vendor_doDeviceAttribute selector 3, mask bit 0 sets this
+        // property for controller startup; acceleration is a separate opt-in.
+        if (checkKernelArgument("-NRedBootAccel")) {
+            // Donor vendor_doDeviceAttribute selector 3, bit 1 requests these
+            // before the controller/accelerator's normal matching pass.
+            this->iGPU->setProperty("LoadHWServices", kOSBooleanTrue);
+            this->iGPU->setProperty("LoadAccelerator", kOSBooleanTrue);
+            this->setProp32("NRedDonorExplicitAccelRequest", 1);
+            SYSLOG("DonorProfile", "Pinned donor HWServices + accelerator matching requested");
+        }
+        this->iGPU->setProperty("LoadController", kOSBooleanTrue);
+        this->setProp32("NRedDonorExplicitDisplayRequest", 1);
+    }
     DeviceInfo::deleter(devInfo);
 }
 

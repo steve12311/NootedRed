@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // DCN Display implementation for GFX9
 // Derivative of AMDRadeonX5000 and AMDRadeonX6000 decompilation
 //
@@ -508,16 +509,16 @@ void AMDRadeonX5000_AMDGFX9DCNDisplay::populateVFT(VFT& vft)
     constants.vftGetDisplayModeViewportSpecificInfo(vftInner) = getDisplayModeViewportSpecificInfo;
     constants.vftIsDisplayControlEnabled(vftInner)            = isDisplayControlEnabled;
     constants.vftIsDisplayInterlaceEnabled(vftInner)          = isDisplayInterlaceEnabled;
-    if (currentKernelVersion() >= MACOS_11) { constants.vftGetFlipOption(vftInner) = getFlipOption; }
+    if (appleDriverVersion() >= MACOS_11) { constants.vftGetFlipOption(vftInner) = getFlipOption; }
 
-    if (currentKernelVersion() >= MACOS_13) { return; }
+    if (appleDriverVersion() >= MACOS_13) { return; }
     constants.vftGetCurrentDisplayOffset(vftInner)   = getCurrentDisplayOffset;
     constants.vftSetCurrentDisplayOffset(vftInner)   = setCurrentDisplayOffset;
     constants.vftSetFlipControlRegister(vftInner)    = setFlipControlRegister;
     constants.vftWriteFlipControlRegisters(vftInner) = writeFlipControlRegisters;
     constants.vftIsFlipPending(vftInner)             = isFlipPending;
 
-    if (currentKernelVersion() >= MACOS_10_15) { return; }
+    if (appleDriverVersion() >= MACOS_10_15) { return; }
     constants.vftGetNumberOfSupportedDisplays(vftInner) = getNumberOfSupportedDisplays;
 }
 

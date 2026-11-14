@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // AMD Display Backlight
 // TODO: Get rid of this absolute garbage.
 //
@@ -57,11 +58,11 @@ Backlight& Backlight::singleton() { return moduleInstance; }
 
 Backlight::Backlight()
 {
-    if (currentKernelVersion() <= MACOS_10_15_X) { this->dcLinkCapsField = 0x1EA; }
-    else if (currentKernelVersion().majorMatches(MACOS_11)) {
+    if (appleDriverVersion() <= MACOS_10_15_X) { this->dcLinkCapsField = 0x1EA; }
+    else if (appleDriverVersion().majorMatches(MACOS_11)) {
         this->dcLinkCapsField = 0x26C;
     }
-    else if (currentKernelVersion().majorMatches(MACOS_12)) {
+    else if (appleDriverVersion().majorMatches(MACOS_12)) {
         this->dcLinkCapsField = 0x284;
     }
     else {
@@ -93,7 +94,7 @@ void Backlight::init()
 void Backlight::processKext(KernelPatcher& patcher, const size_t id, const mach_vm_address_t slide, const size_t size)
 {
     if (kextRadeonX6000Framebuffer.loadIndex == id) {
-        if (currentKernelVersion() >= MACOS_14_4) {
+        if (appleDriverVersion() >= MACOS_14_4) {
             PenguinWizardry::PatternSolveRequest solveRequest{
                 "_dc_link_set_backlight_level", this->orgDcLinkSetBacklightLevel, kDcLinkSetBacklightLevelPattern1404};
             PANIC_COND(!solveRequest.solve(patcher, id, slide, size), "Backlight",

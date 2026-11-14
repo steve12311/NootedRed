@@ -1,3 +1,4 @@
+#include <DonorProfile.hpp>
 // AMDRadeonX6000Framebuffer Patches
 //
 // Copyright © 2022-2025 ChefKiss. Licensed under the Thou Shalt Not Profit License version 1.5.
@@ -189,11 +190,13 @@ X6000FB& X6000FB::singleton() { return moduleInstance; }
 void X6000FB::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size)
 {
     if (kextRadeonX6000Framebuffer.loadIndex != id) { return; }
+    static const UInt8 donorUUID[16] = {0x3b,0xcd,0xf8,0x52,0xf0,0xaa,0x31,0x49,0x83,0xc1,0x35,0x7d,0xe4,0xc2,0x91,0x96};
+    requireDonorUUID(slide, size, donorUUID);
 
     NRed::singleton().hwLateInit();
     KernelDisplayEvidence::captureKext(KernelDisplayEvidence::Kext::X6000FB, slide, size);
     KernelDisplayEvidence::recordFramebuffer(
-        currentKernelVersion().major(), NRed::singleton().getAttributes().isRenoir(),
+        appleDriverVersion().major(), NRed::singleton().getAttributes().isRenoir(),
         NRed::singleton().getAttributes().isPicasso(), NRed::singleton().getAttributes().isRenoirE());
     KernelDisplayEvidence::publish();
 
@@ -220,7 +223,7 @@ void X6000FB::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t s
     MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock);
 
     if (checkKernelArgument("-NRedDPDelay")) {
-        if (currentKernelVersion() >= MACOS_14_4) {
+        if (appleDriverVersion() >= MACOS_14_4) {
             PenguinWizardry::PatternRouteRequest request{"_dp_receiver_power_ctrl", wrapDpReceiverPowerCtrl,
                                                          this->orgDpReceiverPowerCtrl, kDpReceiverPowerCtrlPattern1404};
             PANIC_COND(!request.route(patcher, id, slide, size), "X6000FB",
@@ -233,7 +236,7 @@ void X6000FB::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t s
         }
     }
 
-    if (currentKernelVersion() >= MACOS_13) {
+    if (appleDriverVersion() >= MACOS_13) {
         this->orgMessageAccelerator = patcher.solveSymbol<decltype(this->orgMessageAccelerator)>(
             id, "__ZNK34AMDRadeonX6000_AmdRadeonController18messageAcceleratorE25_eAMDAccelIOFBRequestTypePvS1_S1_",
             slide, size);
@@ -275,7 +278,7 @@ void X6000FB::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t s
     PANIC_COND(!PenguinWizardry::JumpPatternRouteRequest::routeAll(patcher, id, atombiosRequests, slide, size),
                "X6000FB", "Failed to route ATOMBIOS-related functions");
 
-    if (currentKernelVersion() >= MACOS_11) {
+    if (appleDriverVersion() >= MACOS_11) {
         PenguinWizardry::JumpPatternRouteRequest createPspDirectoryRequest{
             "__ZN19AmdAtomPspDirectory18createPspDirectoryEP15AmdAtomFwHelperj",
             wrapCreatePspDirectory,
@@ -286,7 +289,7 @@ void X6000FB::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t s
         PANIC_COND(!createPspDirectoryRequest.route(patcher, id, slide, size), "X6000FB",
                    "Failed to route createPspDirectory");
 
-        if (currentKernelVersion() <= MACOS_12_X) {
+        if (appleDriverVersion() <= MACOS_12_X) {
             PenguinWizardry::PatternRouteRequest getTriageHardwareDataRequest{
                 "__ZN38AMDRadeonX6000_AmdRadeonControllerNavi21getTriageHardwareDataEjP12_AMD_TRIAGE_",
                 NRed::singleton().getAttributes().isRenoir() ? getTriageHardwareDataRN : getTriageHardwareDataRV};
@@ -331,7 +334,7 @@ void X6000FB::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t s
                                                        kInitializeDmcubServices1Patched, 1};
         PANIC_COND(!patch.apply(patcher, slide, size), "X6000FB",
                    "Failed to apply initializeDmcubServices family id patch");
-        if (currentKernelVersion() <= MACOS_10_15_X) {
+        if (appleDriverVersion() <= MACOS_10_15_X) {
             const PenguinWizardry::MaskedLookupPatch patches[] = {
                 {&kextRadeonX6000Framebuffer, kInitializeDmcubServices2Original1015,
                  kInitializeDmcubServices2Patched1015, 1},
@@ -344,7 +347,7 @@ void X6000FB::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t s
             PANIC_COND(!PenguinWizardry::MaskedLookupPatch::applyAll(patcher, patches, slide, size), "X6000FB",
                        "Failed to apply AmdDalDmcubService and AmdDalServices::initialize patches (10.15)");
         }
-        else if (currentKernelVersion() >= MACOS_14_4) {
+        else if (appleDriverVersion() >= MACOS_14_4) {
             const PenguinWizardry::MaskedLookupPatch patch{&kextRadeonX6000Framebuffer,
                                                            kInitializeDmcubServices2Original1404,
                                                            kInitializeDmcubServices2Patched1404, 1};
@@ -386,7 +389,7 @@ void X6000FB::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t s
         patcher.solveSymbol<void*>(id, "__ZN34AMDRadeonX6000_AmdRadeonController11createLinksEv", slide, size, true);
     PANIC_COND(orgCreateLinks == nullptr, "X6000FB", "Failed to solve createLinks");
 
-    if (currentKernelVersion() <= MACOS_10_15_X) {
+    if (appleDriverVersion() <= MACOS_10_15_X) {
         PANIC_COND(!KernelPatcher::findAndReplaceWithMask(
                        orgCreateControllerServices, PAGE_SIZE, kCreateControllerServicesOriginal1015,
                        kCreateControllerServicesOriginalMask1015, kCreateControllerServicesPatched1015,
@@ -401,7 +404,7 @@ void X6000FB::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t s
                    "X6000FB", "Failed to apply createControllerServices patch");
     }
 
-    if (currentKernelVersion() >= MACOS_12) {
+    if (appleDriverVersion() >= MACOS_12) {
         PANIC_COND(!KernelPatcher::findAndReplaceWithMask(orgSetupCursors, PAGE_SIZE, kSetupCursorsOriginal12,
                                                           kSetupCursorsOriginalMask12, kSetupCursorsPatched12,
                                                           kSetupCursorsPatchedMask12, 1, 0),

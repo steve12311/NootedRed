@@ -18,6 +18,11 @@
 
 The macOS kernel extension for GPU bug fixes, QoL improvements, and extended hardware support.
 
+## Experimental macOS 27 AMD graphics stack
+
+The supported macOS 27.2 x86 bring-up image is missing the older AMD drivers, Metal library and compiler libraries. **Replacing the kext alone will not restore graphics.** Use the [complete component-package installation guide](docs/darwin27-graphics-stack.md), which provides a prepared download, automatic recipient-specific collection generation, checks and rollback. No manual library extraction is required. This remains an experimental software profile, with hardware validation limits documented in the guide.
+
+
 “NootedRed” is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose and noninfringement.
 
 By using this software, you acknowledge that you are solely responsible for how you use it. The “NootedRed” project team is not responsible for any damage, legal issues, data loss, or other consequences arising from its use.
