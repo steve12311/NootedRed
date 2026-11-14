@@ -702,6 +702,30 @@ namespace
             const auto count = __atomic_fetch_add(&appliedCount, 1U, __ATOMIC_RELAXED);
             if (count < 16) { NRed::singleton().setProp32("NRedVP9Applied", count + 1); }
         }
+
+        // Tracce del backend (-NRedVP9Trace): conteggio e ultimo valore per codice, solo dal processo decoder.
+        bool   traceEnabled{false};
+        UInt32 traceCounts[32]{};
+
+        bool trace(proc_t process, const UInt64 startAddress)
+        {
+            if ((startAddress >> 48) != 0x5639) { return false; }
+            if (!traceEnabled || !process) { return true; }
+            char name[32]{};
+            proc_name(proc_pid(process), name, sizeof(name));
+            name[sizeof(name) - 1] = '\0';
+            if (strncmp(name, "VTDecoderXPC", 12) != 0) { return true; }
+            const auto code  = static_cast<UInt32>((startAddress >> 40) & 0x1F);
+            const auto value = static_cast<UInt32>(startAddress & 0xFFFFFFFFULL);
+            const auto count = __atomic_add_fetch(&traceCounts[code], 1U, __ATOMIC_RELAXED);
+            char key[24];
+            snprintf(key, sizeof(key), "NRedVP9T%02uN", code);
+            NRed::singleton().setProp32(key, count);
+            snprintf(key, sizeof(key), "NRedVP9T%02uV", code);
+            NRed::singleton().setProp32(key, value);
+            if (count <= 2) { SYSLOG("UserVideoDecode", "VP9 trace %u = 0x%X (#%u)", code, value, count); }
+            return true;
+        }
     }    // namespace VP9
 
     __attribute__((noinline)) int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result,
@@ -1030,6 +1054,7 @@ namespace
     __attribute__((noinline)) int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args,
                                                            int* returnValue)
     {
+        if (args && VP9::trace(process, args->startAddress)) { return EINVAL; }
         auto ticket = __atomic_load_n(&hookTraceCount, __ATOMIC_RELAXED);
         bool trace{false};
         while (ticket < 8) {
@@ -1180,6 +1205,8 @@ void UserVideoDecode::init(KernelPatcher& patcher)
             if (!VP9::lock) { VP9::lock = IOLockAlloc(); }
             if (!VP9::plan) { VP9::plan = IONew(UserVP9DecodeResolver::Plan, 1); }
             VP9::enabled = VP9::lock && VP9::plan;
+            VP9::traceEnabled = VP9::enabled && checkKernelArgument("-NRedVP9Trace");
+            if (VP9::traceEnabled) { NRed::singleton().setProp32("NRedVP9Trace", 1); }
             VP9::publishState(VP9::enabled ? 1 : 6);
         }
     }
@@ -1196,4 +1223,9 @@ void UserVideoDecode::init(KernelPatcher& patcher)
             return patchSharedRegion(reinterpret_cast<proc_t>(process), reinterpret_cast<SharedRegionCheckArgs*>(args),
                                      result, &transaction);
         });
+}
+
+bool UserVideoDecode::traceVP9(void* process, const UInt64 startAddress)
+{
+    return VP9::trace(reinterpret_cast<proc_t>(process), startAddress);
 }

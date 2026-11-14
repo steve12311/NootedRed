@@ -5,6 +5,7 @@
 #include <IOKit/IOLib.h>
 #include <NRed.hpp>
 #include <UserPatchCoordinator.hpp>
+#include <UserVideoDecode.hpp>
 #include <VCNPowerTrace.hpp>
 #include <UserPhaseTiming.hpp>
 #include <VPF/DisplayDependencyPlanner.hpp>
@@ -124,6 +125,7 @@ namespace
     int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* returnValue)
     {
         if (!originalCheck) { return KERN_FAILURE; }
+        if (args && UserVideoDecode::traceVP9(process, args->startAddress)) { return EINVAL; }
         const auto result = reinterpret_cast<SharedRegionCheck>(originalCheck)(process, args, returnValue);
         __atomic_fetch_add(&UserPatchCoordinator::nativeCalls(), 1U, __ATOMIC_RELAXED);
         if (result != 0 || !UserPatchCoordinator::active()) { return result; }

@@ -62,6 +62,10 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 `NRedVP9State`（1 已启用，2 缓存已核验，3 缓存被拒，4 写入失败，5 系统不支持，6 内存不足）及
 `NRedVP9Applied`／`NRedVP9Already`。尚未在真机验证：只用 `tools/probe_vp9_decode.m` 测试，不要用浏览器。
 
+诊断参数 `-NRedVP9Trace`（需同时设置 `-NRedVP9`）：VP9 后端以带标记的 `shared_region_check_np` 调用报告各步骤，
+内核只记录 `VTDecoderXPC*` 进程的调用并返回 `EINVAL`。每个代码的次数与最后一个值发布为 `NRedVP9T<nn>N`／
+`NRedVP9T<nn>V`，同时显示 `NRedVP9Trace=1`。
+
 `NRedVCNPGGated=1` 表示 VCN 当前已由 PowerPlay（`PhwRenoir_PowerGateVCN`，SMU 消息 `0xB`/`0xC`）关断；
 计数在下一次进程启动时发布到 ioreg。
 
