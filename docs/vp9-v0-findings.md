@@ -539,3 +539,27 @@ fotogramma.
 - Un fotogramma con l'header compresso corrotto viene scartato da AppleGVA con `-12909`; gli altri restano decodificati.
 
 Il probe ora stampa dimensione del buffer e clean aperture del primo fotogramma e a ogni loro cambio.
+
+### V4 — Prestazioni e decodifiche in parallelo (14/11/2026)
+
+**Prova.** Kext installato, decoder in `VTDecoderXPCService`, Ryzen 5 4600H. Il probe con `VP9_PERF=1` decodifica in
+modo asincrono, senza hash né dump, e stampa i fotogrammi al secondo. Il tempo di CPU è quello del probe più quello
+di `VTDecoderXPCService`, letto con `ps` durante la prova. Le clip sono generate con libvpx: `4k60-10s` (3840x2160,
+60 fps, 600 fotogrammi, 25 Mbit/s) e `1080p-2min` (3600 fotogrammi).
+
+| Decodifica | 4K60, 10 s di video | 1080p, 2 minuti |
+| --- | --- | --- |
+| VCN | 4,2 s, 150 fps, CPU 0,9 s | 8,1 s, 470 fps, CPU 3,2 s |
+| libvpx (ffmpeg `-c:v libvpx-vp9`) | 4,9 s, CPU 14,2 s | 8,6 s, CPU 24,3 s |
+| decoder VP9 di ffmpeg | 2,5 s, CPU 17,9 s | 4,8 s, CPU 21,3 s |
+
+- In hardware il 4K60 va a 2,5 volte il tempo reale con circa il 9% di un core, cioè 16–20 volte meno CPU del
+  software. Il contenuto sintetico è facile per il software: con video reali il divario dovrebbe crescere.
+- **In parallelo.** 2 e 4 sessioni 4K60 vanno a 75 e 38 fps ciascuna, 8 sessioni 1080p a 58 fps ciascuna. Il totale
+  resta circa 150 fps 4K o 464 fps 1080p: la VCN è il collo di bottiglia e la divide in parti uguali, senza errori.
+- **Correttezza in parallelo.** Sei clip decodificate insieme con `tools/compare_vp9_decode.py` (350x198, 1080p,
+  4K, 4096x2160, `1080p-2min`) sono identiche a ffmpeg in luma e crominanza.
+- **Con altri codec.** Durante due decodifiche VP9, tre giri di HEVC e H.264 1080p con `-hwaccel videotoolbox`
+  danno `framemd5` identici al software. Anche le clip VP9 restano identiche.
+- Due sessioni 4K60 insieme stanno appena sopra il tempo reale (75 fps ciascuna).
+

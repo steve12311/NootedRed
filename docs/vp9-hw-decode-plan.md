@@ -175,7 +175,7 @@ Le fasi V0 e V1 dicono presto se il progetto si può fare: conviene fare quelle,
 - **V2 — completata (14/11/2026).** `NootedRed/VP9Message.hpp` produce gli stessi messaggi VCN di Mesa, byte per
   byte, su 222 fotogrammi di 9 clip libvpx (profilo 0 e 2); 6,6 KB compilato per il kernel. Non tocca il kext, quindi
   nessun boot-arg. Dettagli e limiti della copertura in [VP9 V0](vp9-v0-findings.md#v2--messaggio-vcn-provato-offline-14112026-superata).
-- **V3 — in corso.** Studio del driver concluso: percorso AV1 da riusare, layout del messaggio e dei buffer del
+- **V3 — completata (14/11/2026).** Studio del driver concluso: percorso AV1 da riusare, layout del messaggio e dei buffer del
   comando, scelta del DPB Tier 1 come Mesa, cinque patch previsti dietro `-NRedVP9`.
   Progetto in [VP9 V0](vp9-v0-findings.md#v3--progetto-dellintegrazione-studio-del-driver-14112026).
   Backend, generatore delle patch e cablaggio nel kext dietro `-NRedVP9` scritti e provati offline (messaggi uguali a
@@ -191,3 +191,8 @@ Le fasi V0 e V1 dicono presto se il progetto si può fare: conviene fare quelle,
   in modo esplicito invece di uscire corrotti. Dettagli in
   [VP9 V0](vp9-v0-findings.md#v3--prima-prova-sulla-macchina-e-gate-delle-capability-14112026) e
   [decodifica in processo](vp9-v0-findings.md#v3--decodifica-in-processo-e-primi-fotogrammi-corretti-14112026).
+- **V4 — in corso.** Prestazioni misurate col kext installato: 4K60 decodificato a 150 fps con circa 0,9 s di CPU
+  ogni 10 s di video, contro 14–18 s con libvpx o il decoder di ffmpeg. Più sessioni in parallelo si dividono la VCN in
+  parti uguali e restano identiche a ffmpeg, anche insieme a decodifiche HEVC e H.264 in hardware. Manca la
+  conformità sui vettori di prova di libvpx, che vanno scaricati. Dettagli in
+  [VP9 V0](vp9-v0-findings.md#v4--prestazioni-e-decodifiche-in-parallelo-14112026).
