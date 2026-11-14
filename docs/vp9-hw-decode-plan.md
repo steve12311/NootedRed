@@ -184,6 +184,7 @@ Le fasi V0 e V1 dicono presto se il progetto si può fare: conviene fare quelle,
   Prima prova sulla macchina: AppleGVA non crea il contesto perché il driver non dichiara una capability VP9.
   Ora la funzione 6 (AV1) viene dichiarata come VP9. Con il filtro sulla maschera hardware e il bitstream diretto,
   la decodifica in processo (lldb) dà luma identica a ffmpeg su tutte le clip a 8 bit. Col kext installato (decoder fuori
-  processo) il risultato è lo stesso. Aperto: il profilo 2 a 10 bit va rifiutato alla creazione della sessione. Dettagli in
+  processo) il risultato è lo stesso. Il profilo 2 a 10 bit
+  ora viene rifiutato alla creazione della sessione (provato anche col kext installato). Dettagli in
   [VP9 V0](vp9-v0-findings.md#v3--prima-prova-sulla-macchina-e-gate-delle-capability-14112026) e
   [decodifica in processo](vp9-v0-findings.md#v3--decodifica-in-processo-e-primi-fotogrammi-corretti-14112026).

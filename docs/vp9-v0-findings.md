@@ -453,8 +453,27 @@ Y di `yuv420p`; `-pix_fmt gray` espande il range e falsa il confronto). La cromi
 - Avvio regolare, `NRedVP9State=2`. `probe_vp9_decode` nel modo normale (decoder in `VTDecoderXPCService`):
   `VTDecompressionSessionCreate = 0` su tutte le 8 clip a 8 bit. Tutti i fotogrammi sono decodificati e la luma è
   identica bit per bit a ffmpeg. Le tracce `NRedVP9T*` confermano che il decoder fuori processo passa dal backend.
-- **Aperto: profilo 2 (10 bit).** `profile2-p010` crea la sessione, ma ogni fotogramma fallisce con `-12909`.
-  Non ci sono crash e lo stato VP9 resta valido. Prima di provare un browser bisogna rifiutare il profilo 2 già
-  alla creazione della sessione, così VideoToolbox ripiega sul software invece di dare fotogrammi rotti.
+- **Profilo 2 (10 bit).** `profile2-p010` creava la sessione e poi ogni fotogramma falliva con `-12909`.
+  Correzione e prove nella sezione successiva.
 - Ancora da fare: confronto della crominanza, clip più lunghe e risoluzioni maggiori (1080p/4K), cambio di
   risoluzione a metà stream.
+
+### V3 — Profilo 2 rifiutato alla creazione (14/11/2026)
+
+- Il `-12909` del profilo 2 veniva in parte dal probe, che dichiarava sempre `vpcC` profilo 0 a 8 bit. Ora il
+  probe legge profilo e profondità dall'header del primo fotogramma, come fa un browser col suo `vpcC`.
+- Con il `vpcC` corretto, il kext senza correzione accettava il profilo 2: sessione creata e 12 fotogrammi "ok",
+  ma di correttezza non verificata. Il motivo: la funzione 6 (ex AV1) dichiarava anche uscite a 10 bit (`x420` e
+  due varianti), oltre a NV12, e AppleGVA sceglie l'uscita a 10 bit per uno stream a 10 bit.
+- **Aggancio 9.** In `setupStaticCoreFunctions` la `call getAVDFuncOutputFormatInfo` va allo stub
+  `_vp9GetAVDFuncOutputFormatInfo`: per l'indice 6 usa il caso NV12 del driver (un solo formato), per gli altri
+  indici chiama l'originale. Così AppleGVA rifiuta lo stream a 10 bit quando crea il contesto (`0xd`) e
+  VideoToolbox restituisce `-12907`: un client che non chiede l'hardware obbligatorio ripiega sul software.
+- Il generatore ora unisce più agganci nella stessa funzione (5 e 9 stanno in `setupStaticCoreFunctions`) in una
+  sola funzione verificata. Le tracce di DPB, contesto e `initHWContext` sono state tolte per fare spazio: 32 siti
+  su 9 pagine, codice 6103/6140 B.
+- Prova (lldb, byte scritti in memoria): `profile2-p010` e `profile2-dither` → `VTDecompressionSessionCreate =
+  -12907`. Le 8 clip a 8 bit restano identiche bit per bit a ffmpeg.
+- Prova col kext installato (decoder in `VTDecoderXPCService`, 14/11/2026): le due clip a 10 bit danno
+  `VTDecompressionSessionCreate = -12907`. Le 8 clip a 8 bit creano la sessione, nessun fotogramma viene scartato
+  e la luma è identica a ffmpeg. `NRedVP9State` resta 2.
