@@ -46,6 +46,7 @@ public:
 struct NRed { static NRed& singleton(); void setProp32(const char*,UInt32); };
 ''',
         'kern/task.h': '#pragma once\nusing task_t=void*; task_t current_task();\n',
+        'kern/clock.h': '#pragma once\n#include <IOKit/IOTypes.h>\ninline UInt64 mach_absolute_time(){static UInt64 t=0;return t+=1000;}\ninline void absolutetime_to_nanoseconds(UInt64 a,UInt64* ns){*ns=a;}\n',
         'mach/vm_map.h': '#pragma once\nusing vm_map_t=void*;\n',
         'sys/proc.h': '#pragma once\nusing proc_t=void*;\n',
     }

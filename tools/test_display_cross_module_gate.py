@@ -96,6 +96,7 @@ struct NRed {
     kern = WORK / 'stubs/kern'
     kern.mkdir(parents=True, exist_ok=True)
     (kern / 'task.h').write_text('#pragma once\nusing task_t=void*;\ntask_t current_task();\n')
+    (kern / 'clock.h').write_text('#pragma once\n#include <IOKit/IOTypes.h>\ninline UInt64 mach_absolute_time(){static UInt64 t=0;return __atomic_add_fetch(&t,1000,__ATOMIC_RELAXED);}\ninline void absolutetime_to_nanoseconds(UInt64 a,UInt64* ns){*ns=a;}\n')
     mach = WORK / 'stubs/mach'
     mach.mkdir(parents=True, exist_ok=True)
     (mach / 'vm_map.h').write_text('#pragma once\nusing vm_map_t=void*;\n')

@@ -4,6 +4,7 @@
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserPatchCoordinator.hpp>
+#include <UserPhaseTiming.hpp>
 #include <UserRejectedCaches.hpp>
 #include <UserPatchMapGate.hpp>
 #include <UserPatchMemory.hpp>
@@ -631,6 +632,7 @@ namespace
             error(KERN_RESOURCE_SHORTAGE);
             return result;
         }
+        UserPhaseTiming::Timer resolveTimer(UserPhaseTiming::Phase::VideoResolve);
         auto& fast = transaction.state->fast;
         fast.begin(&header[88], major, VPF::resolutionProfile(deviceID, major), 0, probeMapping, &probeState);
         if (!UserVideoDecodeResolver::resolve(input, base, devicePatches, *dynamicBuffer.plan, major, &fast)) {
@@ -642,6 +644,8 @@ namespace
             return result;
         }
         rejectedCaches.accept(&header[88]);
+        resolveTimer.stop();
+        UserPhaseTiming::Timer prepareTimer(UserPhaseTiming::Phase::VideoPrepare);
         const auto* patches = dynamicBuffer.plan->patches;
         publish(published.matched, "NRedVCNUserDynamicMatched", 1);
         publish(published.reads, "NRedVCNUserDynamicReads", dynamicBuffer.plan->reads);
@@ -769,8 +773,11 @@ namespace
                                                       UserVideoDecodeData::MaxPatchSize>;
         Executor executor(ops, base, workspace.install, installCount,
                           reinterpret_cast<UInt8(*)[UserVideoDecodeData::MaxPatchSize]>(saved), pages, pageCount, 0);
+        prepareTimer.stop();
+        UserPhaseTiming::Timer writeTimer(UserPhaseTiming::Phase::VideoWrite);
         markLedger(mapKey, VPF::CapabilityState::Installing);
         const auto committed = executor.commit([] { return true; });
+        writeTimer.stop();
         switch (committed.status) {
             case VPF::TransactionStatus::CheckFailed      : stage(Stage::Region, fairPlayPID); return result;
             case VPF::TransactionStatus::BeforeWriteFailed: return result;

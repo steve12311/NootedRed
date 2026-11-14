@@ -5,6 +5,7 @@
 #include <IOKit/IOLib.h>
 #include <NRed.hpp>
 #include <UserPatchCoordinator.hpp>
+#include <UserPhaseTiming.hpp>
 #include <VPF/DisplayDependencyPlanner.hpp>
 #include <kern/task.h>
 #include <mach/vm_map.h>
@@ -134,6 +135,30 @@ namespace
 
 }    // namespace
 
+// Unica definizione dello stato del cronometro (fase 0), condiviso da coordinatore, display e video.
+namespace UserPhaseTiming
+{
+
+    UInt8& enabledFlag()
+    {
+        static UInt8 value{0};
+        return value;
+    }
+
+    Slot* slots()
+    {
+        static Slot value[PhaseCount]{};
+        return value;
+    }
+
+    UInt32& publishTicket()
+    {
+        static UInt32 value{0};
+        return value;
+    }
+
+}    // namespace UserPhaseTiming
+
 namespace UserPatchCoordinator
 {
 
@@ -259,6 +284,8 @@ namespace UserPatchCoordinator
     int coordinate(void* process, void* args, const int result, void* mapKey)
     {
         if (!active() || !mapKey) { return result; }
+        // Fase 0: tempo totale della chiamata, inclusa l'attesa del lease; pubblicato a fine funzione, fuori dal lease.
+        UserPhaseTiming::Timer total(UserPhaseTiming::Phase::CoordinateFull);
         // 同一线程嵌套进入时不重复执行补丁；等待其他 map 时只睡眠，不持有注册表锁。
         auto patched = result;
         {
@@ -271,27 +298,39 @@ namespace UserPatchCoordinator
             Transaction transaction{};
             const auto  read = reader();
             const auto  startAddress = args ? static_cast<const SharedRegionCheckArgs*>(args)->startAddress : 0ULL;
+            UserPhaseTiming::Timer headerTimer(UserPhaseTiming::Phase::Header);
             if (read && startAddress && read(startAddress, &transaction.base, sizeof(transaction.base)) == 0
                 && transaction.base != 0 && (transaction.base & 4095) == 0
                 && read(transaction.base, transaction.header, HeaderSize) == 0)
             {
                 transaction.cacheRead = true;
             }
+            headerTimer.stop();
+            UserPhaseTiming::Timer skipTimer(UserPhaseTiming::Phase::SkipCheck);
             // 同一 map 已完成过：同一缓存基址且两侧 proof 仍在内存中才跳过；任何不确定都走完整搜索。
             CompletedSnapshot snapshot{};
             auto&             previous = snapshot.value;
-            if (transaction.cacheRead && lookupCompleted(mapKey, previous) && previous.base == transaction.base
-                && memcmp(previous.header, transaction.header, HeaderSize) == 0 && proven(read, previous.display)
-                && proven(read, previous.video))
-            {
+            const bool skip = transaction.cacheRead && lookupCompleted(mapKey, previous)
+                              && previous.base == transaction.base
+                              && memcmp(previous.header, transaction.header, HeaderSize) == 0
+                              && proven(read, previous.display) && proven(read, previous.video);
+            skipTimer.stop();
+            if (skip) {
+                total.retarget(UserPhaseTiming::Phase::CoordinateSkipped);
                 const auto skipped = __atomic_add_fetch(&skippedRuns(), 1U, __ATOMIC_RELAXED);
                 if (skipped <= 16 || (skipped & 0xFF) == 0) {
                     NRed::singleton().setProp32("NRedPatchCoordinatorSkippedRuns", skipped);
                 }
                 return result;
             }
-            if (const auto callback = displayCallback()) { patched = callback(process, args, patched, transaction); }
-            if (const auto callback = videoCallback()) { patched = callback(process, args, patched, transaction); }
+            if (const auto callback = displayCallback()) {
+                UserPhaseTiming::Timer timer(UserPhaseTiming::Phase::Display);
+                patched = callback(process, args, patched, transaction);
+            }
+            if (const auto callback = videoCallback()) {
+                UserPhaseTiming::Timer timer(UserPhaseTiming::Phase::Video);
+                patched = callback(process, args, patched, transaction);
+            }
             __atomic_fetch_add(&coordinatedRuns(), 1U, __ATOMIC_RELAXED);
             const bool provable = transaction.display.outcome == Outcome::Patched
                                   || transaction.video.outcome == Outcome::Patched;

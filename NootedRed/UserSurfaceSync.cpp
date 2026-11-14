@@ -5,6 +5,7 @@
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <UserPatchCoordinator.hpp>
 #include <UserPatchMemory.hpp>
+#include <UserPhaseTiming.hpp>
 #include <UserRejectedCaches.hpp>
 #include <UserSubmitGuardData.hpp>
 #include <UserSurfaceSync.hpp>
@@ -450,6 +451,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         stage(Stage::CacheMismatch);
         return result;
     }
+    UserPhaseTiming::Timer resolveTimer(UserPhaseTiming::Phase::DisplayResolve);
     // Darwin 23/24/25 始终核验完整提交方法；UUID 只用于诊断和已核验位置缓存。
     UInt64               submitOffset{0};
     auto&                submitFast    = workspace.value->submitFast;
@@ -518,6 +520,8 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         publish(published.reads, "NRedImmediateSyncDynamicReads", plan.reads);
     }
 
+    resolveTimer.stop();
+    UserPhaseTiming::Timer prepareTimer(UserPhaseTiming::Phase::DisplayPrepare);
     auto& saved = workspace.value->saved;
     auto& pages = workspace.value->pages;
     const auto cache       = input.cache;
@@ -607,7 +611,10 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         return result;
     }
     publish(published.planVerified, "NRedDisplayVPFPlanVerified", 1);
+    prepareTimer.stop();
+    UserPhaseTiming::Timer writeTimer(UserPhaseTiming::Phase::DisplayWrite);
     const auto committed = transaction.commit([&] { return runtime.ready(); });
+    writeTimer.stop();
     if (committed.status != VPF::TransactionStatus::Installed) {
         runtime.failed(committed.status == VPF::TransactionStatus::CheckFailed
                        || committed.status == VPF::TransactionStatus::BeforeWriteFailed
@@ -739,6 +746,7 @@ void UserSurfaceSync::init(KernelPatcher& patcher)
     UserPatchCoordinator::clearDisplay();
     VPF::ResolutionDiagnostics::setEnabled(!checkKernelArgument("-NRedNoFVRC"));
     rejectTrace = checkKernelArgument("-NRedRejectTrace");
+    UserPhaseTiming::setEnabled(checkKernelArgument("-NRedPhaseTiming"));
     NRed::singleton().setProp32("NRedRejectedCacheTable", rejectedCaches.init() ? 1 : 0);
     NRed::singleton().setProp32("NRedFVRCEnabled", VPF::ResolutionDiagnostics::enabled() ? 1 : 0);
     if (VPF::ResolutionDiagnostics::enabled()) {
