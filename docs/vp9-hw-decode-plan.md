@@ -176,5 +176,8 @@ Le fasi V0 e V1 dicono presto se il progetto si può fare: conviene fare quelle,
   byte, su 222 fotogrammi di 9 clip libvpx (profilo 0 e 2); 6,6 KB compilato per il kernel. Non tocca il kext, quindi
   nessun boot-arg. Dettagli e limiti della copertura in [VP9 V0](vp9-v0-findings.md#v2--messaggio-vcn-provato-offline-14112026-superata).
 - **V3 — in corso.** Studio del driver concluso: percorso AV1 da riusare, layout del messaggio e dei buffer del
-  comando, scelta del DPB Tier 1 come Mesa, cinque patch previsti dietro `-NRedVP9`. Nulla è ancora installato.
+  comando, scelta del DPB Tier 1 come Mesa, cinque patch previsti dietro `-NRedVP9`.
   Progetto in [VP9 V0](vp9-v0-findings.md#v3--progetto-dellintegrazione-studio-del-driver-14112026).
+  Backend, generatore delle patch e cablaggio nel kext dietro `-NRedVP9` scritti e provati offline (messaggi uguali a
+  Mesa, resolver verde sulla cache reale). Manca la prova sulla macchina con `probe_vp9_decode`. Dettagli in
+  [VP9 V0](vp9-v0-findings.md#v3--backend-e-cablaggio-nel-kext-14112026-offline-verde-non-ancora-provato-sulla-macchina).

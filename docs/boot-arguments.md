@@ -57,6 +57,11 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 （1 已发布，0 写入失败，2 不满足条件）。驱动尚无 VP9 解码后端，浏览器会改选 VP9 而无法播放：
 只在测试时开启，见 [VP9 硬解 V0 结论](vp9-v0-findings.md)。
 
+实验参数 `-NRedVP9`（VP9 计划 V3 阶段，仅 macOS 26 且共享缓存 UUID 为 `31374756…16a1`，需同时设置 `-NRedVideoFix`）：
+视频补丁安装后，在同一进程的 AMD 视频驱动中写入 VP9 解码后端（复用 AV1 区域，profile 0／8 位）。状态见
+`NRedVP9State`（1 已启用，2 缓存已核验，3 缓存被拒，4 写入失败，5 系统不支持，6 内存不足）及
+`NRedVP9Applied`／`NRedVP9Already`。尚未在真机验证：只用 `tools/probe_vp9_decode.m` 测试，不要用浏览器。
+
 `NRedVCNPGGated=1` 表示 VCN 当前已由 PowerPlay（`PhwRenoir_PowerGateVCN`，SMU 消息 `0xB`/`0xC`）关断；
 计数在下一次进程启动时发布到 ioreg。
 

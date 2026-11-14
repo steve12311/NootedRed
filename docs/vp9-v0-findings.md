@@ -327,3 +327,52 @@ massimo 448 byte e 32 patch per gruppo, quindi un gruppo `UserVP9Decode` separat
 - come il driver passa le superfici dei riferimenti: con il Tier 1 il VCN li legge dal DPB, quindi le superfici a
   `P+0x1260` servono solo a tenere allineati gli slot di `render_pic_list`;
 - `swizzle` e `array_mode` del DPB e dell'uscita: copiare quelli che il driver usa per HEVC su VCN 2.
+
+### V3 — Backend e cablaggio nel kext (14/11/2026, offline verde, non ancora provato sulla macchina)
+
+**Pezzi.**
+
+- `tools/vp9_backend/VP9Backend.cpp`: backend freestanding (Mesa porting, profilo 0 / 8 bit). Si compila con `-Oz`
+  in 5819 B di codice, dentro i 6140 B liberi della regione AV1. Lo stato per sessione è di 224 B, in coda al
+  `DecodeDataProcessor`.
+- `tools/build_vp9_decode_patch.py`: collega il backend agli indirizzi della regione e verifica i byte originali
+  degli agganci e i vtable slot. Scrive `NootedRed/UserVP9DecodeData.hpp`: 27 siti su 8 pagine, 5 funzioni
+  verificate per intero, 186/44 riferimenti rel32 (originale/patchato), `SectionTargets` per il bersaglio dati di
+  `libsystem_c`. `--check` confronta l'header con il generatore.
+- `NootedRed/UserVP9DecodeResolver.hpp`: accetta solo la cache `31374756…16a1` e risolve con
+  `sectionRelative=true` e i propri `SectionTargets`.
+- `UserVideoDecode.cpp`, `VP9::install`:
+  - Viene chiamato solo con `-NRedVP9`, su macOS 26, per processi non FairPlay, dopo che la patch video risulta
+    `Applied` o `Already`.
+  - La risoluzione completa avviene una volta per avvio (sotto `VP9::lock`), da pagine pulite.
+  - Per ogni processo rilegge tutti i siti: se sono tutti originali li scrive con una seconda
+    `SharedRegionTransaction`; se sono tutti patchati verifica che le pagine siano RX; se lo stato è misto non
+    tocca nulla.
+  - Un errore di scrittura disattiva VP9 fino al riavvio.
+
+**Proprietà in ioreg.**
+
+- `NRedVP9State`: 1 attivo, 2 cache verificata, 3 cache rifiutata, 4 commit fallito, 5 sistema non supportato,
+  6 memoria insufficiente.
+- `NRedVP9Applied` / `NRedVP9Already`: contatori, fino a 16.
+- `NRedVP9Mixed`, `NRedVP9Region`, `NRedVP9CommitStatus`, `NRedVP9Rollback`: anomalie.
+
+**Prove offline.**
+
+- `test_vp9_backend.py`: il backend linkato gira su un driver finto. 198 messaggi uguali a quelli nativi; le
+  guardie si comportano come previsto; due mutazioni vengono rilevate.
+- `test_vp9_resolver_live.py`, sulla cache reale di questa macchina (sola lettura):
+  - i 27 siti si risolvono agli offset generati;
+  - a byte VP9 applicati il resolver video trova ancora tutto;
+  - ogni funzione VP9 corrisponde alla variante patchata;
+  - un UUID diverso viene rifiutato.
+- **Limite noto.** Da pagine già patchate il resolver VP9 non ricostruisce i campi GOT originali coperti dalla
+  regione (6 indiretti originali, 2 patchati), quindi rifiuta la risoluzione. È voluto: il kext risolve una sola
+  volta da pagine pulite e in seguito confronta solo i byte dei siti.
+- Build del kext Debug e Release senza nuovi warning.
+
+**Restano aperti** (da verificare sulla macchina, solo con `tools/probe_vp9_decode.m`):
+
+- se il firmware accetta il DPB Tier 1;
+- se `VAVcnDecoder::Init` ha un controllo AV1 sulle capacità;
+- la correttezza dei fotogrammi decodificati.
