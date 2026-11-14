@@ -27,7 +27,7 @@ Già fatti:
   dell'header completo, snapshot con conteggio dei riferimenti, tabella dei rifiuti solo per rifiuti certi.
   Verificato sul Renoir: avvio regolare, costi uguali alla versione precedente (vedi fase 0).
 - **Fase 0** (`bddfaaf`): cronometro per fase dietro `-NRedPhaseTiming`.
-- **Fase 5** (passo A): il VCN viene **già spento** da PowerPlay di Apple a riposo; aggiunto solo un contatore
+- **Fase 5** (`a34332d`): il VCN viene **già spento** da PowerPlay di Apple a riposo; aggiunto solo un contatore
   dietro `-NRedVCNPowerTrace`. Nessuna modifica al comportamento.
 
 La ripartizione qui sotto è quella **prima della fase 1**, lasciata come riferimento. La fase 0 ha poi mostrato che
@@ -50,26 +50,31 @@ Restano circa **26 ms** per ogni processo patchato rispetto a uno saltato. Di qu
 | 2 | Ricordare le cache rifiutate | da misurare | basso | **fatto** (`e7ecf90`): 9/4 → 2/2 scansioni a vuoto |
 | 3 | Lock spin del kernel nella cache FVRC | stabilità sotto carico | basso | **fatto** (`3c27adc`): tempi invariati, p90 più stabile |
 | 4 | Meno lavoro per avvio | < 0,1 ms (misurato in fase 0) | basso | ridimensionata |
-| 5 | Spegnimento VCN inattivo | batteria, non quantificato | alto | **chiusa**: già fatto da PowerPlay, solo contatore |
+| 5 | Spegnimento VCN inattivo | batteria, non quantificato | alto | **chiusa** (`a34332d`): già fatto da PowerPlay, solo contatore |
 
-Ogni fase finisce con: test offline verdi, build Release, installazione nell'EFI (backup già sulla chiavetta
-TAHOE-USB), riavvio, verifica dei contatori in `ioreg` e nuova misura con `tools/bench_exec_latency.py`.
+Ogni fase finisce con: test offline verdi, build Release, installazione nell'EFI (prima una copia dell'EFI
+sul Desktop, tenendo solo le più recenti), riavvio, verifica dei contatori in `ioreg` e nuova misura con `tools/bench_exec_latency.py`.
 Una fase alla volta, ognuna in un commit separato, così un problema si può isolare.
 
-### Prossimi passi (dopo le fasi 0–3 e la PR #11)
+### Prossimi passi (dopo le fasi 0–3, 5 e la PR #11)
 
-Con la cache FVRC pronta un processo GPU patchato costa al kext **~1 ms** (ricerca ~0,6–1,2 ms, preparazione e
-scrittura < 0,1 ms) e uno già patchato **~7 µs**. Sull'apertura delle app non c'è quasi più niente da guadagnare.
+Il piano originale è esaurito. Con la cache FVRC pronta un processo GPU patchato costa al kext **~1 ms** e uno già
+patchato **~7 µs**; il VCN si spegne già a riposo. Restano lavori piccoli o di sola misura, in ordine di utilità:
 
-1. **Comunicare a steve12311** la verifica su hardware AMD che mancava nella PR #11 (avvio, contatori, tempi qui sopra),
-   con un commento sulla PR o insieme a una nuova PR per la fase 0.
-2. **Costo all'avvio del sistema:** nei primi minuti dopo il boot la ricerca display arriva in media a 10–16 ms con
-   picchi di secondi (cache FVRC vuota, carico ~25–50). È l'unico punto dove il kext costa ancora in modo visibile.
-   Prima misurare solo quella finestra (es. due letture di `ioreg` a 1 e 5 minuti) e capire se è attesa del lease,
-   CPU contesa o ricerca a freddo; solo dopo decidere un intervento.
-3. ~~**Fase 5 — VCN**~~: chiusa. PowerPlay di Apple spegne già il VCN a riposo (vedi sotto).
-4. **Fase 4** e **filtro allargato**: declassati. La fase 0 dice che scrittura e preparazione costano < 0,1 ms e che
-   un processo saltato risparmia ~1 ms, non ~10 come stimato prima.
+1. **Costo all'avvio del sistema** (sola misura, rischio nullo): nei primi minuti dopo il boot la ricerca display arriva
+   in media a 10–16 ms con picchi di secondi (cache FVRC vuota, carico ~25–50). È l'unico punto dove il kext costa
+   ancora in modo visibile. Leggere `NRedPhase*` subito dopo il login e dopo 5 minuti per separare la finestra di boot,
+   e capire se il tempo va nell'attesa del lease, nella CPU contesa o nella ricerca a freddo. Solo dopo decidere
+   se intervenire (es. riempire la FVRC prima, o non attendere il lease per i processi di sistema).
+2. **steve12311**: commento sulla PR #11 con la verifica su Renoir (testo preparato); eventualmente una nuova PR con
+   la fase 0 (`bddfaaf`) e il contatore VCN (`a34332d`), entrambi spenti di default.
+3. **Pulizia (ex fase 4)**, solo se si tocca comunque quel codice: `publish()` al posto di `setProp32` ripetuti
+   (`NRedDRMVideoPID`, `*DynamicRejected`). Guadagno trascurabile; pool di buffer e filtro allargato non valgono il rischio.
+4. **Punto aperto senza beneficio pratico:** l'UUID DriverKit visto in memoria (`E389CE92-…`) diverso da quello
+   del file su disco (fase 2).
+
+I boot-arg di diagnosi `-NRedPhaseTiming` e `-NRedVCNPowerTrace` restano attivi sul PC di riferimento per ricontrollare
+tempi e ciclo del VCN dopo gli aggiornamenti di macOS; costano qualche contatore per processo.
 
 ---
 
@@ -244,7 +249,7 @@ Ipotesi iniziale: per Renoir (SMU12) il kext invia solo i messaggi di accensione
 quindi il VCN non verrebbe mai spento. **L'ipotesi era sbagliata**: `smuInternalHwExit` riguarda l'uscita del driver,
 non lo spegnimento a riposo, che passa da PowerPlay.
 
-### Stato: chiusa (passo A, nessuna modifica di comportamento)
+### Stato: chiusa (`a34332d`, passo A, nessuna modifica di comportamento)
 
 - **Cosa c'è nei driver Apple** (`AMDRadeonX5000HWLibs`, macOS 26, letto dal kernel collection):
   `PSM_ReArbit` chiama `PHM_PowerGateVCN(hwmgr, gate, instance)` con gate=0 quando c'è attività video e gate=1
