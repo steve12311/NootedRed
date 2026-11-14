@@ -3,6 +3,8 @@
 // Build: clang -fobjc-arc -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework Foundation \
 //        tools/probe_vp9_decode.m -o build/vp9/probe_vp9_decode
 // Input: ffmpeg -i clip.webm -c copy -f ivf clip.ivf
+// VP9_DUMP=path writes the visible luma of each output frame, for comparison with a software decode.
+// VP9_INPROCESS=1 runs the decoder inside this process (VTApplyRestrictions), so it can be debugged with lldb.
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <Foundation/Foundation.h>
@@ -10,10 +12,13 @@
 #include <stdatomic.h>
 
 extern const CFStringRef kVTVideoDecoderSpecification_AllowVP9Decode __attribute__((weak_import));
+// Exported by VideoToolbox; bit 0 asks for video decoders in this process.
+extern OSStatus VTApplyRestrictions(uint32_t restrictions) __attribute__((weak_import));
 
 static atomic_uint okFrames, badFrames;
 static atomic_int  lastError;
 static uint64_t    digest = 1469598103934665603ULL;
+static FILE*       dump;    // VP9_DUMP=path: visible luma of every output frame, in output order
 
 static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags flags, CVImageBufferRef image,
                     CMTime pts, CMTime duration)
@@ -32,6 +37,7 @@ static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags f
     size_t         w = CVPixelBufferGetWidthOfPlane(image, 0), h = CVPixelBufferGetHeightOfPlane(image, 0);
     for (size_t y = 0; base && y < h; y++)
         for (size_t x = 0; x < w; x++) digest = (digest ^ base[y * stride + x]) * 1099511628211ULL;
+    for (size_t y = 0; dump && base && y < h; y++) fwrite(base + y * stride, 1, w, dump);
     CVPixelBufferUnlockBaseAddress(image, kCVPixelBufferLock_ReadOnly);
 }
 
@@ -42,6 +48,10 @@ int main(int argc, char** argv)
             fprintf(stderr, "usage: %s clip.ivf [maxFrames]\n", argv[0]);
             return 2;
         }
+        if (getenv("VP9_INPROCESS")) {
+            printf("VTApplyRestrictions(in process) = %d\n", VTApplyRestrictions ? (int)VTApplyRestrictions(1) : -1);
+        }
+        if (getenv("VP9_DUMP")) dump = fopen(getenv("VP9_DUMP"), "wb");
         NSData* file = [NSData dataWithContentsOfFile:@(argv[1])];
         const uint8_t* d = file.bytes;
         if (file.length < 32 || memcmp(d, "DKIF", 4) || memcmp(d + 8, "VP90", 4)) {
@@ -113,6 +123,7 @@ int main(int argc, char** argv)
         printf("frames sent %u, submit errors %u (first %d), decoded ok %u, bad %u (last %d), luma digest %016llx\n",
                sent, submitErrors, (int)firstSubmitError, atomic_load(&okFrames), atomic_load(&badFrames),
                atomic_load(&lastError), digest);
+        if (dump) fclose(dump);
         VTDecompressionSessionInvalidate(session);
         CFRelease(session);
         CFRelease(format);
