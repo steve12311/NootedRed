@@ -60,6 +60,7 @@ namespace UserPatchCoordinator
         UInt8       header[HeaderSize]{};
         bool        cacheRead{false};
         Participant display{}, video{};
+        Participant vp9{Outcome::Idle, nullptr};
 
         Transaction()                              = default;
         Transaction(const Transaction&)            = delete;
@@ -68,6 +69,7 @@ namespace UserPatchCoordinator
         {
             releaseProof(display.proof);
             releaseProof(video.proof);
+            releaseProof(vp9.proof);
         }
 
         // 参与者使用协调器已读的头；没有时（旧路径或读失败）自行读取。

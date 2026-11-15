@@ -31,6 +31,16 @@ jobs:
           python3 tools/test_fvrc_registry.py
           python3 tools/test_fvrc_hot_path.py
           python3 tools/test_fvrc_video.py
+      - name: Test experimental VP9
+        run: |
+          python3 tools/test_vp9_parser.py
+          python3 tools/test_vp9_dynamic.py
+          python3 tools/test_video_cache_dynamic.py --vp9 --sanitize
+          python3 tools/test_vp9_probe.py --offline
+          python3 tools/test_vp9_compare.py
+          python3 tools/test_vcn_native_load.py
+          python3 tools/test_phase_timing.py
+          python3 tools/test_vcn_power_trace.py
       - name: Test EC backlight service
         run: |
           python3 tools/test_ec_backlight_service.py

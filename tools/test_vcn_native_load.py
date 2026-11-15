@@ -22,7 +22,7 @@ def main():
     source = (ROOT / "NootedRed/VCN.cpp").read_text()
     assert re.search(r'\{"__ZN37AMDRadeonX5000_AMDGraphicsAccelerator5startEP9IOService",\s*acceleratorStart,', source)
     assert "OSKextLoadKextWithIdentifier" not in function(source, "void VCN::init()")
-    functions = "\n".join(function(source, p) for p in ["bool supported()", "bool acceleratorStart(", "bool VCN::ready()", "void VCN::init()"])
+    functions = "\n".join(function(source, p) for p in ["bool supported()", "void publishVP9Probe(", "bool acceleratorStart(", "bool VCN::ready()", "void VCN::init()"])
     fixture = (ROOT / "tools/fixtures/vcn-native-load.cpp.in").read_text()
     WORK.mkdir(parents=True, exist_ok=True)
     harness = WORK / "test-native-load.cpp"

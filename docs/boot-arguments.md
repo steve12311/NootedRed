@@ -44,6 +44,35 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 应用和 WindowServer 始终补丁。`-NRedPatchAllProcs` 关闭该过滤，所有进程照常补丁；
 判定规则与诊断见 [进程过滤与 FVRC 复用](process-filter-fvrc.md)。
 
+以下诊断参数默认关闭，只用于测量，不改变补丁或电源行为：
+
+| 参数 | 作用 | 结果 |
+| --- | --- | --- |
+| `-NRedPhaseTiming` | 共享缓存补丁分阶段计时 | `NRedPhase<阶段>AvgUs/MaxUs/Samples` |
+| `-NRedRejectTrace` | 记录前 32 次被拒绝的共享缓存（pid、名称、基址、UUID） | `dmesg` |
+| `-NRedVCNPowerTrace` | 统计 PowerPlay 对 VCN 的关断／开启请求，原函数照常执行 | `NRedVCNPG*` |
+
+实验性 VP9 使用 `-NRedVideoFix -NRedVP9Probe -NRedVP9`，默认关闭，仅 profile 0／8 位、最大 4096×4096。
+Darwin 23/24/25 共用动态核验和 COW 事务；UUID 用于诊断及计划身份，不作为兼容白名单。
+后端须匹配完整函数、外部引用、数据节、构造函数和虚函数槽位，未知实现拒绝写入。
+当前参考数据来自本机 macOS 26.7.3 / 25G342，详见 [VP9 动态适配与验收](vp9-dynamic.md)。
+
+`-NRedVP9Probe` 只控制能力发布：后端在至少一个进程中成功安装并恢复 RX 后，才发布
+`IOGVAXDecode`、`IOGVAVP9Decode`、`IOGVAVP9DecodeCapabilities`。
+单独设置探针、核验拒绝或安装失败时不声明可用 VP9；已发布的能力会在后端失败时撤回。
+`NRedVP9Probe`：1 已发布，0 属性写入失败，2 后端或 VCN 尚未就绪。
+`NRedVP9State`：1 已启用，2 缓存已核验，3 核验失败，4 写入失败，5 系统不支持，6 内存不足；
+实际安装另查 `NRedVP9Applied`／`NRedVP9Already`。
+超过尺寸上限及 profile 2（10 位）仍在创建会话时拒绝；驱动解码失败时返回错误，不输出未解码表面。
+
+诊断参数 `-NRedVP9Trace`（需同时设置 `-NRedVP9`）：VP9 后端以带标记的 `shared_region_check_np` 调用报告各步骤，
+内核只记录 `VTDecoderXPC*` 进程的调用并返回 `EINVAL`。每个代码的次数与最后一个值发布为 `NRedVP9T<nn>N`／
+`NRedVP9T<nn>V`，同时显示 `NRedVP9Trace=1`。
+
+`NRedVCNPGGated=1` 表示 VCN 当前已由 PowerPlay（`PhwRenoir_PowerGateVCN`，SMU 消息 `0xB`/`0xC`）关断；
+计数在下一次进程启动时发布到 ioreg。Darwin 23/24 仅记录请求和返回值，
+不读取未核验的 PowerPlay 对象布局；实际后端和关断状态显示为 Unknown。
+
 插件全局关闭 `-NRedOff`、调试参数及上游的 `AMDBacklight` 设置不在本次更名范围内；
 `AMDBacklight=0` 仍会阻止 EC 服务启动。
 

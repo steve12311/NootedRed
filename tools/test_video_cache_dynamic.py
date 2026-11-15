@@ -19,16 +19,41 @@ def main():
     boolean = WORK / 'stubs/libkern/c++'
     boolean.mkdir(parents=True, exist_ok=True)
     (boolean / 'OSBoolean.h').write_text('#pragma once\n#include <IOKit/IOUserClient.h>\n')
+    (stub / 'IOLocks.h').write_text('#pragma once\nstruct IOLock;\nstatic void IOLockLock(IOLock*);static void IOLockUnlock(IOLock*);\n')
+    (stub / 'IOLib.h').write_text('#pragma once\n#include <IOKit/IOLocks.h>\nstatic IOLock* IOLockAlloc();\n')
+    (WORK / 'stubs/NRed.hpp').write_text('#pragma once\n')
+    clock = WORK / 'stubs/kern'
+    clock.mkdir(exist_ok=True)
+    (clock / 'clock.h').write_text('#pragma once\ninline UInt64 mach_absolute_time(){return 1;}\ninline void absolutetime_to_nanoseconds(UInt64 a,UInt64* n){*n=a;}\n')
     util = WORK / 'stubs/Headers'
     util.mkdir(parents=True, exist_ok=True)
     (util / 'kern_util.hpp').write_text('#pragma once\n#include <IOKit/IOTypes.h>\n')
     source = (ROOT / 'NootedRed/UserVideoDecode.cpp').read_text()
     if '--baseline' in sys.argv:
         source = subprocess.check_output(['git','show','6c7b0804b5b115052fab5914eecfad7090b53eb1:NootedRed/UserVideoDecode.cpp'],cwd=ROOT,text=True)
-    body = re.split(r'namespace\s*\{', source, maxsplit=1)[1].split('}    // namespace', 1)[0]
+    body = re.split(r'namespace\s*\{', source, maxsplit=1)[1].rsplit('}    // namespace', 1)[0]
     body = with_memory_helpers(body)
     template = (ROOT / 'tools/fixtures/vcn-user-bridge.cpp.in').read_text()
     preamble = template
+    begin = preamble.index('namespace UserPatchCoordinator')
+    end = preamble.index('}    // namespace UserPatchCoordinator', begin) + len('}    // namespace UserPatchCoordinator')
+    preamble = preamble[:begin] + r'''
+#include <sys/errno.h>
+namespace UserPatchCoordinator {
+constexpr unsigned HeaderSize=104;
+enum class Outcome {Pending,Idle,Patched};
+struct Participant {Outcome outcome=Outcome::Pending;unsigned proofSites=0;};
+struct Transaction {Participant video,vp9;bool sharedHeader(UInt64&,UInt8*){return false;}};
+using PatchCallback=int(*)(void*,void*,int,Transaction&);
+inline bool deferModulePatches(){return false;}
+inline void clearVideo(){} inline void registerVideo(PatchCallback){}
+inline void forgetMap(void*){} inline bool processAllowed(void*){return true;}
+template<class T>void settlePatched(Participant& p,const T& plan){p.outcome=Outcome::Patched;p.proofSites=plan.siteCount();}
+}
+''' + preamble[end:]
+    preamble = preamble.replace('assert(strcmp(s,"-NRedVideoFix")==0||strcmp(s,"-NRedNoFVRC")==0);',
+                                'if(strcmp(s,"-NRedVideoFix")&&strcmp(s,"-NRedNoFVRC"))return false;')
+    preamble = preamble.replace('bool allocated(){return active;}', 'static bool vp9Ready=false;bool allocated(){return active;}void setVP9Ready(bool v){vp9Ready=v;}')
     preamble = preamble.replace('#include "UserVideoDecodeData.hpp"', '#include <vector>\n#include "UserVideoDecodeData.hpp"\n#include "UserVideoDecodeResolver.hpp"')
     preamble += '#include "user-cache-dynamic.hpp"\n'
     preamble = preamble.replace('#define IONew(T,N) (new T[N])\n#define IODelete(P,T,N) delete[] P', r'''
@@ -79,6 +104,14 @@ static kern_return_t vm_protect(vm_map_t,uint64_t a,unsigned,int setMax,int flag
  int value=flags&7;
  if(setMax){maxima[a]=value;protections[a]&=value;}else{protections[a]=value;maxima[a]|=value;}
  return 0;}
+#include <UserVP9DecodeResolver.hpp>
+#include <UserRejectedCaches.hpp>
+#include <UserPhaseTiming.hpp>
+namespace UserPhaseTiming {
+UInt8& enabledFlag(){static UInt8 f=0;return f;}
+Slot* slots(){static Slot v[PhaseCount]{};return v;}
+UInt32& publishTicket(){static UInt32 n=0;return n;}
+}
 BODY
 static int original(proc_t,SharedRegionCheckArgs*,int* value){assert(liveTransactions==0&&liveDynamicPlans==0);*value=123;return 0;}
 static int proc_pid(proc_t){return 217;}static void proc_name(int,char* name,int size){snprintf(name,size,"%s",drmClient?clientName:"VTDecoderXPC");}
@@ -221,6 +254,48 @@ int main(){
  assert(!UserCacheResolver::resolve(input,base,UserVideoDecodeData::ResolverImages,UserVideoDecodeData::ResolverFunctions,devicePatches,
  UserVideoDecodeData::ResolverLocations,plan.patches,&plan.original[0][0],&plan.patched[0][0],UserVideoDecodeData::MaxPatchSize));
  printf("PASS %u video dynamic bridge cases: four devices; shifted images/functions/GOT; cross-page rollback; content/metadata/target rejection\n",cases);
+}
+'''
+    if '--vp9' in sys.argv:
+        begin = harness.index('int main(){')
+        harness = harness[:begin] + r'''
+#include "vp9-cache-dynamic.hpp"
+int main(){
+ setup(0x1638);vp9Cache();cleanBlocks=blocks;darwinMajor=25;
+ static UserVP9DecodeResolver::Plan resolved;
+ UserSharedCache::Input input{reader,{}};UInt8 scan[UserSharedCache::Input::ScanSize];input.scanBuffer=scan;
+ assert(UserVP9DecodeResolver::resolve(input,base,resolved));
+ pages(resolved.patches,VP9::SiteCount);
+ VP9::enabled=true;VP9::lock=IOLockAlloc();VP9::plan=IONew(UserVP9DecodeResolver::Plan,1);
+ UInt8 uuid[16];assert(reader(base+88,uuid,16)==0);
+ auto initial=blocks;
+ UserPatchCoordinator::Participant first;
+ failedProtect=1;
+ VP9::install(map(nullptr),base,uuid,&first);
+ assert(first.outcome==UserPatchCoordinator::Outcome::Pending&&!VCN::vp9Ready&&blocks==initial);
+ failedProtect=0;
+ UserPatchCoordinator::Participant installed;
+ VP9::install(map(nullptr),base,uuid,&installed);
+ assert(installed.outcome==UserPatchCoordinator::Outcome::Patched&&installed.proofSites==VP9::SiteCount&&VCN::vp9Ready);
+ rx();auto after=writes;
+ UserPatchCoordinator::Participant already;
+ VP9::install(map(nullptr),base,uuid,&already);
+ assert(already.outcome==UserPatchCoordinator::Outcome::Patched&&writes==after&&VCN::vp9Ready);
+ const auto& site=resolved.patches[0];UInt8 corrupt=site.patched[site.size-1]^1;
+ put(base+site.offset+site.size-1,&corrupt,1);
+ UserPatchCoordinator::Participant mixed;
+ VP9::install(map(nullptr),base,uuid,&mixed);
+ assert(mixed.outcome==UserPatchCoordinator::Outcome::Pending&&!VCN::vp9Ready&&writes==after);
+ put(base+site.offset,site.patched,site.size);
+ uuid[0]^=1;UserPatchCoordinator::Participant foreign;
+ VP9::install(map(nullptr),base,uuid,&foreign);
+ assert(foreign.outcome==UserPatchCoordinator::Outcome::Pending&&!VCN::vp9Ready&&writes==after);
+ // 同一已解析配置恢复干净页面：部分写入必须回滚，并停止本次启动的 VP9 写入。
+ blocks=initial;failWrite=writes+1;UserPatchCoordinator::Participant failed;
+ VP9::install(map(nullptr),base,VP9::resolvedUUID,&failed);
+ assert(failed.outcome==UserPatchCoordinator::Outcome::Pending&&blocks==initial&&!VCN::vp9Ready);
+ assert(VP9::state==VP9::State::Failed);rx();
+ puts("PASS VP9 install: prewrite retry, full proof, already patched, mixed bytes/UUID rejection, rollback and capability withdrawal");
 }
 '''
     if LEGACY:

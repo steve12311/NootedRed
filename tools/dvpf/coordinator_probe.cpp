@@ -309,3 +309,7 @@ int main()
                 "64-slot saturation and wakeup; nested fail-closed; single-module fallback\n");
     return 0;
 }
+
+// Fase 5, passo A: definita in HWLibs.cpp nel kext; il probe non ha PowerPlay.
+#include <VCNPowerTrace.hpp>
+void VCNPowerTrace::publishPending() {}

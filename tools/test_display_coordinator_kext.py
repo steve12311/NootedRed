@@ -46,6 +46,7 @@ public:
 struct NRed { static NRed& singleton(); void setProp32(const char*,UInt32); };
 ''',
         'kern/task.h': '#pragma once\nusing task_t=void*; task_t current_task();\n',
+        'kern/clock.h': '#pragma once\n#include <IOKit/IOTypes.h>\ninline UInt64 mach_absolute_time(){static UInt64 t=0;return t+=1000;}\ninline void absolutetime_to_nanoseconds(UInt64 a,UInt64* ns){*ns=a;}\n',
         'mach/vm_map.h': '#pragma once\nusing vm_map_t=void*;\n',
         'sys/proc.h': '#pragma once\nusing proc_t=void*;\n',
     }
@@ -97,6 +98,7 @@ void* displayState(unsigned); void* videoState(unsigned);
 unsigned displayCalls=0,videoCalls=0;
 unsigned long long displayBase=0,videoBase=0,displayProofAddress=0x20100,videoProofAddress=0x20200;
 bool displayPatched=false,videoPatched=false,displayIdle=false,videoIdle=false;
+static unsigned vp9Stage=0;
 static unsigned reads=0,allocations=0,frees=0;
 static bool memoryOK=true,destroyOnRead=false;
 static unsigned long long failRead=0;
@@ -270,6 +272,33 @@ int main(int argc,char** argv){
     assert(hook(current_task(),&args,&value)==0 && displayCalls==idleStart+3 && videoCalls==idleStart+3);
     displayIdle=videoIdle=false;
     assert(allocations==frees);
+    // VP9 未完成时必须重试；完成后全部站点仍参与跳过判定。
+    registerVideo([](void*,void*,int result,Transaction& tx){
+        ++videoCalls;
+        static const unsigned char original[64]={},replacement[64]={0x90,0xC3,0xCC,0xCC};
+        struct Site{unsigned long long address;unsigned size;const unsigned char*original,*replacement;};
+        struct Plan{Site value;unsigned siteCount()const{return 1;}const Site&site(unsigned)const{return value;}};
+        settlePatched(tx.video,Plan{{videoProofAddress,64,original,replacement}});
+        if(vp9Stage==1)tx.vp9.outcome=Outcome::Pending;
+        if(vp9Stage==2)settlePatched(tx.vp9,Plan{{0x20400,64,original,replacement}});
+        return result;
+    });
+    patchMemory(0x20400);
+    vp9Stage=1;
+    const auto pendingStart=videoCalls;
+    assert(hook(current_task(),&args,&value)==0);
+    assert(hook(current_task(),&args,&value)==0 && videoCalls==pendingStart+2);
+    vp9Stage=2;
+    assert(hook(current_task(),&args,&value)==0 && videoCalls==pendingStart+3);
+    assert(hook(current_task(),&args,&value)==0 && videoCalls==pendingStart+3);
+    memory[0x43f]^=1;
+    assert(hook(current_task(),&args,&value)==0 && videoCalls==pendingStart+4);
+    patchMemory(0x20400);failRead=0x20400;
+    assert(hook(current_task(),&args,&value)==0 && videoCalls==pendingStart+5);
+    failRead=0;
+    assert(hook(current_task(),&args,&value)==0 && videoCalls==pendingStart+5);
+    forgetMap(reinterpret_cast<void*>(0x3));
+    assert(allocations==frees);
     // 所有站点的原始字节与替换字节相同、空计划、超大补丁和越界地址都不能生成证明。
     {
         unsigned char original[512]{},replacement[512]{};replacement[511]=1;
@@ -296,6 +325,9 @@ int main(int argc,char** argv){
 
 def main():
     write_sources()
+    # Fase 5, passo A: il coordinatore pubblica i contatori VCN definiti in HWLibs.cpp; qui basta uno stub.
+    main_cpp = WORK / 'main.cpp'
+    main_cpp.write_text('#include <VCNPowerTrace.hpp>\nvoid VCNPowerTrace::publishPending() {}\n' + main_cpp.read_text())
     for mode, flags in [('normal', ['-O2']),
                         ('kext-debug', ['-O0', '-mkernel', '-fapple-kext', '-fvisibility-inlines-hidden']),
                         ('kext-release', ['-O3', '-mkernel', '-fapple-kext', '-fvisibility-inlines-hidden']),
