@@ -1,10 +1,9 @@
-// Fase V1 del piano VP9 (-NRedVP9Probe): annuncia il VP9 a VideoToolbox e AppleGVA, senza backend.
+// -NRedVP9Probe：仅在 VP9 后端已安装并恢复 RX 权限后发布解码能力。
 // Pubblica sull'acceleratore le tre chiavi che servono (vedi docs/vp9-v0-findings.md):
 //   IOGVAXDecode                  -> carica il plugin AppleGVAVPXDecoder (CMDependencies)
 //   IOGVAVP9Decode                -> AppleGVA trova il codec VP9 della GPU
 //   IOGVAVP9DecodeCapabilities    -> AppleGVA legge i profili (VTSupportedProfileArray)
-// Il driver AMD non sa ancora decodificare il VP9: la sessione deve fallire in modo pulito alla creazione del
-// decoder. Per questo la sonda resta spenta di default: con le chiavi pubblicate i browser sceglierebbero il VP9.
+// 后端不可用时撤回能力键，让客户端继续使用原有解码选择。
 // Tutto o niente: se una chiave non si scrive, quelle già scritte vengono tolte.
 #pragma once
 #include <IOKit/IOTypes.h>
@@ -36,7 +35,12 @@ namespace VP9Probe
     template<typename Sink>
     Status publish(Sink& sink, bool eligible)
     {
-        if (!eligible) { return NotEligible; }
+        if (!eligible) {
+            sink.remove(CapabilitiesKey);
+            sink.remove(DecodeKey);
+            sink.remove(PluginKey);
+            return NotEligible;
+        }
         if (!sink.string(PluginKey, PluginValue)) { return Failed; }
         if (!sink.string(DecodeKey, DecodeValue)) {
             sink.remove(PluginKey);

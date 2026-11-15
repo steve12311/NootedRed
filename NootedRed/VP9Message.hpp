@@ -147,9 +147,12 @@ class Session {
     // Loop filter deltas and segmentation data persist until the bitstream changes them (Mesa's VA frontend).
     int8_t refDeltas[4] {1, 0, -1, -1}, modeDeltas[2] {};
     uint8_t absDelta {0}, treeProbs[7] {}, predProbs[3] {};
-    bool altQEnabled[8] {}, altLfEnabled[8] {}, refEnabled[8] {}, skipEnabled[8] {};
-    int16_t altQ[8] {}, altLf[8] {};
-    uint8_t refValue[8] {};
+    struct SegmentFeatures
+    {
+        bool    altQEnabled[8], altLfEnabled[8], refEnabled[8], skipEnabled[8];
+        int16_t altQ[8], altLf[8];
+        uint8_t refValue[8];
+    } features{};
     uint16_t slotWidth[8] {}, slotHeight[8] {};
     uint16_t prevWidth {0}, prevHeight {0};
     bool prevShowFrame {false};
@@ -238,6 +241,8 @@ class Session {
         if (h.frameType == 0 || h.intraOnly || h.errorResilient) {
             refDeltas[0] = 1, refDeltas[1] = 0, refDeltas[2] = -1, refDeltas[3] = -1;
             modeDeltas[0] = modeDeltas[1] = 0;
+            absDelta                      = 0;
+            features                      = {};
         }
         if ((h.modeRefDeltaEnabled = static_cast<uint8_t>(br.u(1))) &&
             (h.modeRefDeltaUpdate = static_cast<uint8_t>(br.u(1)))) {
@@ -263,10 +268,10 @@ class Session {
             if ((h.segUpdateData = static_cast<uint8_t>(br.u(1)))) {
                 absDelta = static_cast<uint8_t>(br.u(1));
                 for (int i = 0; i < 8; i++) {
-                    if ((altQEnabled[i] = br.u(1))) { altQ[i] = static_cast<int16_t>(br.s(8)); }
-                    if ((altLfEnabled[i] = br.u(1))) { altLf[i] = static_cast<int16_t>(br.s(6)); }
-                    if ((refEnabled[i] = br.u(1))) { refValue[i] = static_cast<uint8_t>(br.u(2)); }
-                    skipEnabled[i] = br.u(1);
+                    if ((features.altQEnabled[i] = br.u(1))) { features.altQ[i] = static_cast<int16_t>(br.s(8)); }
+                    if ((features.altLfEnabled[i] = br.u(1))) { features.altLf[i] = static_cast<int16_t>(br.s(6)); }
+                    if ((features.refEnabled[i] = br.u(1))) { features.refValue[i] = static_cast<uint8_t>(br.u(2)); }
+                    features.skipEnabled[i] = br.u(1);
                 }
             }
         }
@@ -282,7 +287,11 @@ class Session {
 
         h.compressedHeaderSize = static_cast<uint16_t>(br.u(16));
         h.uncompressedHeaderSize = static_cast<uint32_t>(br.bytesUsed());
-        if (br.overrun() || !h.width || !h.height) { return Status::Malformed; }
+        if (br.overrun() || !h.width || !h.height || !h.compressedHeaderSize
+            || h.compressedHeaderSize > size - h.uncompressedHeaderSize)
+        {
+            return Status::Malformed;
+        }
         return Status::Ok;
     }
 
@@ -380,11 +389,11 @@ class Session {
         uint8_t featureMask[8] {};
         if (h.segEnabled) {
             for (int i = 0; i < 8; i++) {
-                featureData[i][0] = altQ[i];
-                featureData[i][1] = altLf[i];
-                featureData[i][2] = refValue[i];
-                featureMask[i] = static_cast<uint8_t>(altQEnabled[i] | altLfEnabled[i] << 1 | refEnabled[i] << 2 |
-                                                      skipEnabled[i] << 3);
+                featureData[i][0] = features.altQ[i];
+                featureData[i][1] = features.altLf[i];
+                featureData[i][2] = features.refValue[i];
+                featureMask[i]    = static_cast<uint8_t>(features.altQEnabled[i] | features.altLfEnabled[i] << 1
+                                                         | features.refEnabled[i] << 2 | features.skipEnabled[i] << 3);
             }
         }
         const int32_t scale = 1 << (h.filterLevel >> 5);

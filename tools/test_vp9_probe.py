@@ -3,6 +3,7 @@ from pathlib import Path
 import plistlib
 import shutil
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / 'build/vp9-probe'
@@ -23,7 +24,8 @@ def check_system_names():
 
 
 def main():
-    check_system_names()
+    if '--offline' not in sys.argv:
+        check_system_names()
     stubs = WORK / 'stubs/IOKit'
     stubs.mkdir(parents=True, exist_ok=True)
     (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\n#include <cstddef>\nusing UInt32=uint32_t;\n')
@@ -54,6 +56,8 @@ int main(){
     {FakeSink s;assert(publish(s,true)==Published);
      assert(s.strings["IOGVAXDecode"]=="2"&&s.strings["IOGVAVP9Decode"]=="1");
      assert(s.dicts["IOGVAVP9DecodeCapabilities"]==std::vector<UInt32>{0});}
+    {FakeSink s;assert(publish(s,true)==Published);
+     assert(publish(s,false)==NotEligible&&s.empty());}
     // Ogni errore toglie le chiavi già scritte.
     for(const char* k:{"IOGVAXDecode","IOGVAVP9Decode","IOGVAVP9DecodeCapabilities"}){
         FakeSink s;s.failOn=k;assert(publish(s,true)==Failed&&s.empty());}
@@ -65,7 +69,8 @@ int main(){
                     '-I' + str(WORK / 'stubs'), '-I' + str(ROOT / 'NootedRed'), str(source), '-o', str(exe)],
                    check=True, timeout=120)
     subprocess.run([str(exe)], check=True, timeout=60)
-    print('PASS VP9 probe: key names match AppleGVAVPXDecoder and AppleGVA on this system')
+    if '--offline' not in sys.argv:
+        print('PASS VP9 probe: key names match AppleGVAVPXDecoder and AppleGVA on this system')
 
 
 if __name__ == '__main__':

@@ -52,24 +52,26 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 | `-NRedRejectTrace` | 记录前 32 次被拒绝的共享缓存（pid、名称、基址、UUID） | `dmesg` |
 | `-NRedVCNPowerTrace` | 统计 PowerPlay 对 VCN 的关断／开启请求，原函数照常执行 | `NRedVCNPG*` |
 
-实验参数 `-NRedVP9Probe`（VP9 计划 V1 阶段，需同时设置 `-NRedVideoFix`）：VCN 桥接就绪后在加速器上发布
-`IOGVAXDecode`、`IOGVAVP9Decode`、`IOGVAVP9DecodeCapabilities`（仅 profile 0），结果见 `NRedVP9Probe`
-（1 已发布，0 写入失败，2 不满足条件）。浏览器会因此改选 VP9：若未同时设置 `-NRedVP9`，驱动没有 VP9 解码后端，
-视频无法播放。两者同时设置时，Chrome 和 Safari 在 YouTube 上使用 VP9 硬件解码（V5 测试中）。
-只在测试时开启，见 [VP9 硬解 V0 结论](vp9-v0-findings.md)。
+实验性 VP9 使用 `-NRedVideoFix -NRedVP9Probe -NRedVP9`，默认关闭，仅 profile 0／8 位、最大 4096×4096。
+Darwin 23/24/25 共用动态核验和 COW 事务；UUID 用于诊断及计划身份，不作为兼容白名单。
+后端须匹配完整函数、外部引用、数据节、构造函数和虚函数槽位，未知实现拒绝写入。
+当前参考数据来自本机 macOS 26.7.3 / 25G342，详见 [VP9 动态适配与验收](vp9-dynamic.md)。
 
-实验参数 `-NRedVP9`（VP9 计划 V3 阶段，仅 macOS 26 且共享缓存 UUID 为 `31374756…16a1`，需同时设置 `-NRedVideoFix`）：
-视频补丁安装后，在同一进程的 AMD 视频驱动中写入 VP9 解码后端（复用 AV1 区域，profile 0／8 位）。状态见
-`NRedVP9State`（1 已启用，2 缓存已核验，3 缓存被拒，4 写入失败，5 系统不支持，6 内存不足）及
-`NRedVP9Applied`／`NRedVP9Already`。真机上 8 位测试片段（含 1080p、4096x2160 及 5 分钟长片段）的亮度和色度与 ffmpeg 逐位一致；超过 4096 的尺寸在创建会话时被拒绝（`-12907`），驱动解码失败的帧报告为错误而非输出；profile 2（10 位）在创建会话时被拒绝（`-12907`）。
-浏览器测试（V5）可用 `tools/monitor_vp9_browser.py` 记录解码器活动。
+`-NRedVP9Probe` 只控制能力发布：后端在至少一个进程中成功安装并恢复 RX 后，才发布
+`IOGVAXDecode`、`IOGVAVP9Decode`、`IOGVAVP9DecodeCapabilities`。
+单独设置探针、核验拒绝或安装失败时不声明可用 VP9；已发布的能力会在后端失败时撤回。
+`NRedVP9Probe`：1 已发布，0 属性写入失败，2 后端或 VCN 尚未就绪。
+`NRedVP9State`：1 已启用，2 缓存已核验，3 核验失败，4 写入失败，5 系统不支持，6 内存不足；
+实际安装另查 `NRedVP9Applied`／`NRedVP9Already`。
+超过尺寸上限及 profile 2（10 位）仍在创建会话时拒绝；驱动解码失败时返回错误，不输出未解码表面。
 
 诊断参数 `-NRedVP9Trace`（需同时设置 `-NRedVP9`）：VP9 后端以带标记的 `shared_region_check_np` 调用报告各步骤，
 内核只记录 `VTDecoderXPC*` 进程的调用并返回 `EINVAL`。每个代码的次数与最后一个值发布为 `NRedVP9T<nn>N`／
 `NRedVP9T<nn>V`，同时显示 `NRedVP9Trace=1`。
 
 `NRedVCNPGGated=1` 表示 VCN 当前已由 PowerPlay（`PhwRenoir_PowerGateVCN`，SMU 消息 `0xB`/`0xC`）关断；
-计数在下一次进程启动时发布到 ioreg。
+计数在下一次进程启动时发布到 ioreg。Darwin 23/24 仅记录请求和返回值，
+不读取未核验的 PowerPlay 对象布局；实际后端和关断状态显示为 Unknown。
 
 插件全局关闭 `-NRedOff`、调试参数及上游的 `AMDBacklight` 设置不在本次更名范围内；
 `AMDBacklight=0` 仍会阻止 EC 服务启动。

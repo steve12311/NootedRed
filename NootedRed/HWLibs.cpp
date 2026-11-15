@@ -762,6 +762,7 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
     // Solo osservazione e mai fatale: se qualcosa non si risolve si prosegue senza traccia.
     if (checkKernelArgument("-NRedVCNPowerTrace")) {
         auto& trace         = vcnPowerTrace();
+        trace.layoutVerified = currentKernelVersion().majorMatches(MACOS_26);
         trace.renoirBackend = reinterpret_cast<void*>(patcher.solveSymbol(id, "_PhwRenoir_PowerGateVCN", slide, size, true));
         patcher.clearError();
         trace.swSmuBackend = reinterpret_cast<void*>(patcher.solveSymbol(id, "_Phw_SwSmu_PowerGateVcn", slide, size, true));
@@ -770,7 +771,13 @@ void X5000HWLibs::processKext(KernelPatcher& patcher, const size_t id, const mac
         KernelPatcher::RouteRequest request{"_PHM_PowerGateVCN", wrapPhmPowerGateVCN, trace.original};
         // Salto corto (5-6 byte): copia solo `push rbp; mov rbp, rsp; test rdi, rdi` nel trampolino, senza il
         // `je` relativo che segue (un salto lungo da 14 byte lo copierebbe con la destinazione sbagliata).
-        if (patcher.routeMultipleShort(id, &request, 1, slide, size)) {
+        constexpr UInt8 prologue[] = {0x55, 0x48, 0x89, 0xE5, 0x48, 0x85, 0xFF};
+        const auto      target     = patcher.solveSymbol(id, "_PHM_PowerGateVCN", slide, size, true);
+        patcher.clearError();
+        if (target != 0 && size >= sizeof(prologue) && target >= slide && target - slide <= size - sizeof(prologue)
+            && memcmp(reinterpret_cast<const void*>(target), prologue, sizeof(prologue)) == 0
+            && patcher.routeMultipleShort(id, &request, 1, slide, size))
+        {
             NRed::singleton().setProp32("NRedVCNPowerTrace", trace.renoirBackend ? 1 : 2);
         }
         else {

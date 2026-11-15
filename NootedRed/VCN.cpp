@@ -14,6 +14,7 @@
 #include <libkern/OSKextLib.h>
 #include <libkern/c++/OSArray.h>
 #include <libkern/c++/OSDictionary.h>
+#include <libkern/c++/OSIterator.h>
 #include <libkern/c++/OSMetaClass.h>
 #include <libkern/c++/OSNumber.h>
 
@@ -45,6 +46,7 @@ namespace
                                        "IAMDHWChannel"};
     constexpr unsigned    lengths[] = {37, 35, 30, 28};
     UInt32                hardwareInitCount{0};
+    bool                  vp9BackendReady{false};
 
     bool supported()
     {
@@ -78,9 +80,14 @@ namespace
     {
         if (!checkKernelArgument(VP9Probe::BootArg)) { return; }
         VP9ServiceSink sink{static_cast<IOService*>(self)};
-        const auto     status = VP9Probe::publish(sink, started && VCN::ready());
-        NRed::singleton().setProp32(VP9Probe::StatusKey, status);
-        SYSLOG("VCN", "VP9 probe status=%u", status);
+        bool           available;
+        do {
+            available = __atomic_load_n(&vp9BackendReady, __ATOMIC_ACQUIRE);
+            const auto status =
+                VP9Probe::publish(sink, started && VCN::ready() && checkKernelArgument("-NRedVP9") && available);
+            NRed::singleton().setProp32(VP9Probe::StatusKey, status);
+        }
+        while (available != __atomic_load_n(&vp9BackendReady, __ATOMIC_ACQUIRE));
     }
 
     bool acceleratorStart(void* self, IOService* provider)
@@ -293,6 +300,25 @@ namespace
     }
 
 }    // namespace
+
+void VCN::setVP9Ready(const bool available)
+{
+    const bool previous = __atomic_exchange_n(&vp9BackendReady, available, __ATOMIC_ACQ_REL);
+    if (previous == available || !checkKernelArgument(VP9Probe::BootArg)) { return; }
+    auto* matching = IOService::serviceMatching("AMDRadeonX5000_AMDGraphicsAccelerator");
+    auto* services = matching ? IOService::getMatchingServices(matching) : nullptr;
+    OSSafeReleaseNULL(matching);
+    if (!services) { return; }
+    while (auto* service = OSDynamicCast(IOService, services->getNextObject())) {
+        auto* pci = OSDynamicCast(IOPCIDevice, service->getProvider());
+        if (pci && WIOKit::readPCIConfigValue(pci, WIOKit::kIOPCIConfigVendorID) == 0x1002
+            && WIOKit::readPCIConfigValue(pci, WIOKit::kIOPCIConfigDeviceID) == NRed::singleton().getDeviceID())
+        {
+            publishVP9Probe(service, true);
+        }
+    }
+    services->release();
+}
 
 void VCN::init()
 {

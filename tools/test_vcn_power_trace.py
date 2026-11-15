@@ -32,7 +32,7 @@ static void out(const char* k,UInt32 v){props[k]=v;++writes;}
 static void setBackend(void* fn){std::memcpy(hwmgr+BackendOffset,&fn,sizeof(fn));}
 int main(){
     UInt8* data=renoirData;std::memcpy(hwmgr+BackendDataOffset,&data,sizeof(data));
-    State s{};s.original=renoirGate;s.renoirBackend=reinterpret_cast<void*>(renoirGate);
+    State s{};s.original=renoirGate;s.renoirBackend=reinterpret_cast<void*>(renoirGate);s.layoutVerified=true;
     // Nessuna chiamata: niente da pubblicare.
     publish(s,out);assert(writes==0);
     // Spegnimento: argomenti e risultato passano invariati, stato letto dopo la chiamata.
@@ -53,7 +53,11 @@ int main(){
     // Nessun backend: PHM risponde OK senza fare nulla.
     setBackend(nullptr);call(s,hwmgr,1,0);publish(s,out);
     assert(props["NRedVCNPGBackend"]==1&&props["NRedVCNPGGateCalls"]==3);
-    puts("PASS VCN power trace: passthrough, counters, backend check, publish only on change");
+    // 未验证布局时只计数，不能读取硬编码的对象偏移。
+    State unknown{};unknown.original=otherGate;
+    assert(call(unknown,reinterpret_cast<void*>(1),0,0)==ResultOK);
+    assert(unknown.backend==0&&unknown.gated==Unknown&&unknown.ungateCalls==1);
+    puts("PASS VCN power trace: passthrough, counters, backend check, unknown-layout safety, publish only on change");
 }
 ''')
     exe = WORK / 'test'

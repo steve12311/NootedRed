@@ -30,12 +30,14 @@ void nrSetRefCon(void *context, void *refCon, void *texture, void *command);
 }
 
 // No libc in the driver's text: the compiler may still emit these for struct copies and zeroing.
-extern "C" void *memset(void *dst, int value, size_t size) {
+extern "C" __attribute__((section("__TEXT,__nrhelpers"))) void* memset(void* dst, int value, size_t size)
+{
     void *ret = dst;
     asm volatile("rep stosb" : "+D"(dst), "+c"(size) : "a"(value) : "memory");
     return ret;
 }
-extern "C" void *memcpy(void *dst, const void *src, size_t size) {
+extern "C" __attribute__((section("__TEXT,__nrhelpers"))) void* memcpy(void* dst, const void* src, size_t size)
+{
     void *ret = dst;
     asm volatile("rep movsb" : "+D"(dst), "+S"(src), "+c"(size) : : "memory");
     return ret;
@@ -51,7 +53,8 @@ enum TraceCode : uint32_t {
     TraceCreate = 1, TraceCreateResult, TraceDpbSize, TraceContextSize, TraceInitContext, TraceTargetArea,
     TraceBitstream, TraceMessage, TraceDecodeEntry, TraceDecodeResult, TraceDecoderResult
 };
-__attribute__((noinline)) void trace(uint32_t code, uint64_t value) {
+__attribute__((noinline, section("__TEXT,__nrhelpers"))) void trace(uint32_t code, uint64_t value)
+{
     uint64_t arg = (0x5639ULL << 48) | (static_cast<uint64_t>(code) << 40) | (value & 0xFFFFFFFFFFULL);
     asm volatile("syscall" : "+D"(arg) : "a"(0x2000126) : "rcx", "rdx", "r11", "memory", "cc");
 }
@@ -201,7 +204,8 @@ extern "C" uint32_t vp9CalculateContextSize(void *) {
 }
 
 //! initHWContext: called by VADecoder when it (re)allocates the context buffer.
-extern "C" void vp9InitHWContext(void *processor) {
+extern "C" __attribute__((section("__TEXT,__nrhelpers"))) void vp9InitHWContext(void* processor)
+{
     void *session = field<void *>(field<void *>(processor, Proc::Decoder), Dec::Session);
     auto *cpu = field<uint8_t *>(field<void *>(session, Sess::Context), Tex::Cpu);
     memset(cpu, 0, field<uint32_t>(session, Sess::ContextSize));

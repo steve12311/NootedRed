@@ -38,6 +38,7 @@ namespace VCNPowerTrace
         GateFn original{nullptr};
         void*  renoirBackend{nullptr};
         void*  swSmuBackend{nullptr};
+        bool   layoutVerified{false};
         UInt32 gateCalls{0}, ungateCalls{0}, failures{0};
         UInt32 lastResult{Unknown}, lastGate{Unknown}, backend{0}, gated{Unknown};
         UInt32 version{0}, published{0};
@@ -64,7 +65,7 @@ namespace VCNPowerTrace
     inline UInt32 call(State& state, void* const hwmgr, const UInt32 gate, const UInt32 instance)
     {
         const auto result  = state.original(hwmgr, gate, instance);
-        const auto backend = classify(state, hwmgr);
+        const auto backend = state.layoutVerified ? classify(state, hwmgr) : Backend::Unknown;
         const auto gated   = backend == Backend::Renoir ? renoirGated(hwmgr) : Unknown;
         __atomic_add_fetch(gate != 0 ? &state.gateCalls : &state.ungateCalls, 1U, __ATOMIC_RELAXED);
         if (result != ResultOK) { __atomic_add_fetch(&state.failures, 1U, __ATOMIC_RELAXED); }

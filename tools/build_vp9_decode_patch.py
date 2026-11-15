@@ -17,12 +17,12 @@ import sys
 
 from audit_video_driver import symbols
 from cache_resolver_data import ResolverData
-from metal_cache import CacheReader, array
+from metal_cache import CACHE, CacheReader, array
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vp9/backend"
 IMAGE = "/System/Library/Extensions/AMDRadeonVADriver2.bundle/Contents/MacOS/AMDRadeonVADriver2"
-DEFAULT_UUID = "3137475689b434e8a34f56c5d57216a1"
+DEFAULT_UUID = "5a3da575f02e33dc9b14f663050011e6"
 MAX_SITE = 448
 CFLAGS = ["-std=c++17", "-target", "x86_64-apple-macos13", "-Oz", "-ffreestanding", "-fno-exceptions", "-fno-rtti",
           "-fno-stack-protector", "-fno-asynchronous-unwind-tables", "-fvisibility=hidden", "-Wall", "-Wextra",
@@ -153,6 +153,7 @@ def rel32(source, size, target):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--uuid", default=DEFAULT_UUID, help="UUID of the reference shared cache")
+    parser.add_argument("--cache", type=Path, default=CACHE, help="只读参考共享缓存目录")
     parser.add_argument("--check", action="store_true", help="verify the checked-in header instead of writing it")
     args = parser.parse_args()
     WORK.mkdir(parents=True, exist_ok=True)
@@ -162,7 +163,7 @@ def main():
                    check=True, timeout=120)
     sections, syms = read_object(obj)
 
-    cache = CacheReader(uuid=args.uuid)
+    cache = CacheReader(args.cache, uuid=args.uuid)
     try:
         lines = (cache.directory / "dyld_shared_cache_x86_64h.map").read_text().splitlines()
         base = int(lines[lines.index(IMAGE) + 1].split()[1], 16)
@@ -201,16 +202,21 @@ def main():
         init_context = names[SLOTS[0x70][0]]
         code_start = (message_fields + 5 + 15) & ~15
         data_start = (init_context + 5 + 15) & ~15
+        helper_start = (names[SLOTS[0x78][0]] + 5 + 15) & ~15
         placement, cursor = {}, code_start
         for s in sections:
             if s["name"] == "__TEXT,__text":
                 placement[s["name"]] = cursor
                 cursor += s["size"]
+            elif s["name"] == "__TEXT,__nrhelpers":
+                if helper_start + s["size"] > message_fields:
+                    raise ValueError("backend helpers exceed the replaced bitstream method")
+                placement[s["name"]] = helper_start
         if cursor > init_context:
             raise ValueError(f"backend code too large: {cursor - code_start} bytes, room {init_context - code_start}")
         cursor = data_start
         for s in sections:
-            if s["name"] != "__TEXT,__text" and s["size"]:
+            if s["name"] not in ("__TEXT,__text", "__TEXT,__nrhelpers") and s["size"]:
                 cursor = (cursor + s["align"] - 1) & ~(s["align"] - 1)
                 placement[s["name"]] = cursor
                 cursor += s["size"]
@@ -316,6 +322,52 @@ def main():
         region_index = len(resolver.functions)
         resolver.functions.append((image, start - image_base, region, original_refs, patched_refs))
 
+        # 后端直接访问的对象布局和虚函数调用也必须来自完整、已匹配的实现。
+        abi_names = set(EXTERNALS.values()) | {
+            "__ZN25AvdVcnAv1DecDataProcessorC2EP9VADecoder",
+            "__ZN19DecodeDataProcessorC2EP9VADecoder",
+            "__ZN9VADecoderC2Ev", "__ZN12VAVcnDecoderC2Ev",
+            "__ZN9VADecoder13DecodePictureEPvP15VAVendorTextureS2_",
+        }
+        for name in sorted(abi_names, key=lambda n: names[n]):
+            address, size = extent(name)
+            if any(image_base + rva <= address < image_base + rva + len(code)
+                   for _, rva, code, _, _ in resolver.functions):
+                continue
+            if 'C2' in name and names.get(name.replace('C2', 'C1')) == address + size:
+                size += extent(name.replace('C2', 'C1'))[1]
+            while size < 32:
+                following = address + size
+                size += ordered[ordered.index(following) + 1] - following
+            native = cache.read(address, size)
+            resolver.add(address, native, native)
+
+        abi_slots = []
+        for constructor, table_name, slots in (
+            ("__ZN25AvdVcnAv1DecDataProcessorC2EP9VADecoder", "__ZTV25AvdVcnAv1DecDataProcessor",
+             range(0x20, 0x88, 8)),
+            ("__ZN9VADecoderC2Ev", "__ZTV9VADecoder", (0x58,)),
+            ("__ZN12VAVcnDecoderC2Ev", "__ZTV12VAVcnDecoder", (0x58,)),
+        ):
+            table = names[table_name]
+            ctor_index = next(i for i, (_, rva, code, _, _) in enumerate(resolver.functions)
+                              if image_base + rva <= names[constructor] < image_base + rva + len(code))
+            ctor = resolver.functions[ctor_index]
+            field = next(off for off, img, rva, indirect in ctor[3]
+                         if not indirect and resolver.images[img][1] + rva == table + 0x10)
+            for slot in slots:
+                destination = resolver.pointer(table + slot)
+                target_index = next((i for i, (_, rva, code, _, _) in enumerate(resolver.functions)
+                                     if image_base + rva <= destination < image_base + rva + len(code)), None)
+                if target_index is None:
+                    size = ordered[ordered.index(destination) + 1] - destination
+                    while size < 32:
+                        size += ordered[ordered.index(destination + size) + 1] - destination - size
+                    native = cache.read(destination, size)
+                    target_index = resolver.add(destination, native, native)
+                offset = destination - image_base - resolver.functions[target_index][1]
+                abi_slots.append((ctor_index, field, slot - 0x10, target_index, offset))
+
         # Sites: changed bytes in pieces of at most MAX_SITE bytes that stay inside one page.
         changed = [i for i in range(len(region)) if region[i] != patched[i]]
         fields = sorted({r[0] for r in original_refs} | {r[0] for r in patched_refs})
@@ -370,6 +422,9 @@ def main():
         header += "};\n"
         header += resolver.header(locations)
         header += resolver.section_header()
+        header += ("struct ABISlot { UInt32 constructor, field, slot, function, offset; };\n"
+                   "inline constexpr ABISlot ABISlots[] = {\n")
+        header += ''.join('    {' + ', '.join(map(str, row)) + '},\n' for row in abi_slots) + '};\n'
         pages = len({(resolver.functions[f][1] + image_base + o) // 4096 for f, o, *_ in records})
         header += (f"inline constexpr UInt32 MaxPatchSize = {MAX_SITE};\ninline constexpr UInt32 PageCount = {pages};\n"
                    f"inline constexpr UInt32 StateSize = 0x{state_size:X};\n}}    // namespace UserVP9DecodeData\n")

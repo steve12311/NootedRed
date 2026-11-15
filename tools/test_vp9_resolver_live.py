@@ -2,7 +2,7 @@
 
 Checks that every site resolves at the generated offset with the original bytes and the generated
 replacement, that with the VP9 bytes applied the video resolver still matches and every VP9 function
-matches its patched variant, and that a different cache UUID is refused.
+matches its patched variant, and that the common Darwin 23/24/25 dispatch accepts this verified ABI.
 """
 from pathlib import Path
 import struct
@@ -16,6 +16,7 @@ CACHE = Path('/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld')
 
 SOURCE = r'''
 #include <cassert>
+#include <initializer_list>
 #include <cstdio>
 #include <cstring>
 #include <fcntl.h>
@@ -32,7 +33,7 @@ static int reader(uint64_t address,void* bytes,size_t length){
   if(pread(m.fd,bytes,length,m.offset+address-m.start)!=ssize_t(length))return 1;
   if(length==8&&m.mask){uint64_t value;memcpy(&value,bytes,8);value&=~m.mask;if(value)value+=m.add;memcpy(bytes,&value,8);}
   if(overlay)for(auto&p:UserVP9DecodeData::Patches){
-   auto site=UserSurfaceSyncData::CacheBase+p.offset;
+   auto site=0x7FF800000000ULL+p.offset;
    for(size_t i=0;i<p.size;i++)if(site+i>=address&&site+i<address+length)
     static_cast<uint8_t*>(bytes)[site+i-address]=p.patched[i];
   }
@@ -41,7 +42,7 @@ static int reader(uint64_t address,void* bytes,size_t length){
  return 1;
 }
 static void check(const char* label){
- const auto base=UserSurfaceSyncData::CacheBase;
+ const auto base=0x7FF800000000ULL;
  uint8_t scan[UserSharedCache::Input::ScanSize];
  for(auto&device:UserVideoDecodeData::DevicePatches){
   static UserVideoDecodeResolver::Plan video;memset(&video,0,sizeof(video));
@@ -76,11 +77,11 @@ static void check(const char* label){
    if(referenceOnly)continue;
    assert(!UserCacheResolver::matches(input,address,fn,f,false,UserVP9DecodeData::Patches,UserVP9DecodeData::ResolverLocations,UserVP9DecodeResolver::PatchCount));
   }
-  assert(!UserVP9DecodeResolver::resolve(input,base,UserVP9DecodeData::CacheUUID,plan));
+  assert(!UserVP9DecodeResolver::resolve(input,base,plan));
   printf("PASS vp9 %s: %u functions match the patched variant, re-resolution refused\n",label,count);
   return;
  }
- assert(UserVP9DecodeResolver::resolve(input,base,UserVP9DecodeData::CacheUUID,plan));
+ assert(UserVP9DecodeResolver::resolve(input,base,plan));
  for(unsigned i=0;i<UserVP9DecodeResolver::PatchCount;i++){
   const auto&p=plan.patches[i];const auto&g=UserVP9DecodeData::Patches[i];
   assert(p.offset==g.offset&&p.size==g.size);
@@ -93,11 +94,14 @@ static void check(const char* label){
 int main(){
  check("original");
  overlay=true;check("vp9-applied");overlay=false;
- uint8_t other[16];memcpy(other,UserVP9DecodeData::CacheUUID,16);other[15]^=1;
  static UserVP9DecodeResolver::Plan plan;uint8_t scan[UserSharedCache::Input::ScanSize];
- UserSharedCache::Input input{reader,{}};input.scanBuffer=scan;
- assert(!UserVP9DecodeResolver::resolve(input,UserSurfaceSyncData::CacheBase,other,plan));
- printf("PASS foreign cache UUID refused\n");
+ for(unsigned major : {23U,24U,25U}) {
+  UserSharedCache::Input input{reader,{}};input.scanBuffer=scan;
+  assert(UserVP9DecodeResolver::resolve(input,0x7FF800000000ULL,plan,major));
+ }
+ UserSharedCache::Input invalid{reader,{}};invalid.scanBuffer=scan;
+ assert(!UserVP9DecodeResolver::resolve(invalid,0x7FF800000000ULL,plan,26));
+ printf("PASS dynamic profile admitted on Darwin 23/24/25; unsupported major refused\n");
 }
 '''
 
@@ -132,8 +136,7 @@ def mappings():
 def main():
     WORK.mkdir(parents=True, exist_ok=True)
     uuid, maps = mappings()
-    if uuid != '3137475689b434e8a34f56c5d57216a1':
-        raise SystemExit(f'SKIP: this Mac runs cache {uuid}, the VP9 backend is generated for 31374756...')
+
     stub = WORK / 'stubs/IOKit'
     stub.mkdir(parents=True, exist_ok=True)
     (stub / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;'

@@ -9,6 +9,7 @@ namespace VCN
     void  processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size);
     bool  ready();
     bool  allocated();
+    void  setVP9Ready(bool available);
     void* allocateEngine();
 
 }    // namespace VCN

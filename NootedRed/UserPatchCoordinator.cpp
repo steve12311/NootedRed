@@ -5,7 +5,6 @@
 #include <IOKit/IOLib.h>
 #include <NRed.hpp>
 #include <UserPatchCoordinator.hpp>
-#include <UserVideoDecode.hpp>
 #include <VCNPowerTrace.hpp>
 #include <UserPhaseTiming.hpp>
 #include <VPF/DisplayDependencyPlanner.hpp>
@@ -35,7 +34,7 @@ namespace
         void*                             map{nullptr};
         UInt64                            base{0};
         UInt8                             header[UserPatchCoordinator::HeaderSize]{};
-        UserPatchCoordinator::Participant display{}, video{};
+        UserPatchCoordinator::Participant display{}, video{}, vp9{UserPatchCoordinator::Outcome::Idle, nullptr};
     };
     constexpr UInt32 CompletedSlots = UserPatchCoordinator::MaxMapSlots;
     CompletedMap     completed[CompletedSlots]{};
@@ -72,6 +71,7 @@ namespace
     {
         UserPatchCoordinator::releaseProof(value.display.proof);
         UserPatchCoordinator::releaseProof(value.video.proof);
+        UserPatchCoordinator::releaseProof(value.vp9.proof);
     }
 
     struct CompletedSnapshot
@@ -90,6 +90,7 @@ namespace
                 out   = completed[i];
                 UserPatchCoordinator::retainProof(out.display.proof);
                 UserPatchCoordinator::retainProof(out.video.proof);
+                UserPatchCoordinator::retainProof(out.vp9.proof);
                 found = true;
                 break;
             }
@@ -117,6 +118,7 @@ namespace
         completed[slot] = value;
         UserPatchCoordinator::retainProof(value.display.proof);
         UserPatchCoordinator::retainProof(value.video.proof);
+        UserPatchCoordinator::retainProof(value.vp9.proof);
         IOLockUnlock(UserPatchCoordinator::gateLock());
         releaseCompleted(previous);
     }
@@ -125,7 +127,6 @@ namespace
     int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args, int* returnValue)
     {
         if (!originalCheck) { return KERN_FAILURE; }
-        if (args && UserVideoDecode::traceVP9(process, args->startAddress)) { return EINVAL; }
         const auto result = reinterpret_cast<SharedRegionCheck>(originalCheck)(process, args, returnValue);
         __atomic_fetch_add(&UserPatchCoordinator::nativeCalls(), 1U, __ATOMIC_RELAXED);
         if (result != 0 || !UserPatchCoordinator::active()) { return result; }
@@ -315,10 +316,10 @@ namespace UserPatchCoordinator
             // 同一 map 已完成过：同一缓存基址且两侧 proof 仍在内存中才跳过；任何不确定都走完整搜索。
             CompletedSnapshot snapshot{};
             auto&             previous = snapshot.value;
-            const bool skip = transaction.cacheRead && lookupCompleted(mapKey, previous)
-                              && previous.base == transaction.base
-                              && memcmp(previous.header, transaction.header, HeaderSize) == 0
-                              && proven(read, previous.display) && proven(read, previous.video);
+            const bool        skip =
+                transaction.cacheRead && lookupCompleted(mapKey, previous) && previous.base == transaction.base
+                && memcmp(previous.header, transaction.header, HeaderSize) == 0 && proven(read, previous.display)
+                && proven(read, previous.video) && proven(read, previous.vp9);
             skipTimer.stop();
             if (skip) {
                 total.retarget(UserPhaseTiming::Phase::CoordinateSkipped);
@@ -339,13 +340,16 @@ namespace UserPatchCoordinator
             __atomic_fetch_add(&coordinatedRuns(), 1U, __ATOMIC_RELAXED);
             const bool provable = transaction.display.outcome == Outcome::Patched
                                   || transaction.video.outcome == Outcome::Patched;
-            if (transaction.cacheRead && settled(transaction.display) && settled(transaction.video) && provable) {
+            if (transaction.cacheRead && settled(transaction.display) && settled(transaction.video)
+                && settled(transaction.vp9) && provable)
+            {
                 CompletedMap value{};
                 value.map  = mapKey;
                 value.base = transaction.base;
                 memcpy(value.header, transaction.header, HeaderSize);
                 value.display = transaction.display;
                 value.video   = transaction.video;
+                value.vp9     = transaction.vp9;
                 storeCompleted(value);
             }
             else if (previous.map) {
