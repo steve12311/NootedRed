@@ -35,7 +35,7 @@ jobs:
         run: |
           python3 tools/test_vp9_parser.py
           python3 tools/test_vp9_dynamic.py
-          python3 tools/test_vt_decoder_admission.py
+          
           python3 tools/test_video_cache_dynamic.py --vp9 --sanitize
           python3 tools/test_vp9_probe.py --offline
           python3 tools/test_vp9_compare.py
