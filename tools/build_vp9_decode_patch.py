@@ -18,12 +18,13 @@ import sys
 from audit_video_driver import symbols
 from cache_resolver_data import ResolverData
 from metal_cache import CACHE, CacheReader, array
+import vt_decoder_selection
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / "build/vp9/backend"
 IMAGE = "/System/Library/Extensions/AMDRadeonVADriver2.bundle/Contents/MacOS/AMDRadeonVADriver2"
 DEFAULT_UUID = "5a3da575f02e33dc9b14f663050011e6"
-MAX_SITE = 448
+MAX_SITE = 512
 CFLAGS = ["-std=c++17", "-target", "x86_64-apple-macos13", "-Oz", "-ffreestanding", "-fno-exceptions", "-fno-rtti",
           "-fno-stack-protector", "-fno-asynchronous-unwind-tables", "-fvisibility=hidden", "-Wall", "-Wextra",
           "-Werror", f"-I{ROOT / 'NootedRed'}"]
@@ -222,6 +223,8 @@ def main():
                 cursor += s["size"]
         if cursor > last:
             raise ValueError(f"backend data too large: {cursor - data_start} bytes, room {last - data_start}")
+        resolver = ResolverData(cache, WORK)
+        selection_address, selection_code = vt_decoder_selection.prepare(cache)
         externals = {k: names[v] for k, v in EXTERNALS.items()}
         epilogue = names[DECODE_PICTURE] + 0x41
         if cache.read(epilogue, 3) != bytes.fromhex("4489e0"):    # mov eax, r12d
@@ -298,7 +301,6 @@ def main():
         hook(INIT_CAPABILITY, 0x13F3 - 0x10C4, bytes.fromhex("bf07000000"), bytes.fromhex("bf06000000"))
 
         # ---- Resolver data: hooked functions plus the region as one function ----
-        resolver = ResolverData(cache, WORK)
         records, functions = [], []
         for function, address, code, new, sites in hooks:
             index = resolver.add(address, code, bytes(new))
@@ -368,6 +370,11 @@ def main():
                 offset = destination - image_base - resolver.functions[target_index][1]
                 abi_slots.append((ctor_index, field, slot - 0x10, target_index, offset))
 
+        selection_patched = vt_decoder_selection.patched(selection_code)
+        selection_index = resolver.add(selection_address, selection_code, selection_patched)
+        records.append((selection_index, 0x33F, selection_code[0x33F:0x35E],
+                        selection_patched[0x33F:0x35E], 'VideoToolbox decoder admission'))
+
         # Sites: changed bytes in pieces of at most MAX_SITE bytes that stay inside one page.
         changed = [i for i in range(len(region)) if region[i] != patched[i]]
         fields = sorted({r[0] for r in original_refs} | {r[0] for r in patched_refs})
@@ -392,7 +399,11 @@ def main():
             sites.append((first, stop))
         for first, stop in sites:
             records.append((region_index, first, region[first:stop], bytes(patched[first:stop]), "AV1 region"))
-        records.sort(key=lambda r: resolver.functions[r[0]][1] + r[1])
+        def function_address(index):
+            function = resolver.functions[index]
+            return resolver.images[function[0]][1] + function[1]
+
+        records.sort(key=lambda r: function_address(r[0]) + r[1])
         if len(records) > 32:
             raise ValueError(f"too many patch sites: {len(records)}")
         # A patched rel32 field must lie fully inside one site.
@@ -414,7 +425,7 @@ def main():
         header += "inline constexpr Patch Patches[] = {\n"
         locations = []
         for i, (function, offset, original, _, _) in enumerate(records):
-            address = resolver.functions[function][1] + image_base + offset
+            address = function_address(function) + offset
             if address // 4096 != (address + len(original) - 1) // 4096:
                 raise ValueError("site crosses a page")
             header += f"    {{0x{address - cache.base:X}ULL, Original{i}, Patched{i}, sizeof(Original{i})}},\n"
@@ -425,7 +436,9 @@ def main():
         header += ("struct ABISlot { UInt32 constructor, field, slot, function, offset; };\n"
                    "inline constexpr ABISlot ABISlots[] = {\n")
         header += ''.join('    {' + ', '.join(map(str, row)) + '},\n' for row in abi_slots) + '};\n'
-        pages = len({(resolver.functions[f][1] + image_base + o) // 4096 for f, o, *_ in records})
+        admission_patch = next(i for i, row in enumerate(records) if row[0] == selection_index)
+        header += f'inline constexpr UInt32 DecoderAdmissionPatch = {admission_patch};\n'
+        pages = len({(function_address(f) + o) // 4096 for f, o, *_ in records})
         header += (f"inline constexpr UInt32 MaxPatchSize = {MAX_SITE};\ninline constexpr UInt32 PageCount = {pages};\n"
                    f"inline constexpr UInt32 StateSize = 0x{state_size:X};\n}}    // namespace UserVP9DecodeData\n")
         output = ROOT / "NootedRed/UserVP9DecodeData.hpp"
@@ -444,6 +457,8 @@ def main():
             "codeRoom": init_context - code_start, "dataRoom": last - data_start,
             "symbols": {k: v for k, v in defined.items() if k.startswith("_vp9")},
             "externals": externals, "patched": image_copy,
+            "selection": {"address": selection_address, "original": selection_code.hex(),
+                          "patched": selection_patched.hex()},
             "sha256": hashlib.sha256(header.encode()).hexdigest()}, indent=1) + "\n")
         print(f"VP9 backend: {len(records)} sites on {pages} pages, code "
               f"{sum(s['size'] for s in sections if s['name'] == '__TEXT,__text')}/{init_context - code_start} B, "

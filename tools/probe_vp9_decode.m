@@ -31,6 +31,11 @@ static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags f
         atomic_store(&lastError, status ? status : -1);
         return;
     }
+    if (getenv("VP9_REQUIRE_IOSURFACE") && !CVPixelBufferGetIOSurface(image)) {
+        atomic_fetch_add(&badFrames, 1);
+        atomic_store(&lastError, -2);
+        return;
+    }
     const unsigned index = atomic_fetch_add(&okFrames, 1);
     // Report the buffer and clean aperture of the first frame and whenever they change (resolution changes).
     static size_t lastW, lastH;
@@ -38,13 +43,13 @@ static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags f
     const size_t  bufW = CVPixelBufferGetWidth(image), bufH = CVPixelBufferGetHeight(image);
     const CGRect  clean = CVImageBufferGetCleanRect(image);
     if (bufW != lastW || bufH != lastH || !CGRectEqualToRect(clean, lastClean)) {
-        printf("frame %u: buffer %zux%zu, clean %gx%g at %g,%g\n", index, bufW, bufH, clean.size.width,
-               clean.size.height, clean.origin.x, clean.origin.y);
+        printf("frame %u: buffer %zux%zu, clean %gx%g at %g,%g, IOSurface=%u\n", index, bufW, bufH, clean.size.width,
+               clean.size.height, clean.origin.x, clean.origin.y, CVPixelBufferGetIOSurface(image) != NULL);
         lastW = bufW, lastH = bufH, lastClean = clean;
     }
     if (perf || CVPixelBufferLockBaseAddress(image, kCVPixelBufferLock_ReadOnly)) { return; }
     // Hash only the visible luma plane.
-    const uint8_t* base   = CVPixelBufferGetBaseAddressOfPlane(image, 0);
+    const uint8_t* base   = (const uint8_t*)CVPixelBufferGetBaseAddressOfPlane(image, 0);
     size_t         stride = CVPixelBufferGetBytesPerRowOfPlane(image, 0);
     size_t         w = CVPixelBufferGetWidthOfPlane(image, 0), h = CVPixelBufferGetHeightOfPlane(image, 0);
     for (size_t y = 0; base && y < h; y++)
@@ -52,7 +57,7 @@ static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags f
     for (size_t y = 0; dump && base && y < h; y++) fwrite(base + y * stride, 1, w, dump);
     // Then the interleaved CbCr plane (NV12), visible part only: the dump matches ffmpeg -pix_fmt nv12.
     if (dump && CVPixelBufferGetPlaneCount(image) > 1) {
-        const uint8_t* uv = CVPixelBufferGetBaseAddressOfPlane(image, 1);
+        const uint8_t* uv = (const uint8_t*)CVPixelBufferGetBaseAddressOfPlane(image, 1);
         size_t uvStride = CVPixelBufferGetBytesPerRowOfPlane(image, 1);
         size_t uvW = CVPixelBufferGetWidthOfPlane(image, 1), uvH = CVPixelBufferGetHeightOfPlane(image, 1);
         for (size_t y = 0; uv && y < uvH; y++) fwrite(uv + y * uvStride, 1, uvW * 2, dump);
@@ -80,7 +85,7 @@ int main(int argc, char** argv)
         if (getenv("VP9_DUMP")) dump = fopen(getenv("VP9_DUMP"), "wb");
         perf = getenv("VP9_PERF") && !dump;
         NSData* file = [NSData dataWithContentsOfFile:@(argv[1])];
-        const uint8_t* d = file.bytes;
+        const uint8_t* d = (const uint8_t*)file.bytes;
         if (file.length < 32 || memcmp(d, "DKIF", 4) || memcmp(d + 8, "VP90", 4)) {
             fprintf(stderr, "not a VP9 IVF file\n");
             return 2;

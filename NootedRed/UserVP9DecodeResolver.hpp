@@ -14,7 +14,7 @@ namespace UserVP9DecodeResolver
     static constexpr UInt32 SectionCount = sizeof(SectionTargets) / sizeof(SectionTargets[0]);
     static constexpr UInt32 FunctionCount = sizeof(ResolverFunctions) / sizeof(ResolverFunctions[0]);
     static_assert(PatchCount > 0 && PatchCount <= 32);
-    static_assert(MaxPatchSize == UserVideoDecodeData::MaxPatchSize);
+    static_assert(MaxPatchSize <= 512);
     static_assert(sizeof(CacheUUID) == 16);
 
     struct Plan

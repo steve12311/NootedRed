@@ -580,8 +580,9 @@ namespace
 
         struct Workspace
         {
-            SavedRow               saved[SiteCount];
-            UserPatchMemory::Page  pages[MaxPages];
+            struct Row
+            { UInt8 bytes[UserVP9DecodeData::MaxPatchSize]; } saved[SiteCount];
+            UserPatchMemory::Page pages[MaxPages];
         };
 
         struct ProofPlan
@@ -695,6 +696,7 @@ namespace
                 if (executable) {
                     settle(participant, base);
                     VCN::setVP9Ready(true);
+                    NRed::singleton().setProp32("NRedVTDecoderAdmissionRevision", 1);
                     const auto count = __atomic_fetch_add(&alreadyCount, 1U, __ATOMIC_RELAXED);
                     if (count < 16) { NRed::singleton().setProp32("NRedVP9Already", count + 1); }
                 }
@@ -736,6 +738,7 @@ namespace
             const auto count = __atomic_fetch_add(&appliedCount, 1U, __ATOMIC_RELAXED);
             settle(participant, base);
             VCN::setVP9Ready(true);
+            NRed::singleton().setProp32("NRedVTDecoderAdmissionRevision", 1);
             if (count < 16) { NRed::singleton().setProp32("NRedVP9Applied", count + 1); }
         }
 

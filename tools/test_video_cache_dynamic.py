@@ -278,6 +278,7 @@ int main(){
  VP9::install(map(nullptr),base,uuid,&installed);
  assert(installed.outcome==UserPatchCoordinator::Outcome::Patched&&installed.proofSites==VP9::SiteCount&&VCN::vp9Ready);
  rx();auto after=writes;
+ assert(properties.at("NRedVTDecoderAdmissionRevision")==1);
  UserPatchCoordinator::Participant already;
  VP9::install(map(nullptr),base,uuid,&already);
  assert(already.outcome==UserPatchCoordinator::Outcome::Patched&&writes==after&&VCN::vp9Ready);
