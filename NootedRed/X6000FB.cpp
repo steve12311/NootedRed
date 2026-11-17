@@ -19,11 +19,13 @@
 #include <KernelDisplayEvidence.hpp>
 #include <IOKit/IOReturn.h>
 #include <IOKit/IOTypes.h>
+#include <IOKit/IOService.h>
 #include <IOKit/acpi/IOACPIPlatformExpert.h>
 #include <Kexts.hpp>
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
 #include <PenguinWizardry/PatcherPlus.hpp>
+#include <libkern/c++/OSData.h>
 #include <Regs/OSSSYS_4.hpp>
 #include <Regs/SMUIO.hpp>
 #include <X6000FB.hpp>
@@ -261,6 +263,8 @@ void X6000FB::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t s
         {"__ZNK30AMDRadeonX6000_AmdAgdcServices13getVendorInfoEP16AGDCVendorInfo_tm", wrapGetVendorInfo,
          this->orgGetVendorInfo},
         {"__ZN34AMDRadeonX6000_AmdBiosParserHelper12readAtomBiosEv", readAtomBios},
+        {"__ZN35AMDRadeonX6000_AmdRadeonFramebuffer27reportCapabilities_LinkInfoEv", wrapReportCapabilitiesLinkInfo,
+         this->orgReportCapabilitiesLinkInfo},  
     };
     PANIC_COND(!PenguinWizardry::PatternRouteRequest::routeAll(patcher, id, requests, slide, size), "X6000FB",
                "Failed to route symbols");
@@ -598,6 +602,47 @@ void X6000FB::wrapDpReceiverPowerCtrl(void* const link, const bool powerOn)
 {
     FunctionCast(wrapDpReceiverPowerCtrl, singleton().orgDpReceiverPowerCtrl)(link, powerOn);
     IOSleep(250);
+}
+
+IOReturn X6000FB::wrapReportCapabilitiesLinkInfo(void* const self)
+{
+    const auto ret = FunctionCast(wrapReportCapabilitiesLinkInfo, singleton().orgReportCapabilitiesLinkInfo)(self);
+
+    auto* const svc = OSDynamicCast(IOService, static_cast<OSMetaClassBase*>(self));
+    if (svc == nullptr) { return ret; }
+    auto* const prop = OSDynamicCast(OSData, svc->getProperty("audio-codec-info"));
+    if (prop == nullptr || prop->getLength() != 4) { return ret; }
+    const auto* const bytes = static_cast<const UInt8*>(prop->getBytesNoCopy());
+    if (bytes == nullptr) { return ret; }
+
+    DBGLOG("X6000FB", "audio-codec-info = %02X %02X %02X %02X", bytes[0], bytes[1], bytes[2], bytes[3]);
+
+    if (bytes[1] != 0x01) { return ret; }
+
+    UInt8  targetPin = bytes[2];
+    UInt32 manualPin = 0;
+
+    // 1. Allow manual boot-arg override: nredhdmipin=3 (or 5, 7, 9, 11, 13) or -NRedHDMIPin3
+    if (PE_parse_boot_argn("nredhdmipin", &manualPin, sizeof(manualPin)) &&
+        manualPin >= 3 && manualPin <= 13 && (manualPin % 2) == 1) {
+        targetPin = static_cast<UInt8>(manualPin);
+    }
+    else if (checkKernelArgument("-NRedHDMIPin3")) {
+        targetPin = 0x03;
+    }
+    else if (!NRed::singleton().getAttributes().isRenoir() && bytes[2] == 0x05) {
+        // 2. Auto-fix for DCN1 (Raven/Picasso): Display Core wires HDMI audio to endpoint 0 (Pin NID 3)
+        // when HDMI is on Connector[1] (which defaults to Pin NID 5).
+        targetPin = 0x03;
+    }
+
+    if (targetPin != bytes[2]) {
+        UInt8 newInfo[4] = {bytes[0], bytes[1], targetPin, bytes[3]};
+        svc->setProperty("audio-codec-info", newInfo, sizeof(newInfo));
+        SYSLOG("X6000FB", "HDMI audio pin changed from NID %u to NID %u", bytes[2], targetPin);
+    }
+
+    return ret;
 }
 
 void* X6000FB::wrapCreateObjectInfo(void* const helper, const UInt32 tableOffset)
