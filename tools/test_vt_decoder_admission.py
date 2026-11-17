@@ -33,7 +33,7 @@ def main():
                      + '\nmovl %edi,%eax\naddq $56,%rsp\npopq %rbx\npopq %rbp\nretq\n')
     (WORK / 'conversions.s').write_text(assembly)
     executable = WORK / 'offline'
-    subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O1', '-fsanitize=address,undefined',
+    subprocess.run(['xcrun', 'clang++', '-arch', 'x86_64', '-std=c++23', '-O1', '-fsanitize=address,undefined',
                     str(ROOT / 'tools/fixtures/vt-decoder-admission.cpp'), str(WORK / 'conversions.s'),
                     '-o', str(executable)], check=True, timeout=60)
     subprocess.run([str(executable)], check=True, timeout=60)
