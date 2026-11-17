@@ -22,6 +22,8 @@ jobs:
           submodules: "recursive"
       - name: Test shared-cache coordinator
         run: |
+          python3 tools/test_sequoia_section_compat.py
+          python3 tools/test_cache_section_resolver.py
           python3 tools/test_display_coordinator_kext.py
           python3 tools/test_display_cross_module_gate.py
           python3 tools/test_display_cross_module_gate.py --sanitize

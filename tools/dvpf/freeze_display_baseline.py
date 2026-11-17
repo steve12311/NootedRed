@@ -70,6 +70,8 @@ TRACKED = (
     'tools/fixtures/opengl-compat.json',
     'tools/fixtures/legacy-compat.json',
     'tools/fixtures/sequoia-compat.json',
+    'tools/fixtures/sequoia-surface-15.8.3.json',
+    'tools/fixtures/sequoia-surface-15.8.1.json',
 )
 
 TEST_COMMANDS = (

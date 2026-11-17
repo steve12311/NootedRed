@@ -4,7 +4,7 @@ import argparse
 import re
 import subprocess
 
-from user_patch_memory_harness import with_memory_helpers
+from user_patch_memory_harness import with_memory_helpers, with_inactive_coordinator
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / 'build/display-runtime-bridge'
@@ -123,7 +123,12 @@ def main():
                         'if(a==failRead)return 1;for(size_t j=0;j<n;j++){auto i=memory.find((a+j)&~uint64_t(4095));if(i==memory.end())return 1;static_cast<uint8_t*>(p)[j]=i->second[(a+j)&4095];}return 0;')
     text = text.replace('writes++;assert(protections.at(a&~uint64_t(4095))==3);assert(n<=4096-(a&4095));\n auto& page=memory.at(a&~uint64_t(4095));\n memcpy(page.data()+(a&4095),p,failWrite.contains(writes)?std::min(n,size_t(2)):n);',
                         'writes++;for(size_t j=0;j<n;j++)assert(protections.at((a+j)&~uint64_t(4095))==3);const auto length=failWrite.contains(writes)?std::min(n,size_t(2)):n;for(size_t j=0;j<length;j++)memory.at((a+j)&~uint64_t(4095))[(a+j)&4095]=static_cast<const uint8_t*>(p)[j];')
-    text = text.replace('BODY', body).replace('INIT', init).replace('MAIN', MAIN)
+    text = text.replace('using PatchCallback=int(*)(void*,void*,int);',
+                        'struct Transaction;using PatchCallback=int(*)(void*,void*,int,Transaction&);'
+                        'inline void registerReader(UserSharedCache::Reader){}')
+    prefix, suffix = text.split('BODY', 1)
+    text = with_inactive_coordinator(prefix, stubs, existing_locks=True) + body + suffix
+    text = text.replace('INIT', init).replace('MAIN', MAIN)
     path, exe = WORK / 'bridge.cpp', WORK / 'bridge'
     path.write_text(text)
     flags = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if args.sanitize else []

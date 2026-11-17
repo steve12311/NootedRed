@@ -432,7 +432,8 @@ namespace UserSurfaceSyncResolver
                                const UserCacheResolver::ImageReference (&ResolverImages)[Images],
                                const UserCacheResolver::Function       (&ResolverFunctions)[Functions],
                                const UserCacheResolver::Location       (&ResolverLocations)[Locations],
-                               VPF::FastResolution*                    fast)
+                               VPF::FastResolution* fast, const UserCacheSectionData::Target* sectionTargets = nullptr,
+                               UInt32 sectionTargetCount = 0)
     {
         if (!patches) { return false; }
         static_assert(Locations == 4);
@@ -451,20 +452,20 @@ namespace UserSurfaceSyncResolver
                   && fast->lookup(VPF::FunctionGroup::DisplaySequoia, functionImages, Functions, known);
         }
         bool resolved = hot
-                        && UserCacheResolver::resolveFunctions(input, base, ResolverImages, ResolverFunctions, patches,
-                                                               ResolverLocations, plan.patches, &plan.original[0][0],
-                                                               &plan.patched[0][0], Plan::BufferSize, bounds, false,
-                                                               nullptr, 0, known, nullptr);
+                        && UserCacheResolver::resolveFunctions(
+                            input, base, ResolverImages, ResolverFunctions, patches, ResolverLocations, plan.patches,
+                            &plan.original[0][0], &plan.patched[0][0], Plan::BufferSize, bounds,
+                            sectionTargets != nullptr, sectionTargets, sectionTargetCount, known, nullptr);
         if (!resolved && hot) {
             restoreBudget(input, budget);
             fast->rejectHot();
             hot = false;
         }
         if (!resolved) {
-            resolved = UserCacheResolver::resolveFunctions(input, base, ResolverImages, ResolverFunctions, patches,
-                                                           ResolverLocations, plan.patches, &plan.original[0][0],
-                                                           &plan.patched[0][0], Plan::BufferSize, bounds, false,
-                                                           nullptr, 0, nullptr, located);
+            resolved = UserCacheResolver::resolveFunctions(
+                input, base, ResolverImages, ResolverFunctions, patches, ResolverLocations, plan.patches,
+                &plan.original[0][0], &plan.patched[0][0], Plan::BufferSize, bounds, sectionTargets != nullptr,
+                sectionTargets, sectionTargetCount, nullptr, located);
         }
         if (!resolved) { return false; }
         const auto& init = ResolverFunctions[0];
@@ -484,10 +485,10 @@ namespace UserSurfaceSyncResolver
             restoreBudget(input, budget);
             fast->rejectHot();
             hot = false;
-            if (!UserCacheResolver::resolveFunctions(input, base, ResolverImages, ResolverFunctions, patches,
-                                                     ResolverLocations, plan.patches, &plan.original[0][0],
-                                                     &plan.patched[0][0], Plan::BufferSize, bounds, false, nullptr, 0,
-                                                     nullptr, located)
+            if (!UserCacheResolver::resolveFunctions(
+                    input, base, ResolverImages, ResolverFunctions, patches, ResolverLocations, plan.patches,
+                    &plan.original[0][0], &plan.patched[0][0], Plan::BufferSize, bounds, sectionTargets != nullptr,
+                    sectionTargets, sectionTargetCount, nullptr, located)
                 || !postCheck())
             {
                 return false;
@@ -507,9 +508,11 @@ namespace UserSurfaceSyncResolver
                                   UserSonomaSurfaceData::ResolverLocations, fast);
         }
         if (major == 24) {
-            return resolveProfile(input, base, UserSequoiaSurfaceData::findDevice(deviceID), plan,
-                                  UserSequoiaSurfaceData::ResolverImages, UserSequoiaSurfaceData::ResolverFunctions,
-                                  UserSequoiaSurfaceData::ResolverLocations, fast);
+            return resolveProfile(
+                input, base, UserSequoiaSurfaceData::findDevice(deviceID), plan, UserSequoiaSurfaceData::ResolverImages,
+                UserSequoiaSurfaceData::ResolverFunctions, UserSequoiaSurfaceData::ResolverLocations, fast,
+                UserSequoiaSurfaceData::SectionTargets,
+                sizeof(UserSequoiaSurfaceData::SectionTargets) / sizeof(UserSequoiaSurfaceData::SectionTargets[0]));
         }
         const auto* device = UserSurfaceSyncData::findDevice(deviceID);
         return major == 25 && device && resolve(input, base, *device, true, true, plan, true, fast);
@@ -531,7 +534,9 @@ namespace UserSurfaceSyncResolver
 
     inline bool resolveSubmitProfile(Input& input, UInt64 base, UInt64& offset, const UserCacheResolver::Function& fn,
                                      const UserCacheResolver::ImageReference* ResolverImages, bool sectionRelative,
-                                     VPF::FastResolution* fast)
+                                     VPF::FastResolution*                fast,
+                                     const UserCacheSectionData::Target* sectionTargets     = nullptr,
+                                     UInt32                              sectionTargetCount = 0)
     {
         Image image;
         if (!imageForCache(input, base, image)) { return false; }
@@ -578,7 +583,7 @@ namespace UserSurfaceSyncResolver
                 if (ref.indirect || ref.image != 0 || !input.read(address + ref.offset, field, 4)
                     || !relativeTarget(address + ref.offset, 0, field, target) || !image.contains(target, 4)
                     || !UserCacheResolver::target(input, ref, &bounds, 1, ResolverImages, &fn, &address, 1, expected,
-                                                  sectionRelative)
+                                                  sectionRelative, sectionTargets, sectionTargetCount)
                     || target != expected)
                 {
                     return false;
@@ -626,7 +631,10 @@ namespace UserSurfaceSyncResolver
         }
         if (major == 24) {
             return resolveSubmitProfile(input, base, offset, UserSequoiaSurfaceData::Submit::ResolverFunctions[0],
-                                        UserSequoiaSurfaceData::Submit::ResolverImages, false, fast);
+                                        UserSequoiaSurfaceData::Submit::ResolverImages, true, fast,
+                                        UserSequoiaSurfaceData::Submit::SectionTargets,
+                                        sizeof(UserSequoiaSurfaceData::Submit::SectionTargets)
+                                            / sizeof(UserSequoiaSurfaceData::Submit::SectionTargets[0]));
         }
         return major == 25
                && resolveSubmitProfile(input, base, offset, UserSurfaceConstructorData::Submit::ResolverFunctions[0],

@@ -36,7 +36,7 @@ static bool resolve(){
 }
 static void submit(bool tahoe,bool buffered,unsigned kind){
  if(tahoe)cache(C::Submit::ResolverImages,C::Submit::ResolverFunctions,true);
- else cache(S::ResolverImages,S::ResolverFunctions);
+ else cache(S::ResolverImages,S::ResolverFunctions,true,S::SectionTargets,std::size(S::SectionTargets));
  const auto& fn=tahoe?C::Submit::ResolverFunctions[0]:S::ResolverFunctions[0];
  auto expected=functionAddresses[0];
  if(kind==1||kind==7||kind==10||kind==11){
@@ -88,7 +88,7 @@ int main(){
  // 扩展预筛选区内的所有固定字节仍须拒绝，包含已安装入口与跨缓冲区位置。
  for(bool tahoe:{false,true})for(bool installed:{false,true})for(unsigned byte=15;byte<32;byte++){
   if(tahoe)cache(C::Submit::ResolverImages,C::Submit::ResolverFunctions,true);
-  else cache(S::ResolverImages,S::ResolverFunctions);
+  else cache(S::ResolverImages,S::ResolverFunctions,true,S::SectionTargets,std::size(S::SectionTargets));
   const auto& fn=tahoe?C::Submit::ResolverFunctions[0]:S::ResolverFunctions[0];
   if(UserCacheResolver::skipped(byte,fn.originalRefs,fn.originalCount))continue;
   auto address=functionAddresses[0];

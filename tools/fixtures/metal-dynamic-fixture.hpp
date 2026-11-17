@@ -47,7 +47,16 @@ namespace MetalFixture
                              const UserCacheResolver::ImageReference (&images)[Images],
                              const UserCacheResolver::Function (&functions)[Functions])
     {
-        cache(images, functions);
+        if (major == 24) {
+            std::vector<UserCacheSectionData::Target> targets(std::begin(UserSequoiaSurfaceData::SectionTargets),
+                                                              std::end(UserSequoiaSurfaceData::SectionTargets));
+            targets.insert(targets.end(), std::begin(UserSequoiaSurfaceData::Submit::SectionTargets),
+                           std::end(UserSequoiaSurfaceData::Submit::SectionTargets));
+            cache(images, functions, true, targets.data(), targets.size());
+        }
+        else {
+            cache(images, functions);
+        }
         const auto constant = destination(functions[0].originalRefs[0], functions, Functions);
         blocks[constant].resize(16);
         word32(constant, 0x40400000);

@@ -19,28 +19,28 @@
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `NootedRed/AMDGFX9DCNDisplay.cpp` | `ba9837256a05d4c2c12bdd986c6e061fb143404a59806fccec274f97d81db149` |
+| `NootedRed/AMDGFX9DCNDisplay.cpp` | `36b4e281ee3d7dd102e23f32842ab201fb978ec963dd7167392946456cebf840` |
 | `NootedRed/KernelDisplayEvidence.cpp` | `cfb1861b6ecf5d05363910c7e5157b0c977e29c784c1d364fb35675474589cea` |
 | `NootedRed/KernelDisplayEvidence.hpp` | `ccc2b6c1e0f006073bfe58909f088dd74a9c1e21e689be0561f389ac19591895` |
-| `NootedRed/NRed.cpp` | `f8e4a3d8ab191ae58f0ca55516771d8ccda270ddf092e6519acc417e016b4802` |
+| `NootedRed/NRed.cpp` | `efbc8983db1df24a4044bbd3d830562ac1f94de35661a2143ef785032e7c7710` |
 | `NootedRed/UserCacheResolver.hpp` | `4c9f85bc2412bfc879a70446f295cd4f9e1e993e828e4b76b4b1f410b167aa6d` |
-| `NootedRed/UserOpenGL.cpp` | `f756bf2b83757a27df358e16a59a6b286ac6010c5c03649442ef765e895ef446` |
+| `NootedRed/UserOpenGL.cpp` | `16f30c7cb1afb8a512085efca6de421d09e83db7cb54984d5cdf699940092f27` |
 | `NootedRed/UserOpenGLData.hpp` | `052dbfa0e4c1576f2213dac592a795eff3038ec535289eeb1b0425cf10a4a67b` |
 | `NootedRed/UserOpenGLResolver.hpp` | `42acd20b12135ec57e4a1d30b9be6b21802d0785f709b7a5c9b2c55895ee3f3d` |
-| `NootedRed/UserPatchCoordinator.cpp` | `9e66dff011181c36d84ebe161b0e19335adf56e561cdd9ce867a696d0d33f9d2` |
-| `NootedRed/UserPatchCoordinator.hpp` | `172c98dad7b33954f65fcf16bed9dabf75f11cdcbbf8b6b7bc42b9e45f8c4df5` |
+| `NootedRed/UserPatchCoordinator.cpp` | `3ad25bc929435d2ebc52ee996f33a2e35731fb5e4cc3f80206fde75a5e0f643d` |
+| `NootedRed/UserPatchCoordinator.hpp` | `2701b5a6e91b1ead8be9eb16a2aff9b9ea84705c3ae3e04aa579001895b4ecb7` |
 | `NootedRed/UserPatchMapGate.hpp` | `6d0b86ad16a7453f85f4e03a087eeb6e7ee6c557deaa51648a951e492f8144c0` |
 | `NootedRed/UserPatchMemory.hpp` | `aed903b82c278a2a5eeac726f9eb39cda2877f8d74d1574cabf291e42571335b` |
-| `NootedRed/UserSequoiaSurfaceData.hpp` | `ae57ebe6b10ec20b00d25d2e6687b1c7e1339fdeda9be1556aa8c7e5728371dd` |
+| `NootedRed/UserSequoiaSurfaceData.hpp` | `447c7f6161326d34a2a6a89df0e09ee5e76a1f39d31b463eda42c65e987c5883` |
 | `NootedRed/UserSharedCache.hpp` | `b70f6bcf15a994ca010ef7c11bd667b0a2abed158c7672a00c6fb8964ec39aac` |
 | `NootedRed/UserSonomaSurfaceData.hpp` | `2e538522ab619c52b1cb983920ac078e02bbf31d1dd5018bee52cc2254286145` |
 | `NootedRed/UserSubmitGuardData.hpp` | `d14c17a5348d86a894531ea894176a8515f593d817a9db9076a37fbe900c7d33` |
 | `NootedRed/UserSurfaceConstructorData.hpp` | `8a8b5a05c9b06c11f29a565b3c9096c5bbc9fc940e00e3c0c9af9be2d175bfd2` |
-| `NootedRed/UserSurfaceSync.cpp` | `0abb833ee5f0b804a77187f49baec14ee8349653c472badde5c14d605583c946` |
+| `NootedRed/UserSurfaceSync.cpp` | `0f62768ffd9010d5a9d36bdffb44df7bcbe505deb4b93f9b67b4f69cb621ffdc` |
 | `NootedRed/UserSurfaceSyncData.hpp` | `76e288923a8750cd9bfdf7a495d05c3211b785b1af071b81d10431fb2d033ea4` |
-| `NootedRed/UserSurfaceSyncResolver.hpp` | `10bda06917532e04d186de6c024b99ba66e734a823542dad034d09eb8a61a0f7` |
-| `NootedRed/UserVideoDecode.cpp` | `bc5fcfde224c14bcec9b4803ec629d5ebcb3a420858869c2e99ee957d8da0a89` |
-| `NootedRed/VPF/DisplayManifestData.hpp` | `128d2139fe70a5ef4ee8410a0895e0437105f120814b0d16de88538d5d5d4808` |
+| `NootedRed/UserSurfaceSyncResolver.hpp` | `8fabb5c86a01d4370c97c05d499ad48727f24fec4b4c8b9796f6064b5998a3ac` |
+| `NootedRed/UserVideoDecode.cpp` | `8241307d8a69a9882b80e002cb89d0e52988bc68a5b3215725a70b63215c07b2` |
+| `NootedRed/VPF/DisplayManifestData.hpp` | `5df095e1efb4710824266fd108697c450c514701fc3fe87047da791d77ef53d9` |
 | `NootedRed/VPF/DisplayPlan.hpp` | `58af326be437dcf0fcf0b5eebc2b815a07ad440f2dcd6d8ac1c82d5e726a7006` |
 | `NootedRed/VPF/DisplayPlanAdapters.hpp` | `c811f717d97356c911a9bdb8c8921ac0a57ea4d27eb9e9a335d12b9bbe60288a` |
 | `NootedRed/VPF/ExecutableTrampolineResource.hpp` | `b2a6737b7a4833802ac7ab67fefed436390a9ed61f03773a6b854ce93e5ca0d5` |
@@ -48,17 +48,19 @@
 | `NootedRed/VPF/MetalTransactionExecutor.hpp` | `db17db74348da5cf6603d2807fc11c7f9d88f307e4cd344b954cbc190e8936ca` |
 | `NootedRed/VPF/ValidatedPageBackend.hpp` | `7a8fbf89f88a4952a4fa6f710986d356320660d8054e0593567648de72e16bf3` |
 | `NootedRed/VPF/VerifiedPatchPlan.hpp` | `f21f84aff90a12f02c0af3157dafde7a9956f51af30d58a916a435bd62b5d7d4` |
-| `NootedRed/X5000.cpp` | `963ce24cf28faf5a11ea2c1e839ae2aaeb64b5791346227a28d8352c27c43787` |
-| `NootedRed/X6000FB.cpp` | `aefd17aaf24fcfdad36b93e4401707fbbed3414544b5478c99075354b33e41e3` |
+| `NootedRed/X5000.cpp` | `794ca6798949a317e15f9209c9651f856948edb6aefd61e2921c6b99d9fe7054` |
+| `NootedRed/X6000FB.cpp` | `4155f2fdf61830335bfd7cc63d1016659d086641d6a320aa9462941677e8b9ce` |
 | `tools/build_cache_section_targets.py` | `e227011183e39724a714d4bec0066da1ec098f5d90a8f1271f757b5c8de46b7e` |
 | `tools/build_opengl_patch.py` | `0427baa3682aafab4f7cd1601ba9965347cbd0e3b09c977cce54af35caf0f306` |
-| `tools/build_sequoia_surface.py` | `e9f83490214da28cf86a64e97bf677d642f324b16a8c3436bdc3a1d689d752e0` |
+| `tools/build_sequoia_surface.py` | `a863fec1b085c847fa30e7ff11a2027c82ecd5dc00ee348f57666a7d60328389` |
 | `tools/build_submit_guard.py` | `4d88184f28aee811afcf1ad4809bc692638b7d1b33f232cbdc59619c3822c0e0` |
 | `tools/build_surface_sync_patch.py` | `1a2a4711105bf61ee186af5a0c0b642ca247375f4492e0e04c426e5f79589519` |
 | `tools/dvpf/gl_page_adapter_probe.cpp` | `0130b24c24a97eb65b74d4210137abeffc5e1cabc8e863a4a19a51e37a0d5e8c` |
 | `tools/fixtures/legacy-compat.json` | `e0b46680b6206a13e532bb6181c715acd89244da01f02a8ec259bdf402c9c19f` |
 | `tools/fixtures/opengl-compat.json` | `ed16a90f351d717a454f1c82ef60f42140680e0e8a1054163cce07040c6fad62` |
 | `tools/fixtures/sequoia-compat.json` | `07a84518b6c2a48aff94855305348173fc4d7273c9e210ea15b4e85b11c4a094` |
+| `tools/fixtures/sequoia-surface-15.8.1.json` | `69b1521d2558155b3e2b4c8983b31d07c06960cceda46f7b26f4608ba5ff5aee` |
+| `tools/fixtures/sequoia-surface-15.8.3.json` | `cb9ea759110099fd4011d0d00bf7c2d463fbd06fb6698f88a6c1002e48554dc2` |
 | `tools/import_legacy_compat.py` | `967c82a75edb30fc59d1fd3a4deb12fec70e9d69da5b11bb0a71c91f4f80f920` |
 | `tools/vpf/analyze_display_variants.py` | `7b2d181b25f423758da3d93b852de38c29b93b599a91cdd90ef470941484e0d9` |
 | `tools/vpf/build_gl_evidence.py` | `63d8f97b22f422ca94ce6e2168dd40ebcd391d27c0cb1a587ca0ee6ba2f96fb1` |
@@ -91,6 +93,7 @@
 - `NRedImmediateSyncDynamicRejected`
 - `NRedImmediateSyncLastError`
 - `NRedImmediateSyncRegionQueryVersion`
+- `NRedImmediateSyncRejectSkips`
 - `NRedImmediateSyncRejected`
 - `NRedImmediateSyncRequested`
 - `NRedImmediateSyncRevision`
@@ -166,6 +169,11 @@
 - `NRedOpenGLVPFManifestMask`
 - `NRedOpenGLVPFPlanVerified`
 - `NRedOpenGLVPFRevision`
+- `NRedOpenGLVerifyAllocationFailed`
+- `NRedOpenGLVerifyEnabled`
+- `NRedOpenGLVerifyObserved`
+- `NRedOpenGLVerifyRejected`
+- `NRedOpenGLVerifyRestored`
 - `NRedOpenGLWriteRejected`
 - `NRedPatchCoordinatorDisplay`
 - `NRedPatchCoordinatorEnabled`
@@ -173,7 +181,9 @@
 - `NRedPatchCoordinatorRejected`
 - `NRedPatchCoordinatorRevision`
 - `NRedPatchCoordinatorSkipped`
+- `NRedPatchCoordinatorSkippedRuns`
 - `NRedPatchCoordinatorVideo`
+- `NRedRejectedCacheTable`
 - `NRedSharedRegionStackRevision`
 - `NRedSrdSharedApplied`
 - `NRedSrdSharedEnabled`
@@ -335,27 +345,27 @@
 | `MetalSrdShared` | 0 | `0x30886C85C` | 215 | `54ebf2cfa0983975` | `a3bf1a6b2e89dbc3` | 0 | `0x0` |  |
 | `MetalSrdShared` | 1 | `0x30886C933` | 10 | `580a055bd41ed3f1` | `5497793b124348f1` | 1 | `0x0` |  |
 | `MetalSrdShared` | 2 | `0x3087B3164` | 2 | `525cc8f73fc005eb` | `dfb779f77fa96bfb` | 2 | `0x11C4` |  |
-| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `71cf0143fe4fe704` | `7bb9bc7e3f6a4377` | 3 | `0x0` |  |
+| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `27497240fbda82f0` | `56ceb13e5ad57356` | 3 | `0x0` |  |
 | `MetalSrdShared` | 0 | `0x30886C85C` | 215 | `54ebf2cfa0983975` | `d16d22746fe687ce` | 0 | `0x0` |  |
 | `MetalSrdShared` | 1 | `0x30886C933` | 10 | `580a055bd41ed3f1` | `5497793b124348f1` | 1 | `0x0` |  |
 | `MetalSrdShared` | 2 | `0x3087B3164` | 2 | `525cc8f73fc005eb` | `dfb779f77fa96bfb` | 2 | `0x11C4` |  |
-| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `71cf0143fe4fe704` | `a010c210cd8bfd36` | 3 | `0x0` |  |
+| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `27497240fbda82f0` | `695927c88595900c` | 3 | `0x0` |  |
 | `MetalSrdShared` | 0 | `0x30886C85C` | 215 | `54ebf2cfa0983975` | `9b47e23146e92dd3` | 0 | `0x0` |  |
 | `MetalSrdShared` | 1 | `0x30886C933` | 10 | `580a055bd41ed3f1` | `5497793b124348f1` | 1 | `0x0` |  |
 | `MetalSrdShared` | 2 | `0x3087B3164` | 2 | `525cc8f73fc005eb` | `dfb779f77fa96bfb` | 2 | `0x11C4` |  |
-| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `71cf0143fe4fe704` | `9e8c5d94d7f0927f` | 3 | `0x0` |  |
+| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `27497240fbda82f0` | `7a4442fb870ebc00` | 3 | `0x0` |  |
 | `MetalSrdShared` | 0 | `0x30886C85C` | 215 | `54ebf2cfa0983975` | `8d4e9cdadbe4f2f5` | 0 | `0x0` |  |
 | `MetalSrdShared` | 1 | `0x30886C933` | 10 | `580a055bd41ed3f1` | `5497793b124348f1` | 1 | `0x0` |  |
 | `MetalSrdShared` | 2 | `0x3087B3164` | 2 | `525cc8f73fc005eb` | `dfb779f77fa96bfb` | 2 | `0x11C4` |  |
-| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `71cf0143fe4fe704` | `d353654635299df3` | 3 | `0x0` |  |
+| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `27497240fbda82f0` | `652f8e16c4c1dcc4` | 3 | `0x0` |  |
 | `MetalSrdShared` | 0 | `0x30886C85C` | 215 | `54ebf2cfa0983975` | `be82213096f5b1da` | 0 | `0x0` |  |
 | `MetalSrdShared` | 1 | `0x30886C933` | 10 | `580a055bd41ed3f1` | `5497793b124348f1` | 1 | `0x0` |  |
 | `MetalSrdShared` | 2 | `0x3087B3164` | 2 | `525cc8f73fc005eb` | `dfb779f77fa96bfb` | 2 | `0x11C4` |  |
-| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `71cf0143fe4fe704` | `e0c27a0fe7f91698` | 3 | `0x0` |  |
+| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `27497240fbda82f0` | `dbaaa8116dcc6a91` | 3 | `0x0` |  |
 | `MetalSrdShared` | 0 | `0x30886C85C` | 215 | `54ebf2cfa0983975` | `01baca80019cab60` | 0 | `0x0` |  |
 | `MetalSrdShared` | 1 | `0x30886C933` | 10 | `580a055bd41ed3f1` | `5497793b124348f1` | 1 | `0x0` |  |
 | `MetalSrdShared` | 2 | `0x3087B3164` | 2 | `525cc8f73fc005eb` | `dfb779f77fa96bfb` | 2 | `0x11C4` |  |
-| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `71cf0143fe4fe704` | `e4529baf973efc50` | 3 | `0x0` |  |
+| `MetalSrdShared` | 3 | `0x3087F0771` | 456 | `27497240fbda82f0` | `ce5dd507a86af7aa` | 3 | `0x0` |  |
 | `MetalSrdShared` | 0 | `0x310D73A28` | 215 | `886322b1d50af710` | `8e8b5401b13b4cd2` | 4294967295 | `0x0` |  |
 | `MetalSrdShared` | 1 | `0x310D73AFF` | 10 | `8944785f90985578` | `5497793b124348f1` | 4294967295 | `0x0` |  |
 | `MetalLegacyBlend` | 0 | `0x310D73A28` | 215 | `886322b1d50af710` | `8e8b5401b13b4cd2` | 4294967295 | `0x0` |  |

@@ -1,0 +1,39 @@
+{
+  "blendGate": 140716155810148,
+  "overrideContextSha256": "a13abd072bb29eb62c3cac0a42fdd5f469c7f593fd35ac9e278f3bb5a173588e",
+  "uuid": "0faee1e17a093a16922ed6e1663c715f",
+  "version": "15.8.3",
+  "build": "24H241",
+  "metal": {
+    "-[GFX9_MtlRenderPipelineState initWithDevice:pipelineStateDescriptor:vertexVariant:fragmentVariant:]": {
+      "address": 140716155805600,
+      "size": 9428,
+      "sha256": "52cbcee02a7483b86c40600fb52863ff5325efde6ded8b947531347cfc01f313"
+    },
+    "-[GFX9AMD_MtlCmdQueue submitCommandBuffers:count:]": {
+      "address": 140716155876736,
+      "size": 47,
+      "sha256": "60a3ceb710370b2ce85512b8c3b500b48d117b32c587bd95107db9cc2e3c3168"
+    },
+    "__ZL33amdMtl_GFX9_AllocateScratchBufferP28GFX9_MtlComputePipelineStatej": {
+      "address": 140716156061553,
+      "size": 456,
+      "sha256": "27497240fbda82f0b6a9927bdd1d42c2fa6056a46580de7dd82deaf3e45119a6"
+    },
+    "__Z29amdMtl_OverrideDeviceSettingsP18AMD_DeviceSettings": {
+      "address": 140716156544271,
+      "size": 958,
+      "sha256": "3420353cfd7753a730214304c6502af998489ab0f2f5121619a7a84d05ddce6c"
+    },
+    "__Z29amdMtl_HWL_InitDeviceSettingsP18AMD_DeviceSettingsP18AMDCommonHwInfoRec": {
+      "address": 140716156569692,
+      "size": 215,
+      "sha256": "54ebf2cfa09839755428245de73b5e2662c259306fb9de9ce103e83fafeb423f"
+    },
+    "__Z33amdMtl_HWL_OverrideDeviceSettingsP18AMD_DeviceSettingsP18AMDCommonHwInfoRec": {
+      "address": 140716156569907,
+      "size": 10,
+      "sha256": "580a055bd41ed3f1aae6aa8f84c50b972558db30593f9e0c6e4ebbf8d761e21e"
+    }
+  }
+}

@@ -148,17 +148,17 @@ class ResolverData:
                 matches = [entry for entry in sections(self.cache, base)
                            if entry[2] <= base + rva and base + rva + 4 <= entry[2] + entry[3]]
                 if len(matches) != 1:
-                    raise ValueError('视频外部目标不属于唯一完整节')
+                    raise ValueError('外部目标不属于唯一完整节')
                 segment, section, start, _, command, index = matches[0]
                 if segment == '__TEXT':
                     continue
                 value = (segment, section, base + rva - start, command, index)
                 key = path, rva
                 if key in targets and targets[key] != value:
-                    raise ValueError('视频参考目标的节内身份冲突')
+                    raise ValueError('参考目标的节内身份冲突')
                 targets[key] = value
         if not targets or len(targets) > 128:
-            raise ValueError('视频节目标数量超出预算')
+            raise ValueError('节目标数量超出预算')
         out = 'inline constexpr UserCacheSectionData::Target SectionTargets[] = {\n'
         for (path, rva), (segment, section, offset, command, index) in sorted(targets.items()):
             out += f'    {{"{path}", 0x{rva:X}ULL, "{segment}", "{section}", 0x{offset:X}ULL, {command}, {index}}},\n'

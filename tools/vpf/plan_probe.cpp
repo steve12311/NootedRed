@@ -185,7 +185,7 @@ static void testSequoiaSurface()
     using namespace UserSequoiaSurfaceData;
     constexpr auto functionCount = sizeof(ResolverFunctions) / sizeof(ResolverFunctions[0]);
     for (const auto& device : DevicePatches) {
-        cache(ResolverImages, ResolverFunctions, false);
+        cache(ResolverImages, ResolverFunctions, true, SectionTargets, std::size(SectionTargets));
         const auto constant = destination(ResolverFunctions[0].originalRefs[0], ResolverFunctions, functionCount);
         blocks[constant].resize(16);
         word32(constant, 0x40400000);

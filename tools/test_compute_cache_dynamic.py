@@ -1,6 +1,6 @@
 """编译真实 Metal 桥接，验证六种核显的动态 Scratch。"""
 from pathlib import Path
-from user_patch_memory_harness import with_memory_helpers
+from user_patch_memory_harness import with_memory_helpers, with_inactive_coordinator
 import subprocess
 import sys
 
@@ -34,6 +34,7 @@ def main():
     # 提交守卫闸门由协调器请求组驱动；测试直接请求 Tahoe 的 Metal 组。
     preamble += ('namespace UserPatchCoordinator { inline UInt32 requestedDisplayGroups()'
                  '{return VPF::requestedGroupsForDisplayFix(true,25);} }\n')
+    preamble = with_inactive_coordinator(preamble, WORK / 'stubs')
     harness = preamble + r'''
 #include "user-cache-dynamic.hpp"
 #include <UserSubmitGuardData.hpp>
@@ -139,6 +140,15 @@ int main(){
             'static kern_return_t vm_deallocate(vm_map_t,vm_address_t page,unsigned){blocks.erase(page);protections.erase(page);return 0;}')
     if LEGACY:
         harness = harness.replace('renderRequested = computeScratch', f'Version::majorValue={23 if SONOMA else 24}; renderRequested = computeScratch')
+        if not SONOMA:
+            harness = harness.replace('cache(ResolverImages, ResolverFunctions);',
+                'std::vector<UserCacheSectionData::Target> targets(std::begin(SectionTargets), std::end(SectionTargets));'
+                'targets.insert(targets.end(), std::begin(Submit::SectionTargets), std::end(Submit::SectionTargets));'
+                'cache(ResolverImages, ResolverFunctions, true, targets.data(), targets.size());', 1)
+            harness = harness.replace('cache(ResolverImages, ResolverFunctions);',
+                'cache(ResolverImages, ResolverFunctions, true, SectionTargets, std::size(SectionTargets));')
+            harness = harness.replace('imageAddresses[ref.image] + ref.rva',
+                'destination(ref, UserSequoiaSurfaceData::ResolverFunctions, 5)')
     if SONOMA:
         harness = harness.replace('UserSequoiaSurfaceData', 'UserSonomaSurfaceData')
         harness = harness.replace('UserSurfaceSyncResolver::resolveSequoia(reader, base, device.deviceID, plan)',

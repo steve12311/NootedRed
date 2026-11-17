@@ -129,6 +129,12 @@ int main()
         std::vector<uint8_t> duplicate(fn.size);
         assert(reader(functionAddresses[3], duplicate.data(), duplicate.size()) == 0);
         put(imageAddresses[fn.image] + 0x60000, duplicate.data(), duplicate.size());
+        for (unsigned r = 0; r < fn.originalCount; ++r) {
+            const auto& ref = fn.originalRefs[r];
+            uint64_t target = 0;
+            assert(UserSharedCache::relativeTarget(functionAddresses[3], ref.offset, duplicate.data(), target));
+            rel(imageAddresses[fn.image] + 0x60000, ref.offset, target);
+        }
         initial = blocks;
         call();
         assert(blocks == initial && writes == 0 && protects == 0);
