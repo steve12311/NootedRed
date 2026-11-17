@@ -161,7 +161,13 @@ template<typename Data>
 static void testVideo(const char* os, const UInt32 osMask, const UInt32 major)
 {
     for (const auto& device : Data::devices) {
-        cache(Data::images, Data::functions, true);
+        if (major == 24) {
+            cache(Data::images, Data::functions, true, UserSequoiaVideoData::SectionTargets,
+                  std::size(UserSequoiaVideoData::SectionTargets));
+        }
+        else {
+            cache(Data::images, Data::functions, true);
+        }
         UserSharedCache::Input input{reader, {}};
         UInt8                    scan[UserSharedCache::Input::ScanSize];
         input.scanBuffer = scan;
@@ -186,8 +192,9 @@ static void testSequoiaSurface()
     constexpr auto functionCount = sizeof(ResolverFunctions) / sizeof(ResolverFunctions[0]);
     for (const auto& device : DevicePatches) {
         cache(ResolverImages, ResolverFunctions, true, SectionTargets, std::size(SectionTargets));
-        const auto constant = destination(ResolverFunctions[0].originalRefs[0], ResolverFunctions, functionCount);
-        blocks[constant].resize(16);
+        const auto constant = imageAddresses[0] + 0x71064;
+        put(functionAddresses[4], ResolverFunctions[4].original, ResolverFunctions[4].size);
+        rel(functionAddresses[0], ResolverFunctions[0].originalRefs[0].offset, constant);
         word32(constant, 0x40400000);
         const auto dump = destination(ResolverFunctions[0].originalRefs[2], ResolverFunctions, functionCount);
         put(dump, UserSurfaceSyncData::NativeDump, sizeof(UserSurfaceSyncData::NativeDump));

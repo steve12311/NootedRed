@@ -7,8 +7,7 @@
 | 系统 | 参考缓存 | 显示数据 | 视频数据 |
 | --- | --- | --- | --- |
 | macOS 14.8.9 / 23J631 | `4C1441FD-8A54-3DC2-863D-49110B946A25` | `UserSonomaSurfaceData` | `UserSonomaVideoData` |
-| macOS 15.8.3 / 24H241（显示） | `0FAEE1E1-7A09-3A16-922E-D6E1663C715F` | `UserSequoiaSurfaceData` | — |
-| macOS 15.8.1 / 24H32（视频） | `42EC2890-BC40-317E-BB27-45142BFF7F26` | — | `UserSequoiaVideoData` |
+| macOS 15.8.3 / 24H241 | `0FAEE1E1-7A09-3A16-922E-D6E1663C715F` | `UserSequoiaSurfaceData` | `UserSequoiaVideoData` |
 | macOS 26.7.2 | `21FB8708-FC8E-3765-BE8C-65D612CDF049` | `UserSurfaceSyncData` / `UserSurfaceConstructorData` | `UserVideoDecodeData` |
 
 Darwin 23 的参考数据来自 macOS 14.8.9 / 23J631 的只读系统缓存镜像。
@@ -16,7 +15,10 @@ Darwin 23 的参考数据来自 macOS 14.8.9 / 23J631 的只读系统缓存镜�
 UUID 用于溯源、诊断与 FVRC 身份核对；参考 UUID 也必须通过完整函数和引用核验。
 未知函数实现、绑定目标、设备或 ABI 继续拒绝，不按主版本直接放行。
 
-Darwin 24 显示与提交守卫使用 15.8.3 参考数据，和 Darwin 25 共用数据节重定位机制。
+Darwin 24 显示、提交守卫和视频使用 15.8.3 参考数据，和 Darwin 25 共用数据节重定位机制。
+视频参考函数与上下文位于 `tools/fixtures/sequoia-video-15.8.3.json`，冷路径和 FVRC 热路径均核对实际节目标与绑定。
+Darwin 24 不再使用独立的五函数 Metal 解析流程；24/25 经 `UserPatchProfiles.hpp` 选择数据后，
+共用初始化关系核验、Scratch/构造器解析、提交守卫和视频解析。两者使用相同的 FVRC 功能组及失败回退。
 15.8.1 保留完整函数和载荷的离线回归夹具；缺少原始缓存，尚未完成真实缓存与实机回归。
 
 ## 功能与参数

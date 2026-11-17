@@ -1,6 +1,6 @@
 // 仅生成当前视频缓存的补丁计划；UUID 不作为动态路径的兼容依据。
 #pragma once
-#include <UserSequoiaVideoData.hpp>
+#include <UserPatchProfiles.hpp>
 #include <UserSonomaVideoData.hpp>
 #include <UserVideoDecodeData.hpp>
 #include <VPF/FastResolution.hpp>
@@ -40,7 +40,8 @@ namespace UserVideoDecodeResolver
                            Plan& plan, const UserCacheResolver::ImageReference (&imageRefs)[Images],
                            const UserCacheResolver::Function (&functions)[Functions],
                            const UserCacheResolver::Location (&locations)[Locations], const bool sectionRelative,
-                           VPF::FastResolution* fast)
+                           VPF::FastResolution* fast, const UserCacheSectionData::Target* sectionTargets = nullptr,
+                           UInt32 sectionTargetCount = 0)
     {
         static_assert(Images == ImageCount && Functions <= MaxFunctionCount && Locations == PatchCount);
         if (!patches) { return false; }
@@ -54,7 +55,8 @@ namespace UserVideoDecodeResolver
         {
             if (UserCacheResolver::resolveFunctions(input, base, imageRefs, functions, patches, locations, plan.patches,
                                                     &plan.original[0][0], &plan.patched[0][0], MaxPatchSize,
-                                                    plan.images, sectionRelative, nullptr, 0, plan.locations, nullptr))
+                                                    plan.images, sectionRelative, sectionTargets, sectionTargetCount,
+                                                    plan.locations, nullptr))
             {
                 plan.reads = input.reads;
                 return true;
@@ -67,13 +69,40 @@ namespace UserVideoDecodeResolver
         }
         if (!UserCacheResolver::resolveFunctions(input, base, imageRefs, functions, patches, locations, plan.patches,
                                                  &plan.original[0][0], &plan.patched[0][0], MaxPatchSize, plan.images,
-                                                 sectionRelative, nullptr, 0, nullptr, plan.locations))
+                                                 sectionRelative, sectionTargets, sectionTargetCount, nullptr,
+                                                 plan.locations))
         {
             return false;
         }
         plan.reads = input.reads;
         if (fast) { fast->publish(VPF::FunctionGroup::VideoDecode, plan.locations, functionImages, Functions); }
         return true;
+    }
+
+    inline const UserVideoDecodeData::Patch* findDevice(UInt32 deviceID, UInt32 major)
+    {
+        if (major == 23) { return UserSonomaVideoData::findDevice(deviceID); }
+        const UserVideoDecodeData::Patch* patches = nullptr;
+        UserPatchProfiles::dispatch(major,
+                                    [&](auto profile)
+                                    {
+                                        patches = decltype(profile)::videoDevice(deviceID);
+                                        return patches != nullptr;
+                                    });
+        return patches;
+    }
+
+    inline UInt32 fairPlayMask(UInt32 major)
+    {
+        if (major == 23) { return UserSonomaVideoData::FairPlayDecodeMask; }
+        UInt32 mask = 0;
+        UserPatchProfiles::dispatch(major,
+                                    [&](auto profile)
+                                    {
+                                        mask = decltype(profile)::FairPlayDecodeMask;
+                                        return true;
+                                    });
+        return mask;
     }
 
     inline bool resolve(UserSharedCache::Input& input, UInt64 base, const UserVideoDecodeData::Patch* patches,
@@ -85,12 +114,14 @@ namespace UserVideoDecodeResolver
                               UserSonomaVideoData::ResolverFunctions, UserSonomaVideoData::ResolverLocations, false,
                               fast);
         }
-        if (major != 24 && major != 25) { return false; }
-        return major == 24 ? resolveSet(input, base, patches, plan, UserSequoiaVideoData::ResolverImages,
-                                        UserSequoiaVideoData::ResolverFunctions,
-                                        UserSequoiaVideoData::ResolverLocations, false, fast) :
-                             resolveSet(input, base, patches, plan, ResolverImages, ResolverFunctions,
-                                        ResolverLocations, true, fast);
+        return UserPatchProfiles::dispatch(major,
+                                           [&](auto profile)
+                                           {
+                                               using Data = decltype(profile);
+                                               return resolveSet(input, base, patches, plan, Data::VideoImages,
+                                                                 Data::VideoFunctions, Data::VideoLocations, true, fast,
+                                                                 Data::VideoTargets, Data::VideoTargetCount);
+                                           });
     }
 
     inline bool resolve(UserSharedCache::Reader reader, UInt64 base, const UserVideoDecodeData::Patch* patches,

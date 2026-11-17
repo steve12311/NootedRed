@@ -194,7 +194,10 @@ int main(){
    case 5:word64(base+0x1000+32,imageAddresses[0]-0x200000);word32(base+0x1018+32,0x3000);break;
    case 6:word64(base+232,0xffffffffffffffffULL);break;
    case 7:failedRead=functionAddresses[0];break;
-   case 8:{std::vector<uint8_t> b(ResolverFunctions[0].size);assert(reader(functionAddresses[0],b.data(),b.size())==0);put(imageAddresses[0]+0x5e000,b.data(),b.size());}break;
+   case 8:{auto&fn=ResolverFunctions[0];std::vector<uint8_t> b(fn.size);assert(reader(functionAddresses[0],b.data(),b.size())==0);
+    const auto copy=imageAddresses[0]+0x5e000;put(copy,b.data(),b.size());
+    for(unsigned r=0;r<fn.originalCount;r++){auto&ref=fn.originalRefs[r];uint64_t target=0;
+     assert(UserSharedCache::relativeTarget(functionAddresses[0],ref.offset,b.data(),target));rel(copy,ref.offset,target);}}break;
    case 9:word64(base+0x7000000,0);break;
    case 10:rel(functionAddresses[0],ResolverFunctions[0].originalRefs[0].offset,base+0x7010000);break;
    case 11:put(base,"invalid",7);break;
@@ -300,8 +303,14 @@ int main(){
 }
 '''
     if LEGACY:
-        harness = harness.replace('cache(ResolverImages,ResolverFunctions,true)', 'cache(ResolverImages,ResolverFunctions,false)')
-        harness = harness.replace('UserVideoDecodeData::MaxPatchSize,1)', 'UserVideoDecodeData::MaxPatchSize,0)')
+        if SONOMA:
+            harness = harness.replace('cache(ResolverImages,ResolverFunctions,true)', 'cache(ResolverImages,ResolverFunctions,false)')
+            harness = harness.replace('UserVideoDecodeData::MaxPatchSize,1)', 'UserVideoDecodeData::MaxPatchSize,0)')
+        else:
+            harness = harness.replace('cache(ResolverImages,ResolverFunctions,true)',
+                'cache(ResolverImages,ResolverFunctions,true,SectionTargets,std::size(SectionTargets))')
+            harness = harness.replace('UserVideoDecodeData::MaxPatchSize,1)',
+                'UserVideoDecodeData::MaxPatchSize,true,UserVideoDecodeData::SectionTargets,std::size(UserVideoDecodeData::SectionTargets))')
         harness = harness.replace('UserVideoDecodeData::', 'UserSequoiaVideoData::')
         harness = harness.replace('using namespace UserVideoDecodeData;', 'using namespace UserSequoiaVideoData;')
         harness = harness.replace('devicePatches,plan)', f'devicePatches,plan,{23 if SONOMA else 24})')

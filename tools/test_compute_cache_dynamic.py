@@ -141,6 +141,13 @@ int main(){
     if LEGACY:
         harness = harness.replace('renderRequested = computeScratch', f'Version::majorValue={23 if SONOMA else 24}; renderRequested = computeScratch')
         if not SONOMA:
+            harness = harness.replace('preinstallSequoiaSubmit();',
+                'put(functionAddresses[4], ResolverFunctions[4].original, ResolverFunctions[4].size);'
+                'rel(functionAddresses[0], ResolverFunctions[0].originalRefs[0].offset, imageAddresses[0]+0x71064);'
+                'preinstallSequoiaSubmit();')
+            harness = harness.replace('const auto constant = destination(ResolverFunctions[0].originalRefs[0], ResolverFunctions, 5);',
+                'const auto constant = imageAddresses[0]+0x71064;')
+            harness = harness.replace('blocks[constant].resize(16);', '')
             harness = harness.replace('cache(ResolverImages, ResolverFunctions);',
                 'std::vector<UserCacheSectionData::Target> targets(std::begin(SectionTargets), std::end(SectionTargets));'
                 'targets.insert(targets.end(), std::begin(Submit::SectionTargets), std::end(Submit::SectionTargets));'

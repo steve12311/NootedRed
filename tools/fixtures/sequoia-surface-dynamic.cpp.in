@@ -104,14 +104,32 @@ int main()
         ++cases;
         for (unsigned f = 0; f < 5; ++f) {
             setup(device.deviceID);
-            word32(functionAddresses[f] + 100, 0);
+            word32(functionAddresses[f] + (f == 1 ? 2 : 100), 0);
             initial = blocks;
             call();
             assert(blocks == initial && writes == 0 && protects == 0);
             ++cases;
         }
         setup(device.deviceID);
-        word64(base + 0x7000000, 0);
+        {
+            const auto& fn = UserSequoiaSurfaceData::ResolverFunctions[3];
+            bool corrupted = false;
+            for (unsigned r = 0; r < fn.originalCount && !corrupted; ++r) {
+                const auto& ref = fn.originalRefs[r];
+                if (!ref.indirect) { continue; }
+                uint8_t field[4];
+                uint64_t slot = 0;
+                assert(reader(functionAddresses[3] + ref.offset, field, sizeof(field)) == 0);
+                assert(UserSharedCache::relativeTarget(functionAddresses[3] + ref.offset, 0, field, slot));
+                if (ref.indirect == 2) {
+                    assert(reader(slot + 2, field, sizeof(field)) == 0);
+                    assert(UserSharedCache::relativeTarget(slot + 2, 0, field, slot));
+                }
+                word64(slot, 0);
+                corrupted = true;
+            }
+            assert(corrupted);
+        }
         initial = blocks;
         call();
         assert(blocks == initial && writes == 0 && protects == 0);

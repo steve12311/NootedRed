@@ -467,12 +467,12 @@ namespace UserCacheResolver
         bool   patched;
     };
 
-    template<size_t ImageCount>
+    template<size_t ImageCount, size_t ImageCapacity>
     __attribute__((noinline)) inline bool resolveImages(Input& input, UInt64 base,
                                                         const ImageReference (&imageRefs)[ImageCount],
-                                                        ImageBounds          (&images)[ImageCount])
+                                                        ImageBounds          (&images)[ImageCapacity])
     {
-        static_assert(ImageCount > 0 && ImageCount <= 16);
+        static_assert(ImageCount > 0 && ImageCount <= 16 && ImageCapacity >= ImageCount);
         input.selectImages(base, imageRefs, ImageCount);
         for (UInt32 i = 0; i < ImageCount; ++i) {
             Image image;
@@ -488,15 +488,16 @@ namespace UserCacheResolver
     }
 
     // known 只允许在映像同源且无私有页已证明时使用；跳过唯一性扫描但保留全部函数与引用核验。
-    template<typename Patch, size_t ImageCount, size_t FunctionCount, size_t PatchCount>
+    template<typename Patch, size_t ImageCount, size_t FunctionCount, size_t PatchCount, size_t ImageCapacity>
     __attribute__((noinline)) inline bool
         resolveFunctions(Input& input, UInt64 base, const ImageReference (&imageRefs)[ImageCount],
                          const Function (&functions)[FunctionCount], const Patch* patches,
                          const Location (&locations)[PatchCount], Patch* output, UInt8* originals, UInt8* replacements,
-                         UInt32 stride, ImageBounds (&images)[ImageCount], bool sectionRelative,
+                         UInt32 stride, ImageBounds (&images)[ImageCapacity], bool sectionRelative,
                          const UserCacheSectionData::Target* scopedTargets, UInt32 scopedTargetCount,
                          const KnownLocation* known, KnownLocation* located)
     {
+        static_assert(ImageCapacity >= ImageCount);
         static_assert(ImageCount > 0 && ImageCount <= 16 && FunctionCount > 0 && FunctionCount <= 32);
         if (scopedTargetCount > 128 || (scopedTargets == nullptr) != (scopedTargetCount == 0)) { return false; }
         UInt64 addresses[FunctionCount]{};
@@ -626,29 +627,31 @@ namespace UserCacheResolver
         return true;
     }
 
-    template<typename Patch, size_t ImageCount, size_t FunctionCount, size_t PatchCount>
+    template<typename Patch, size_t ImageCount, size_t FunctionCount, size_t PatchCount, size_t ImageCapacity>
     __attribute__((noinline)) inline bool
         resolveWithImages(Input& input, UInt64 base, const ImageReference (&imageRefs)[ImageCount],
                           const Function (&functions)[FunctionCount], const Patch* patches,
                           const Location (&locations)[PatchCount], Patch* output, UInt8* originals, UInt8* replacements,
-                          UInt32 stride, ImageBounds (&images)[ImageCount], bool sectionRelative = false,
+                          UInt32 stride, ImageBounds (&images)[ImageCapacity], bool sectionRelative = false,
                           const UserCacheSectionData::Target* scopedTargets = nullptr, UInt32 scopedTargetCount = 0)
     {
+        static_assert(ImageCapacity >= ImageCount);
         if (!resolveImages(input, base, imageRefs, images)) { return false; }
         return resolveFunctions(input, base, imageRefs, functions, patches, locations, output, originals, replacements,
                                 stride, images, sectionRelative, scopedTargets, scopedTargetCount, nullptr, nullptr);
     }
 
     // 显式热点入口：只核验已定位的函数及其引用/绑定，不执行全域唯一性扫描。
-    template<typename Patch, size_t ImageCount, size_t FunctionCount, size_t PatchCount>
+    template<typename Patch, size_t ImageCount, size_t FunctionCount, size_t PatchCount, size_t ImageCapacity>
     __attribute__((noinline)) inline bool
         verifyAtKnownRVA(Input& input, UInt64 base, const ImageReference (&imageRefs)[ImageCount],
                          const Function (&functions)[FunctionCount], const Patch* patches,
                          const Location (&locations)[PatchCount], const KnownLocation (&known)[FunctionCount],
                          Patch* output, UInt8* originals, UInt8* replacements, UInt32 stride,
-                         ImageBounds (&images)[ImageCount], bool sectionRelative = false,
+                         ImageBounds (&images)[ImageCapacity], bool sectionRelative = false,
                          const UserCacheSectionData::Target* scopedTargets = nullptr, UInt32 scopedTargetCount = 0)
     {
+        static_assert(ImageCapacity >= ImageCount);
         return resolveFunctions(input, base, imageRefs, functions, patches, locations, output, originals, replacements,
                                 stride, images, sectionRelative, scopedTargets, scopedTargetCount, known, nullptr);
     }

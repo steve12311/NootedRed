@@ -33,7 +33,8 @@ def main():
     rows = [r for r in report["records"] if r["label"] in [PITCH, SIZE, AVC, HEVC]]
     assert len(rows) == 4
     assembly = ".text\n"
-    profile = json.loads((ROOT / f'tools/fixtures/{system}-compat.json').read_text()) if directory else None
+    profile_name = 'sonoma-compat.json' if args.sonoma_cache else 'sequoia-video-15.8.3.json'
+    profile = json.loads((ROOT / 'tools/fixtures' / profile_name).read_text()) if directory else None
     cache = CacheReader(directory, profile['uuid']) if profile else CacheReader()
     try:
         lines = (cache.directory / "dyld_shared_cache_x86_64h.map").read_text().splitlines()

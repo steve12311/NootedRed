@@ -57,8 +57,13 @@ namespace MetalFixture
         else {
             cache(images, functions);
         }
-        const auto constant = destination(functions[0].originalRefs[0], functions, Functions);
-        blocks[constant].resize(16);
+        const auto constant = major == 24 ? imageAddresses[0] + 0x71064 :
+                              destination(functions[0].originalRefs[0], functions, Functions);
+        if (major == 24) {
+            put(functionAddresses[4], functions[4].original, functions[4].size);
+            rel(functionAddresses[0], functions[0].originalRefs[0].offset, constant);
+        }
+        else { blocks[constant].resize(16); }
         word32(constant, 0x40400000);
         put(destination(functions[0].originalRefs[2], functions, Functions), UserSurfaceSyncData::NativeDump,
             sizeof(UserSurfaceSyncData::NativeDump));

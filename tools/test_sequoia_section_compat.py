@@ -99,8 +99,10 @@ static void setup(bool old){
  if(old)cache(Old::Images,Old::Functions,true,Old::Targets,std::size(Old::Targets));
  else {using namespace UserSequoiaSurfaceData;cache(ResolverImages,ResolverFunctions,true,SectionTargets,std::size(SectionTargets));}
  const auto& fn=old?Old::Functions[0]:UserSequoiaSurfaceData::ResolverFunctions[0];
- const auto constant=destination(fn.originalRefs[0],old?Old::Functions:UserSequoiaSurfaceData::ResolverFunctions,5);
- blocks[constant].resize(16);word32(constant,0x40400000);
+ const auto& settings=old?Old::Functions[4]:UserSequoiaSurfaceData::ResolverFunctions[4];
+ put(functionAddresses[4],settings.original,settings.size);
+ const auto constant=imageAddresses[0]+0x71064;word32(constant,0x40400000);
+ rel(functionAddresses[0],fn.originalRefs[0].offset,constant);
  const auto dump=destination(fn.originalRefs[2],old?Old::Functions:UserSequoiaSurfaceData::ResolverFunctions,5);
  put(dump,UserSurfaceSyncData::NativeDump,sizeof(UserSurfaceSyncData::NativeDump));
 }

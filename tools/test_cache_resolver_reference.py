@@ -22,7 +22,8 @@ def main():
     if directory:
         WORK = ROOT / f'build/dynamic-cache/{system}-reference'
     WORK.mkdir(parents=True, exist_ok=True)
-    profile = json.loads((ROOT / f'tools/fixtures/{system}-compat.json').read_text()) if directory else None
+    profile_name = 'sonoma-compat.json' if args.sonoma_cache else 'sequoia-surface-15.8.3.json'
+    profile = json.loads((ROOT / 'tools/fixtures' / profile_name).read_text()) if directory else None
     cache = CacheReader(directory, profile['uuid']) if profile else CacheReader()
     mappings = []
     try:

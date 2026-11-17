@@ -25,6 +25,8 @@ TRACKED = (
     'NootedRed/UserSharedCache.hpp',
     'NootedRed/UserVideoDecodeResolver.hpp',
     'NootedRed/UserSurfaceSyncResolver.hpp',
+    'NootedRed/UserPatchProfiles.hpp',
+    'NootedRed/VPF/ResolutionIdentity.hpp',
     'NootedRed/VPF/PatchManifest.hpp',
     'NootedRed/VPF/PatchManifestData.hpp',
     'NootedRed/VPF/VerifiedPatchPlan.hpp',

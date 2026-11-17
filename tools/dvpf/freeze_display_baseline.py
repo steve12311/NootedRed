@@ -29,6 +29,8 @@ TRACKED = (
     'NootedRed/UserOpenGLData.hpp',
     'NootedRed/UserSurfaceSync.cpp',
     'NootedRed/UserSurfaceSyncResolver.hpp',
+    'NootedRed/UserPatchProfiles.hpp',
+    'NootedRed/VPF/ResolutionIdentity.hpp',
     'NootedRed/UserSurfaceSyncData.hpp',
     'NootedRed/UserSequoiaSurfaceData.hpp',
     'NootedRed/UserSurfaceConstructorData.hpp',
@@ -71,6 +73,7 @@ TRACKED = (
     'tools/fixtures/legacy-compat.json',
     'tools/fixtures/sequoia-compat.json',
     'tools/fixtures/sequoia-surface-15.8.3.json',
+    'tools/fixtures/sequoia-video-15.8.3.json',
     'tools/fixtures/sequoia-surface-15.8.1.json',
 )
 

@@ -421,20 +421,7 @@ int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int res
         return result;
     }
     MappingProbeState probeState{map, queryRegion};
-    if (renderRequested) {
-        if (major == 23) {
-            using namespace UserSonomaSurfaceData;
-            input.selectImages(base, ResolverImages, arrsize(ResolverImages));
-        }
-        else if (major == 24) {
-            using namespace UserSequoiaSurfaceData;
-            input.selectImages(base, ResolverImages, arrsize(ResolverImages));
-        }
-        else if (computeScratch) {
-            using namespace ScratchResolverData;
-            input.selectImages(base, ResolverImages, arrsize(ResolverImages));
-        }
-    }
+    if (renderRequested) { UserSurfaceSyncResolver::selectMetalImages(input, base, major); }
     const char* const             uuidKeys[] = {"NRedImmediateSyncCacheUUID0", "NRedImmediateSyncCacheUUID1",
                                                 "NRedImmediateSyncCacheUUID2", "NRedImmediateSyncCacheUUID3"};
     for (UInt32 i = 0; i < 4; ++i) {

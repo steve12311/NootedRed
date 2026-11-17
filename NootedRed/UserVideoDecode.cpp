@@ -167,9 +167,7 @@ namespace
 
     UInt32 fairPlayMask()
     {
-        return darwinMajor == 23 ? UserSonomaVideoData::FairPlayDecodeMask :
-               darwinMajor == 24 ? UserSequoiaVideoData::FairPlayDecodeMask :
-                                   UserVideoDecodeData::FairPlayDecodeMask;
+        return UserVideoDecodeResolver::fairPlayMask(darwinMajor);
     }
 
     enum class Stage : UInt32
@@ -1171,9 +1169,7 @@ void UserVideoDecode::init(KernelPatcher& patcher)
     rejectTrace            = checkKernelArgument("-NRedRejectTrace");
     NRed::singleton().setProp32("NRedVCNRejectedCacheTable", rejectedCaches.init() ? 1 : 0);
     darwinMajor            = currentKernelVersion().major();
-    const auto* candidates = darwinMajor == 23 ? UserSonomaVideoData::findDevice(deviceID) :
-                             darwinMajor == 24 ? UserSequoiaVideoData::findDevice(deviceID) :
-                                                 UserVideoDecodeData::findDevice(deviceID);
+    const auto* candidates = UserVideoDecodeResolver::findDevice(deviceID, darwinMajor);
     if (!candidates) {
         NRed::singleton().setProp32("NRedVCNUserRejected", 3);
         return;
