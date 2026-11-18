@@ -159,9 +159,9 @@ namespace
     UInt32                            darwinMajor{0};
     const UserVideoDecodeData::Patch* devicePatches{nullptr};
     constexpr auto                    PatchCount   = arrsize(UserVideoDecodeData::Patches);
-    constexpr UInt32                  Capacity     = PatchCount;
+    constexpr UInt32                  Capacity     = PatchCount + UserVideoDecodeResolver::RDDPatchCount;
     constexpr UInt32                  MaxPageCount = Capacity * 2;
-    static_assert(PatchCount <= 32);
+    static_assert(Capacity <= VPF::MaxPlanSites);
     static_assert(arrsize(UserSequoiaVideoData::Patches) == PatchCount);
     static_assert(UserSequoiaVideoData::MaxPatchSize <= UserVideoDecodeData::MaxPatchSize);
 
@@ -300,6 +300,23 @@ namespace
             const auto& site = source.site(i);
             if (!out.addSite(site.address, site.offset, site.size, site.functionIndex, site.instructionOffset,
                              site.original, site.replacement))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool appendVTRDDCandidates(VPF::VerifiedPatchPlan& plan, UserSharedCache::Input& input, UInt64 base,
+                               UInt32 major, UserVideoDecodeResolver::RDDPlan& candidates, VPF::FastResolution& fast)
+    {
+        UserSharedCache::Input candidateInput{input.reader, input.cache};
+        candidateInput.scanBuffer = input.scanBuffer;
+        if (!UserVideoDecodeResolver::resolveRDD(candidateInput, base, candidates, major, &fast)) { return true; }
+        for (UInt32 i = 0; i < candidates.count; ++i) {
+            const auto& patch = candidates.patches[i];
+            if (!plan.addSite(base + patch.offset, patch.offset, patch.size, VPF::NoFunction, 0, patch.original,
+                              patch.patched))
             {
                 return false;
             }
@@ -472,6 +489,7 @@ namespace
         UserVideoDecodeData::Patch selected[PatchCount]{}, install[Capacity]{};
         VPF::VerifiedPatchPlan     decodePlan{}, installPlan{};
         VPF::PlannerResult         planner{};
+        UserVideoDecodeResolver::RDDPlan rdd{};
         Page                       pages[MaxPageCount]{};
         UserSharedCache::Input     input{nullptr, {}};
         UInt8                      scan[UserSharedCache::Input::ScanSize];
@@ -555,8 +573,8 @@ namespace
     namespace VP9
     {
         using namespace UserVP9DecodeData;
-        constexpr UInt32 SiteCount = UserVP9DecodeResolver::PatchCount;
-        constexpr UInt32 MaxPages  = SiteCount * 2;
+        constexpr UInt32 MaxSites  = UserVP9DecodeResolver::MaxSites;
+        constexpr UInt32 MaxPages  = MaxSites * 2;
         static_assert(PageCount <= MaxPages);
 
         enum class State : UInt32
@@ -579,7 +597,7 @@ namespace
         struct Workspace
         {
             struct Row
-            { UInt8 bytes[UserVP9DecodeData::MaxPatchSize]; } saved[SiteCount];
+            { UInt8 bytes[UserVP9DecodeData::MaxPatchSize]; } saved[MaxSites];
             UserPatchMemory::Page pages[MaxPages];
         };
 
@@ -593,7 +611,7 @@ namespace
                 const UInt8* original;
                 const UInt8* replacement;
             };
-            UInt32 siteCount() const { return SiteCount; }
+            UInt32 siteCount() const { return plan->count; }
             Site   site(const UInt32 index) const
             {
                 const auto& patch = plan->patches[index];
@@ -657,9 +675,10 @@ namespace
                 return;
             }
             memset(work, 0, sizeof(*work));
+            const auto siteCount = plan->count;
             UInt32 pageCount{0}, originals{0}, patched{0};
             bool   valid{true};
-            for (UInt32 i = 0; valid && i < SiteCount; ++i) {
+            for (UInt32 i = 0; valid && i < siteCount; ++i) {
                 const auto& site    = plan->patches[i];
                 const auto  address = base + site.offset;
                 if (site.size == 0 || site.size > MaxPatchSize || site.offset >= UserSharedCache::UserLimit - base
@@ -679,14 +698,14 @@ namespace
                     valid = false;
                 }
             }
-            if (!valid || (originals != SiteCount && patched != SiteCount)) {
+            if (!valid || (originals != siteCount && patched != siteCount)) {
                 // Stato misto o byte sconosciuti: non si tocca nulla.
                 NRed::singleton().setProp32("NRedVP9Mixed", 1);
                 VCN::setVP9Ready(false);
                 IODelete(work, Workspace, 1);
                 return;
             }
-            if (patched == SiteCount) {
+            if (patched == siteCount) {
                 bool executable{true};
                 for (UInt32 p = 0; executable && p < pageCount; ++p) {
                     executable = executablePage(map, work->pages[p].address);
@@ -708,7 +727,7 @@ namespace
             ExecutorOps ops{map, queryRegion, error, readUser, writeUser};
             using Executor =
                 VPF::SharedRegionTransaction<ExecutorOps, UserVideoDecodeData::Patch, UserPatchMemory::Page, MaxPatchSize>;
-            Executor executor(ops, base, plan->patches, SiteCount,
+            Executor executor(ops, base, plan->patches, siteCount,
                               reinterpret_cast<UInt8(*)[MaxPatchSize]>(work->saved), work->pages, pageCount, 0);
             const auto committed = executor.commit([] { return true; });
             IODelete(work, Workspace, 1);
@@ -903,7 +922,9 @@ namespace
         auto& installPlan = workspace.installPlan;
         installPlan.reset(*decodeManifest, base, cache);
         if (!addPlanImages(installPlan, workspace.decodePlan)
-            || !appendPlanSites(installPlan, workspace.decodePlan) || installPlan.siteCount() == 0
+            || !appendPlanSites(installPlan, workspace.decodePlan)
+            || (!fairPlayDecode && !appendVTRDDCandidates(installPlan, input, base, major, workspace.rdd, fast))
+            || installPlan.siteCount() == 0
             || installPlan.siteCount() > Capacity || !installPlan.seal(VPF::PlanState::AllOriginal))
         {
             stage(Stage::CodeMismatch, fairPlayPID);

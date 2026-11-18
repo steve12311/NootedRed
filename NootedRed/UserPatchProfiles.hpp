@@ -5,12 +5,14 @@
 #include <UserSurfaceConstructorData.hpp>
 #include <UserSurfaceSyncData.hpp>
 #include <UserVideoDecodeData.hpp>
+#include <UserVTRDDCandidateData.hpp>
 
 namespace UserPatchProfiles
 {
 
     struct Sequoia
     {
+        using VTRDD = UserVTRDDCandidateData::Sequoia::Profile;
         static inline constexpr auto& Original0         = UserSequoiaSurfaceData::Original0;
         static inline constexpr auto& Original1         = UserSequoiaSurfaceData::Original1;
         static inline constexpr auto& Patched1          = UserSequoiaSurfaceData::Patched1;
@@ -75,6 +77,7 @@ namespace UserPatchProfiles
 
     struct Tahoe
     {
+        using VTRDD = UserVTRDDCandidateData::Tahoe::Profile;
         static inline constexpr auto& Original0              = UserSurfaceSyncData::Original0;
         static inline constexpr auto& Original1              = UserSurfaceSyncData::Original1;
         static inline constexpr auto& Patched1               = UserSurfaceSyncData::Patched1;

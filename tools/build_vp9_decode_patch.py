@@ -25,6 +25,17 @@ WORK = ROOT / "build/vp9/backend"
 IMAGE = "/System/Library/Extensions/AMDRadeonVADriver2.bundle/Contents/MacOS/AMDRadeonVADriver2"
 DEFAULT_UUID = "5a3da575f02e33dc9b14f663050011e6"
 MAX_SITE = 512
+PROFILES = {
+    23: ("Sonoma", "4c1441fd8a543dc2863d49110b946a25"),
+    24: ("Sequoia", "0faee1e17a093a16922ed6e1663c715f"),
+    25: ("", DEFAULT_UUID),
+}
+DRIVER_OFFSETS = {
+    23: (0x16F, 0xF2, 0x106, 0x243, 0x5AD, 0x58, 0xD8, 0x1F2, 0x6C, 0x2F5),
+    24: (0x179, 0xE1, 0x10A, 0x20E, 0x41, 0x72, 0xE0, 0x1DB, 0x6C, 0x331),
+    25: (0x179, 0xE3, 0x10A, 0x272, 0x41, 0x72, 0xE0, 0x1DB, 0x68, 0x32F),
+}
+
 CFLAGS = ["-std=c++17", "-target", "x86_64-apple-macos13", "-Oz", "-ffreestanding", "-fno-exceptions", "-fno-rtti",
           "-fno-stack-protector", "-fno-asynchronous-unwind-tables", "-fvisibility=hidden", "-Wall", "-Wextra",
           "-Werror", f"-I{ROOT / 'NootedRed'}"]
@@ -153,10 +164,16 @@ def rel32(source, size, target):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--uuid", default=DEFAULT_UUID, help="UUID of the reference shared cache")
+    parser.add_argument("--major", type=int, choices=PROFILES, default=25)
+    parser.add_argument("--uuid", help="UUID of the reference shared cache")
     parser.add_argument("--cache", type=Path, default=CACHE, help="只读参考共享缓存目录")
     parser.add_argument("--check", action="store_true", help="verify the checked-in header instead of writing it")
     args = parser.parse_args()
+    label, reference_uuid = PROFILES[args.major]
+    (function_type, create_session, create_processor, decode_branch, epilogue_offset,
+     capability_id, capability_format, buffer_requirement, context_parameter,
+     init_capability) = DRIVER_OFFSETS[args.major]
+    namespace = f"UserVP9Decode{label}Data"
     WORK.mkdir(parents=True, exist_ok=True)
 
     obj = WORK / "VP9Backend.o"
@@ -164,7 +181,7 @@ def main():
                    check=True, timeout=120)
     sections, syms = read_object(obj)
 
-    cache = CacheReader(args.cache, uuid=args.uuid)
+    cache = CacheReader(args.cache, uuid=args.uuid or reference_uuid)
     try:
         lines = (cache.directory / "dyld_shared_cache_x86_64h.map").read_text().splitlines()
         base = int(lines[lines.index(IMAGE) + 1].split()[1], 16)
@@ -224,9 +241,9 @@ def main():
         if cursor > last:
             raise ValueError(f"backend data too large: {cursor - data_start} bytes, room {last - data_start}")
         resolver = ResolverData(cache, WORK)
-        selection_address, selection_code = vt_decoder_selection.prepare(cache)
+        selection_address, selection_code = vt_decoder_selection.prepare(cache, args.major)
         externals = {k: names[v] for k, v in EXTERNALS.items()}
-        epilogue = names[DECODE_PICTURE] + 0x41
+        epilogue = names[DECODE_PICTURE] + epilogue_offset
         if cache.read(epilogue, 3) != bytes.fromhex("4489e0"):    # mov eax, r12d
             raise ValueError("AvdVAContext::DecodePicture epilogue not found")
         externals["_nrDecodePictureEpilogue"] = epilogue
@@ -265,40 +282,45 @@ def main():
             hooks.append((function, address, code, new, [(offset, len(original))]))
 
         # 1. kind 1 type 0x1000 (VP9) gets function type 6, the AV1 decoder (AV1 does not exist on VCN 2).
-        hook(GET_FUNCTION_TYPE, 0x5DD8D - 0x5DC14, bytes.fromhex("483d00000001"), bytes.fromhex("483d00100000"))
+        hook(GET_FUNCTION_TYPE, function_type, bytes.fromhex("483d00000001"), bytes.fromhex("483d00100000"))
         # 2. Create message: codec 0x13 (AV1) -> 0x11 (VP9) for decoder type 6.
-        hook(CREATE_SESSION, 0x15F77 - 0x15E94, bytes.fromhex("c70013000000"), bytes.fromhex("c70011000000"))
+        hook(CREATE_SESSION, create_session, bytes.fromhex("c70013000000"), bytes.fromhex("c70011000000"))
         # 3. Processor allocation for type 6: room for the backend state after the AV1 processor's 0x48 bytes.
         if state_size + 0x48 > 0x7FFFFFFF:
             raise ValueError("state too large")
-        hook(CREATE_PROCESSOR, 0xDE9A - 0xDD90, bytes.fromhex("bf48000000"), b"\xbf" + struct.pack("<I", 0x48 + state_size))
+        hook(CREATE_PROCESSOR, create_processor, bytes.fromhex("bf48000000"), b"\xbf" + struct.pack("<I", 0x48 + state_size))
         # 4. AvdVAContext::DecodePicture: type 0x1000 -> backend entry (the AV1 branch is dropped).
-        branch = names[DECODE_PICTURE] + 0x5ED34 - 0x5EAC2
-        original = bytes.fromhex("41bc00000000" "4881f900000001") + cache.read(branch + 13, 6)
-        if original[13:15] != b"\x0f\x85" or branch + 19 + struct.unpack_from("<i", original, 15)[0] != epilogue:
+        branch = names[DECODE_PICTURE] + decode_branch
+        prefix = bytes.fromhex("41bc00000000") if args.major == 25 else b""
+        compare = prefix + bytes.fromhex("4881f9000000010f85")
+        native_jump = cache.read(branch + len(compare), 4)
+        if branch + len(compare) + 4 + struct.unpack("<i", native_jump)[0] != epilogue:
             raise ValueError("AvdVAContext::DecodePicture AV1 branch not found")
+        tail = b"" if args.major == 25 else bytes.fromhex("4c8b6b18488b4320")
+        original = compare + native_jump + tail
         replacement = (bytes.fromhex("4881f900100000") + b"\x0f\x85" + rel32(branch + 7, 6, epilogue)
-                       + b"\xe9" + rel32(branch + 13, 5, defined["_vp9DecodePictureEntry"]) + b"\x90")
+                       + b"\xe9" + rel32(branch + 13, 5, defined["_vp9DecodePictureEntry"]))
+        replacement += b"\x90" * (len(original) - len(replacement))
         hook(DECODE_PICTURE, branch - names[DECODE_PICTURE], original, replacement)
         # 5. Capability list: AppleGVA's VP9 decoder only creates a context when the driver advertises kind 1 type
         # 0x1000. Function 6 (AV1: 'bwar' in, NV12 out) gets type 0x1000 from a stub in the region.
-        call = names[SETUP_CORE_FUNCTIONS] + 0x15CE - 0x155C
+        call = names[SETUP_CORE_FUNCTIONS] + capability_id
         original = b"\xe8" + rel32(call, 5, names[EXTERNALS["_nrGetAVDFuncSubId"]])
         hook(SETUP_CORE_FUNCTIONS, call - names[SETUP_CORE_FUNCTIONS], original,
              b"\xe8" + rel32(call, 5, defined["_vp9GetAVDFuncSubId"]))
         # 9. Output formats: function 6 offers NV12 only, so AppleGVA refuses 10-bit streams at context creation.
-        call = names[SETUP_CORE_FUNCTIONS] + 0x163C - 0x155C
+        call = names[SETUP_CORE_FUNCTIONS] + capability_format
         hook(SETUP_CORE_FUNCTIONS, call - names[SETUP_CORE_FUNCTIONS],
              b"\xe8" + rel32(call, 5, names[EXTERNALS["_nrGetAVDFuncOutputFormatInfo"]]),
              b"\xe8" + rel32(call, 5, defined["_vp9GetAVDFuncOutputFormatInfo"]))
         # 6. Output buffer layout for kind 1: type 0x1000 takes the NV12 path AV1 had (type 0x1000 was refused).
-        hook(GET_BUFFER_REQUIREMENT, 0x5E6EF - 0x5E514, bytes.fromhex("81fa00000001"), bytes.fromhex("81fa00100000"))
+        hook(GET_BUFFER_REQUIREMENT, buffer_requirement, bytes.fromhex("81fa00000001"), bytes.fromhex("81fa00100000"))
         # 7. Context parameter 0xb (size limits): type 0x1000 reads the limits the kernel reports for AV1.
-        hook(GET_CONTEXT_PARAMETER, 0x5D108 - 0x5D0A0, bytes.fromhex("4981f900000001"),
+        hook(GET_CONTEXT_PARAMETER, context_parameter, bytes.fromhex("4981f900000001"),
              bytes.fromhex("4981f900100000"))
         # 8. initDriverCapability keeps a function only if its codec bit is set in the hardware mask; function 6
         # tests bit 7 (AV1, absent on VCN 2) and is dropped from the list AppleGVA sees. Test bit 6 (HEVC) instead.
-        hook(INIT_CAPABILITY, 0x13F3 - 0x10C4, bytes.fromhex("bf07000000"), bytes.fromhex("bf06000000"))
+        hook(INIT_CAPABILITY, init_capability, bytes.fromhex("bf07000000"), bytes.fromhex("bf06000000"))
 
         # ---- Resolver data: hooked functions plus the region as one function ----
         records, functions = [], []
@@ -370,10 +392,12 @@ def main():
                 offset = destination - image_base - resolver.functions[target_index][1]
                 abi_slots.append((ctor_index, field, slot - 0x10, target_index, offset))
 
-        selection_patched = vt_decoder_selection.patched(selection_code)
+        selection_patched = vt_decoder_selection.patched(selection_code, args.major)
+        start_fourcc = vt_decoder_selection.LAYOUTS[args.major][3]
+        end_fourcc = start_fourcc + len(vt_decoder_selection.FOURCC)
         selection_index = resolver.add(selection_address, selection_code, selection_patched)
-        records.append((selection_index, 0x33F, selection_code[0x33F:0x35E],
-                        selection_patched[0x33F:0x35E], 'VideoToolbox decoder admission'))
+        records.append((selection_index, start_fourcc, selection_code[start_fourcc:end_fourcc],
+                        selection_patched[start_fourcc:end_fourcc], 'VideoToolbox decoder admission'))
 
         # Sites: changed bytes in pieces of at most MAX_SITE bytes that stay inside one page.
         changed = [i for i in range(len(region)) if region[i] != patched[i]]
@@ -418,7 +442,7 @@ def main():
         header = ("// Generated by tools/build_vp9_decode_patch.py from tools/vp9_backend/VP9Backend.cpp; do not edit.\n"
                   "// VP9 plan, phase V3 (-NRedVP9). Backend code: Mesa port, MIT (see NootedRed/VP9Message.hpp).\n"
                   "#pragma once\n#include <IOKit/IOTypes.h>\n#include <UserCacheResolver.hpp>\n#include <UserCacheSectionData.hpp>\n#include <UserVideoDecodeData.hpp>\n"
-                  "namespace UserVP9DecodeData {\nusing Patch = UserVideoDecodeData::Patch;\n")
+                  f"namespace {namespace} {{\nusing Patch = UserVideoDecodeData::Patch;\n")
         header += array("CacheUUID", cache.uuid)
         for i, (_, _, original, replacement, label) in enumerate(records):
             header += f"// {label}\n" + array(f"Original{i}", original) + array(f"Patched{i}", replacement)
@@ -440,8 +464,8 @@ def main():
         header += f'inline constexpr UInt32 DecoderAdmissionPatch = {admission_patch};\n'
         pages = len({(function_address(f) + o) // 4096 for f, o, *_ in records})
         header += (f"inline constexpr UInt32 MaxPatchSize = {MAX_SITE};\ninline constexpr UInt32 PageCount = {pages};\n"
-                   f"inline constexpr UInt32 StateSize = 0x{state_size:X};\n}}    // namespace UserVP9DecodeData\n")
-        output = ROOT / "NootedRed/UserVP9DecodeData.hpp"
+                   f"inline constexpr UInt32 StateSize = 0x{state_size:X};\n}}    // namespace {namespace}\n")
+        output = ROOT / "NootedRed" / f"{namespace}.hpp"
         if args.check:
             if not output.exists() or output.read_text() != header:
                 raise ValueError(f"generated data out of date: {output}")
@@ -450,7 +474,7 @@ def main():
 
         # Offline view of the result for review and tests.
         image_copy = {"region": [start, patched.hex()], "hooks": [[a, bytes(n).hex()] for _, a, _, n, _ in hooks]}
-        (WORK / "vp9-patch.json").write_text(json.dumps({
+        (WORK / (f"vp9-patch-{args.major}.json" if label else "vp9-patch.json")).write_text(json.dumps({
             "cacheUUID": cache.uuid.hex(), "imageBase": image_base, "sites": len(records), "pages": pages,
             "stateSize": state_size, "codeBytes": sum(s["size"] for s in sections if s["name"] == "__TEXT,__text"),
             "dataBytes": sum(s["size"] for s in sections if s["name"] != "__TEXT,__text"),

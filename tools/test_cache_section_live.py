@@ -13,7 +13,8 @@ WORK = ROOT / 'build/cache-section-targets/live'
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cache', type=Path, default=Path('/System/Volumes/Preboot/Cryptexes/OS/System/Library/dyld'))
-    parser.add_argument('--major',type=int,choices=[24,25],default=25)
+    parser.add_argument('--major',type=int,choices=[23,24,25],default=25)
+    parser.add_argument('--rdd-only', action='store_true', help='仅核验 VideoToolbox 解码候选')
     parser.add_argument('--display-only', action='store_true', help='仅验证显示与提交守卫，不加载视频版本数据')
     parser.add_argument('--repeat', type=int, default=1, choices=range(1, 21))
     parser.add_argument('--label', default='result')
@@ -22,6 +23,10 @@ def main():
     parser.add_argument('--kernel-codegen', action='store_true', help='禁用 SIMD 编译，使用整数微秒报告 CPU 耗时')
     parser.add_argument('--baseline-ref', help='从指定本地提交读取解析器源码，供相同缓存的 CPU 对照测量')
     args = parser.parse_args()
+    if args.rdd_only and args.baseline_ref:
+        parser.error('--rdd-only 需要当前解析器')
+    if args.major == 23 and not args.rdd_only:
+        parser.error('Darwin 23 当前仅支持 --rdd-only')
     WORK.mkdir(parents=True, exist_ok=True)
     with (args.cache / 'dyld_shared_cache_x86_64h').open('rb') as handle:
         handle.seek(88)
@@ -67,7 +72,7 @@ static void* kernelMemchr(const void* source,int value,size_t count){
 struct Mapping {uint64_t start,end,offset,mask,add;const char* path;int fd=-1;};
 static Mapping mappings[]={MAPPINGS};
 static unsigned calls=0;static uint64_t bytesRead=0;
-static int reader(uint64_t address,void* bytes,size_t length){
+static int readReference(uint64_t address,void* bytes,size_t length){
  calls++;bytesRead+=length;
  for(auto&m:mappings)if(m.start<=address&&address<m.end&&length<=m.end-address){
   if(m.fd<0)m.fd=open(m.path,O_RDONLY);if(m.fd<0)return 1;
@@ -76,6 +81,22 @@ static int reader(uint64_t address,void* bytes,size_t length){
   return 0;
  }
  return 1;
+}
+#if RDD_ONLY
+static const UserVideoDecodeResolver::RDDPlan* installed;
+#endif
+static int reader(uint64_t address, void* bytes, size_t length) {
+ int status=readReference(address,bytes,length);
+#if RDD_ONLY
+ if(status==0&&installed)for(unsigned i=0;i<installed->count;++i){
+  const auto& site=installed->patches[i];
+  const auto start=UserSurfaceSyncData::CacheBase+site.offset;
+  const auto first=address>start?address:start;
+  const auto end=address+length<start+site.size?address+length:start+site.size;
+  if(first<end)memcpy(static_cast<uint8_t*>(bytes)+first-address,site.patched+first-start,end-first);
+ }
+#endif
+ return status;
 }
 template<class Plan>static void originals(const Plan& plan,unsigned count){
  for(unsigned i=0;i<count;i++){
@@ -86,6 +107,35 @@ template<class Plan>static void originals(const Plan& plan,unsigned count){
 }
 int main(){
  auto base=UserSurfaceSyncData::CacheBase;
+#if RDD_ONLY
+ UserVideoDecodeResolver::RDDPlan candidates;
+ UserSharedCache::Input input{reader,{}};
+ uint8_t scan[UserSharedCache::Input::ScanSize];
+ input.scanBuffer=scan;
+ assert(UserVideoDecodeResolver::resolveRDD(input,base,candidates,MAJOR));
+ assert(candidates.count==(MAJOR==23?2:4));
+ originals(candidates,candidates.count);
+ for(unsigned i=0;i<candidates.count;++i){
+  auto& site=candidates.patches[i];
+  printf("PASS real RDD site=%llx size=%u\n",site.offset,site.size);
+ }
+ printf("PASS real RDD Darwin %u reads=%u bytes=%u\n",MAJOR,input.reads,input.bytes);
+ installed=&candidates;
+ UserVideoDecodeResolver::RDDPlan repeated;
+ UserSharedCache::Input installedInput{reader,{}};
+ installedInput.scanBuffer=scan;
+ assert(UserVideoDecodeResolver::resolveRDD(installedInput,base,repeated,MAJOR));
+ assert(repeated.count==candidates.count);
+ for(unsigned i=0;i<repeated.count;++i){
+  const auto& initial=candidates.patches[i];
+  const auto& after=repeated.patches[i];
+  assert(repeated.locations[i].patched&&after.offset==initial.offset&&after.size==initial.size);
+  assert(memcmp(after.original,initial.original,after.size)==0);
+  assert(memcmp(after.patched,initial.patched,after.size)==0);
+ }
+ installed=nullptr;
+ puts("PASS real RDD repeated installation proof");
+#else
  for(unsigned repeat=0;repeat<REPEAT;repeat++){
  for(auto&device:SURFACE_DATA::DevicePatches){
   calls=0;bytesRead=0;auto start=clock();
@@ -124,12 +174,13 @@ int main(){
  }
 #endif
  }
+#endif
  for(auto&m:mappings)if(m.fd>=0)close(m.fd);
 }
 '''.replace('MAPPINGS', ',\n'.join(mappings)).replace('MAJOR',str(args.major)).replace('REPEAT', str(args.repeat)).replace('VIDEO_DATA','UserSequoiaVideoData' if args.major==24 else 'UserVideoDecodeData')
     source = source.replace('SURFACE_DATA', 'UserSequoiaSurfaceData' if args.major == 24 else 'UserSurfaceSyncData')
     source = source.replace('RESOLVER_DATA', 'UserSequoiaSurfaceData' if args.major == 24 else 'UserSurfaceSyncData::ScratchResolverData')
-    source = source.replace('DISPLAY_ONLY', str(int(args.display_only)))
+    source = source.replace('DISPLAY_ONLY', str(int(args.display_only))).replace('RDD_ONLY', str(int(args.rdd_only)))
     if args.memory_reader:
         source = source.replace('#include <ctime>', '#include <ctime>\n#include <sys/mman.h>\n#include <sys/stat.h>')
         source = source.replace('int fd=-1;', 'int fd=-1;void* memory=nullptr;size_t fileSize=0;')
@@ -152,7 +203,9 @@ int main(){
     stub = WORK / 'stubs/IOKit'
     stub.mkdir(parents=True, exist_ok=True)
     (stub / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
-    file, executable = WORK / 'test.cpp', WORK / 'test'
+    if Path(args.label).name != args.label:
+        raise ValueError('label 必须为文件名')
+    file, executable = WORK / f'{args.label}.cpp', WORK / args.label
     file.write_text(source)
     baseline_flags = ['-DOPTIMIZED=1']
     if args.baseline_ref:
@@ -170,8 +223,6 @@ int main(){
                     *baseline_flags, '-I' + str(WORK / 'stubs'),
                     '-I' + str(ROOT / 'NootedRed'), str(file), '-o', str(executable)], check=True, timeout=60)
     result = subprocess.run([str(executable)], capture_output=True, text=True, timeout=60)
-    if Path(args.label).name != args.label:
-        raise ValueError('label 必须为文件名')
     (WORK / (args.label + '.txt')).write_text('cacheUUID=' + uuid + '\n' + result.stdout + result.stderr)
     print(result.stdout, end='')
     print(result.stderr, end='')

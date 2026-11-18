@@ -511,22 +511,32 @@ namespace UserCacheResolver
                 const auto  count = variant ? fn.patchedCount : fn.originalCount;
                 for (UInt32 r = 0; r < count; ++r) {
                     if (refs[r].image >= ImageCount) { return false; }
+                    bool resolved = false;
+                    for (UInt32 k = 0; k < i; ++k) {
+                        const auto& prior = functions[k];
+                        if (prior.image == refs[r].image && refs[r].rva >= prior.rva
+                            && refs[r].rva - prior.rva < prior.size)
+                        {
+                            resolved = true;
+                            break;
+                        }
+                    }
                     bool scoped = false;
-                    for (UInt32 k = 0; k < scopedTargetCount; ++k) {
+                    for (UInt32 k = 0; !resolved && k < scopedTargetCount; ++k) {
                         const auto& entry = scopedTargets[k];
                         if (entry.rva == refs[r].rva && strcmp(entry.path, imageRefs[refs[r].image].path) == 0) {
                             scoped = true;
                             break;
                         }
                     }
-                    if (!scoped) { continue; }
+                    if (!resolved && !scoped) { continue; }
                     UInt8  field[4];
                     UInt64 actual, destination;
                     if (refs[r].offset > fn.size || fn.size - refs[r].offset < sizeof(field)
                         || !input.read(candidate + refs[r].offset, field, sizeof(field))
                         || !relativeTarget(candidate + refs[r].offset, 0, field, actual)
-                        || !target(input, refs[r], images, ImageCount, imageRefs, functions, addresses, 0, destination,
-                                   true, scopedTargets, scopedTargetCount)
+                        || !target(input, refs[r], images, ImageCount, imageRefs, functions, addresses, i, destination,
+                                   sectionRelative, scopedTargets, scopedTargetCount)
                         || (refs[r].indirect ? !binding(input, actual, refs[r].indirect, destination) :
                                                actual != destination))
                     {

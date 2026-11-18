@@ -11,7 +11,7 @@ namespace VPF
     constexpr UInt32 ResolutionMaxFunctions = 32;
     constexpr UInt32 ResolutionArchX86_64h  = 1;
     // 匹配算法或生成数据语义变化时递增，旧条目自动失效。
-    constexpr UInt32 ResolutionVerifierRevision = 2;
+    constexpr UInt32 ResolutionVerifierRevision = 3;
 
     enum class FunctionGroup : UInt32
     {
@@ -22,6 +22,7 @@ namespace VPF
         DisplayScratch,
         DisplayLegacy,
         DisplaySubmit,
+        VTRDDCandidates,
         Count
     };
 

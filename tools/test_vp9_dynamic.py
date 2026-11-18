@@ -26,12 +26,15 @@ static std::map<std::string,unsigned> properties;
 int main(){
  static UserVP9DecodeResolver::Plan plan;
  uint8_t scan[UserSharedCache::Input::ScanSize];
- for(unsigned major:{23U,24U,25U}){
-  vp9Cache();auto original=blocks;
+ const auto check=[&](unsigned major,const auto& images,const auto& functions,const auto& sections,
+                     const auto& slots,const auto& patches){
+  const auto prepare=[&]{vp9Cache(images,functions,sections,slots);};
+  prepare();auto original=blocks;
   UserSharedCache::Input input{reader,{}};input.scanBuffer=scan;
   assert(UserVP9DecodeResolver::resolve(input,base,plan,major));
   assert(blocks==original&&writes==0&&protects==0);
-  for(unsigned i=0;i<UserVP9DecodeResolver::PatchCount;i++){
+  assert(plan.count==std::size(patches));
+  for(unsigned i=0;i<plan.count;i++){
    const auto& p=plan.patches[i];uint8_t bytes[MaxPatchSize];
    assert(reader(base+p.offset,bytes,p.size)==0&&!memcmp(bytes,p.original,p.size));
   }
@@ -39,18 +42,23 @@ int main(){
   uint8_t otherUUID[16]={};put(base+88,otherUUID,16);
   UserSharedCache::Input unknown{reader,{}};unknown.scanBuffer=scan;
   assert(UserVP9DecodeResolver::resolve(unknown,base,plan,major));
-  auto address=functionAddresses[ABISlots[0].constructor]+ABISlots[0].field;
+  auto address=functionAddresses[slots[0].constructor]+slots[0].field;
   uint8_t field[4];uint64_t table;assert(reader(address,field,4)==0);
   assert(UserCacheResolver::relativeTarget(address,0,field,table));
-  word64(table+ABISlots[0].slot,0);
+  word64(table+slots[0].slot,0);
   UserSharedCache::Input badABI{reader,{}};badABI.scanBuffer=scan;
   assert(!UserVP9DecodeResolver::resolve(badABI,base,plan,major));
-  vp9Cache();uint8_t corrupt=0xCC;
-  put(functionAddresses.back()+ResolverFunctions[UserVP9DecodeResolver::FunctionCount-1].size-1,&corrupt,1);
+  prepare();uint8_t corrupt=0xCC;
+  put(functionAddresses.back()+functions[std::size(functions)-1].size-1,&corrupt,1);
   UserSharedCache::Input badCode{reader,{}};badCode.scanBuffer=scan;
   assert(!UserVP9DecodeResolver::resolve(badCode,base,plan,major));
   printf("PASS VP9 dynamic Darwin %u dispatch: moved functions/sections, unknown UUID, ABI/code rejection\n",major);
- }
+ };
+ namespace Sonoma=UserVP9DecodeSonomaData;
+ namespace Sequoia=UserVP9DecodeSequoiaData;
+ check(23,Sonoma::ResolverImages,Sonoma::ResolverFunctions,Sonoma::SectionTargets,Sonoma::ABISlots,Sonoma::Patches);
+ check(24,Sequoia::ResolverImages,Sequoia::ResolverFunctions,Sequoia::SectionTargets,Sequoia::ABISlots,Sequoia::Patches);
+ check(25,ResolverImages,ResolverFunctions,SectionTargets,ABISlots,Patches);
  for(unsigned major:{22U,26U,27U}){
   UserSharedCache::Input input{reader,{}};input.scanBuffer=scan;
   assert(!UserVP9DecodeResolver::resolve(input,base,plan,major)&&input.reads==0);
