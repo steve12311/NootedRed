@@ -19,8 +19,7 @@ namespace VP9Probe
     constexpr const char* DecodeValue     = "1";    // come IOGVAHEVCDecode nella personality
     constexpr const char* CapabilitiesKey = "IOGVAVP9DecodeCapabilities";
     constexpr const char* ProfilesKey     = "VTSupportedProfileArray";
-    // Solo profilo 0 (8 bit 4:2:0). Il profilo 2 (10 bit) arriva con la fase V6.
-    constexpr UInt32      Profiles[]      = {0};
+    constexpr UInt32      Profiles[]      = {0, 2};
     constexpr size_t      ProfileCount    = sizeof(Profiles) / sizeof(Profiles[0]);
 
     enum Status : UInt32

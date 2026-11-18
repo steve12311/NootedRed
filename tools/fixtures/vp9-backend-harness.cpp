@@ -66,6 +66,9 @@ static void *refConArgs[4];
 static void stubSetRefCon(void *va, void *refCon, void *tex, void *cmd) {
     refConArgs[0] = va, refConArgs[1] = refCon, refConArgs[2] = tex, refConArgs[3] = cmd;
 }
+static int stubOutputFormat(void *, unsigned, unsigned *, uint32_t *) { return 42; }
+static int stubNv12(void *, void *) { return 1; }
+static int stubP010(void *, void *) { return 2; }
 static void *decodeArgs[4];
 static int decodeCalls, decodeResult;
 static int stubDecoderDecode(void *decoder, void *params, void *bitstream, void *output) {
@@ -134,7 +137,9 @@ static void loadBlob(const char *path) {
     fclose(f);
     void *table[] = {reinterpret_cast<void *>(stubCreate), reinterpret_cast<void *>(stubPrepare),
                      reinterpret_cast<void *>(stubSegFg), reinterpret_cast<void *>(stubGetSurface),
-                     reinterpret_cast<void *>(stubSetRefCon), nullptr /* DecodePicture epilogue: not called */};
+                     reinterpret_cast<void *>(stubSetRefCon), nullptr, nullptr,
+                     reinterpret_cast<void *>(stubOutputFormat), reinterpret_cast<void *>(stubNv12),
+                     reinterpret_cast<void *>(stubP010)};
     memcpy(reinterpret_cast<uint8_t *>(BlobBase) + TableOffset, table, sizeof(table));
 }
 
@@ -175,14 +180,16 @@ static std::vector<std::vector<uint8_t>> frames(const char *path) {
 
 // ---- Tests ---------------------------------------------------------------------------------------------------------
 
-static void testClip(const char *path, uint32_t width, uint32_t height, bool expectDecode) {
+static void testClip(const char *path, uint32_t width, uint32_t height, uint32_t bitDepth) {
     auto list = frames(path);
     CHECK(!list.empty(), "no frames in %s", path);
     Driver d = makeDriver(width, height);
     uint8_t build[0x100];
     CHECK(fn<CreateFn>(SymCreate)(d.processor, build) == 0 && createCalls > 0, "create");
-    const uint32_t pitch = (width + 255) & ~255u, rows = (height + 15) & ~15u;
-    Texture *target = texture(pitch * rows * 3 / 2, rows, pitch, 1);
+    const uint32_t bpe = bitDepth > 8 ? 2 : 1;
+    const uint32_t pitch = (width * bpe + 255) & ~255u, rows = (height + 15) & ~15u;
+    Texture *target = texture(pitch * rows * 3 / 2, rows, pitch, bpe);
+    Texture *wrongTarget = texture(pitch * rows * 3 / 2, rows, pitch, 3 - bpe);
     Texture *ring = texture(4 << 20);
     Session reference;
     Surface slots[8] {};
@@ -209,14 +216,18 @@ static void testClip(const char *path, uint32_t width, uint32_t height, bool exp
         Message expected {};
         ProbsSegment expectedProbs {};
         Header h;
-        const Status want = reference.build(frame.data(), frame.size(), target_id, slots, false, expected,
+        const Status want = reference.build(frame.data(), frame.size(), target_id, slots, bpe == 2, expected,
                                             expectedProbs, &h);
-        const bool ok = want == Status::Ok && h.bitDepth == 8;
+        const bool ok = want == Status::Ok && bitDepth <= 10;
 
         int rc = fn<BitstreamFn>(SymBitstream)(d.processor, P, nullptr, ring, build);
         CHECK(rc == 0, "%s frame %zu: SetBitstreamFields %d", path, n, rc);
         CHECK(!memcmp(at<uint8_t *>(ring, 0x98), frame.data(), frame.size()), "bitstream copy");
         CHECK(at<void *>(build, 0x28) == ring && at<uint32_t>(build, 0x20) == 1, "bitstream build info");
+        if (ok && decoded == 0) {
+            CHECK(fn<MessageFn>(SymMessage)(d.processor, P, wrongTarget, build, 0, 0) == 1,
+                  "reject target with wrong bit depth");
+        }
         rc = fn<MessageFn>(SymMessage)(d.processor, P, target, build, 0, 0);
         CHECK((rc == 0) == ok, "%s frame %zu: SetDecodeMessageFields %d, expected ok=%d", path, n, rc, ok);
         if (rc == 0 && ok) {
@@ -235,12 +246,13 @@ static void testClip(const char *path, uint32_t width, uint32_t height, bool exp
             // Decode message.
             const uint32_t *dm = reinterpret_cast<const uint32_t *>(msg + 0x48);
             const uint32_t dp = (width + 63) & ~63u, dh = (height + 63) & ~63u;
+            const uint32_t lumaBytes = dp * dh * bpe;
             CHECK(dm[0] == 0x11 && dm[1] == 9 && dm[2] == h.width && dm[3] == h.height, "decode: type/flags/size");
-            CHECK(dm[4] == frame.size() && dm[5] == 9 * dp * dh * 3 / 2 && dm[6] == rows * pitch * 3 / 2 &&
-                      dm[9] == contextSize(8),
+            CHECK(dm[4] == frame.size() && dm[5] == 9 * lumaBytes * 3 / 2 && dm[6] == rows * pitch * 3 / 2 &&
+                      dm[9] == contextSize(bitDepth),
                   "decode: buffer sizes %u %u %u %u", dm[4], dm[5], dm[6], dm[9]);
             CHECK(dm[0x48 / 4] == dp && dm[0x4C / 4] == dh && dm[0xA4 / 4] == dp / 2, "decode: DPB pitch/height");
-            CHECK(dm[0x64 / 4] == pitch && dm[0x68 / 4] == pitch / 2, "decode: target pitch");
+            CHECK(dm[0x64 / 4] == pitch / bpe && dm[0x68 / 4] == pitch / (2 * bpe), "decode: target pitch");
             CHECK(dm[0x88 / 4] == 0 && dm[0x8C / 4] == h.height * pitch - 1 && dm[0x90 / 4] == rows * pitch &&
                       dm[0x94 / 4] == rows * pitch + h.height * pitch / 2 - 1,
                   "decode: target offsets");
@@ -250,8 +262,8 @@ static void testClip(const char *path, uint32_t width, uint32_t height, bool exp
             }
             // Dynamic DPB (Tier 1).
             const uint32_t *dd = reinterpret_cast<const uint32_t *>(msg + 0x104);
-            CHECK(dd[0] == 0 && dd[1] == dp && dd[2] == dh && dd[3] == dp * dh && dd[4] == dp / 2 && dd[5] == dh / 2 &&
-                      dd[6] == dp * dh / 2 && msg[0x104 + 28] == 9 && msg[0x104 + 46] == 64,
+            CHECK(dd[0] == 0 && dd[1] == dp && dd[2] == dh && dd[3] == lumaBytes && dd[4] == dp / 2 &&
+                      dd[5] == dh / 2 && dd[6] == lumaBytes / 2 && msg[0x104 + 28] == 9 && msg[0x104 + 46] == 64,
                   "dynamic DPB");
             // Build info.
             CHECK(at<void *>(build, 0x08) == d.messageTexture && at<void *>(build, 0x78) == target &&
@@ -261,14 +273,14 @@ static void testClip(const char *path, uint32_t width, uint32_t height, bool exp
                   "build info");
             // Allocation, as VADecoder does after Process.
             if (at<uint8_t>(d.session, 0x0C)) {
-                CHECK(at<uint32_t>(d.session, 0x30) == 9 * dp * dh * 3 / 2 && at<uint32_t>(d.session, 0x1C8) ==
-                          contextSize(8), "sizes on allocation");
+                CHECK(at<uint32_t>(d.session, 0x30) == 9 * lumaBytes * 3 / 2 &&
+                          at<uint32_t>(d.session, 0x1C8) == contextSize(bitDepth), "sizes on allocation");
                 at<void *>(d.session, 0x1D0) = texture(at<uint32_t>(d.session, 0x1C8));
                 memset(at<uint8_t *>(at<void *>(d.session, 0x1D0), 0x98), 0x5A, at<uint32_t>(d.session, 0x1C8));
                 fn<InitFn>(SymInit)(d.processor);
                 const uint8_t *ctx = at<uint8_t *>(at<void *>(d.session, 0x1D0), 0x98);
                 CHECK(!memcmp(ctx, DefaultProbs, sizeof(DefaultProbs)) && ctx[sizeof(DefaultProbs)] == 0 &&
-                          ctx[contextSize(8) - 1] == 0,
+                          ctx[contextSize(bitDepth) - 1] == 0,
                       "context initialisation");
             }
             int32_t rect[4];
@@ -282,13 +294,29 @@ static void testClip(const char *path, uint32_t width, uint32_t height, bool exp
             }
         }
     }
-    CHECK(fn<SizeFn>(SymDpb)(d.processor) == 9 * ((width + 63) & ~63u) * ((height + 63) & ~63u) * 3 / 2, "DPB size");
-    CHECK(fn<SizeFn>(SymContext)(d.processor) == contextSize(8), "context size");
-    CHECK(expectDecode ? decoded > 0 : decoded == 0, "%s: %u frames decoded", path, decoded);
+    const uint32_t dpbSize = bitDepth <= 10 ? 9 * ((width + 63) & ~63u) * ((height + 63) & ~63u) * bpe * 3 / 2 : 0;
+    CHECK(fn<SizeFn>(SymDpb)(d.processor) == dpbSize, "DPB size");
+    CHECK(fn<SizeFn>(SymContext)(d.processor) == contextSize(bitDepth <= 10 ? bitDepth : 8), "context size");
+    CHECK(bitDepth <= 10 ? decoded > 0 : decoded == 0, "%s: %u frames decoded", path, decoded);
     printf("%-40s %3zu frames, %3u messages checked\n", strrchr(path, '/') + 1, list.size(), decoded);
 }
 
 static void testGuards() {
+    using OutputFn = int (*)(void *, unsigned, unsigned *, uint32_t *);
+    unsigned count = 0;
+    uint32_t formats[4] {};
+    CHECK(fn<OutputFn>(SymOutput)(nullptr, 6, &count, formats) == 0 && count == 2 &&
+              formats[0] == 0x4E563132 && formats[1] == 1 && formats[2] == 0x78343230 && formats[3] == 1,
+          "VP9 advertises NV12 and x420");
+    CHECK(fn<OutputFn>(SymOutput)(nullptr, 5, &count, formats) == 42, "other functions use native output formats");
+    uint32_t requirement[8] {};
+    requirement[6] = 0x78343230;
+    CHECK(fn<CreateFn>(SymRequirement)(nullptr, requirement) == 1, "input uses native NV12 branch");
+    requirement[3] = 1;
+    CHECK(fn<CreateFn>(SymRequirement)(nullptr, requirement) == 2, "x420 output uses native P010 branch");
+    requirement[6] = 0x4E563132;
+    CHECK(fn<CreateFn>(SymRequirement)(nullptr, requirement) == 1, "NV12 output uses native NV12 branch");
+
     Driver d = makeDriver(352, 288);
     uint8_t build[0x100] {};
     uint8_t frame[64] {0x82, 0x49, 0x83, 0x42};
@@ -318,8 +346,7 @@ static void testGuards() {
         CHECK(fn<SizeFn>(SymDpb)(big.processor) == 0, "%ux%u session has no state", w, h);
     }
     Driver dci = makeDriver(4096, 2160);
-    CHECK(fn<CreateFn>(SymCreate)(dci.processor, build) == 0 && fn<SizeFn>(SymDpb)(dci.processor) > 0,
-          "4096x2160 accepted");
+    CHECK(fn<CreateFn>(SymCreate)(dci.processor, build) == 0, "4096x2160 accepted");
 
     // AvdVAContext::DecodePicture branch.
     void *context = zalloc(0x400);
@@ -361,13 +388,13 @@ static void testGuards() {
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        fprintf(stderr, "usage: harness blob.bin [clip.ivf width height expect]...\n");
+        fprintf(stderr, "usage: harness blob.bin [clip.ivf width height bit-depth]...\n");
         return 2;
     }
     loadBlob(argv[1]);
     testGuards();
     for (int i = 2; i + 3 < argc + 1 && i + 3 <= argc; i += 4) {
-        testClip(argv[i], uint32_t(atoi(argv[i + 1])), uint32_t(atoi(argv[i + 2])), atoi(argv[i + 3]) != 0);
+        testClip(argv[i], uint32_t(atoi(argv[i + 1])), uint32_t(atoi(argv[i + 2])), uint32_t(atoi(argv[i + 3])));
     }
     printf(failures ? "FAIL (%d)\n" : "PASS\n", failures);
     return failures ? 1 : 0;

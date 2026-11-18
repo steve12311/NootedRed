@@ -15,7 +15,7 @@ UUID 仅用于诊断和已核验计划的身份核对；其他 UUID 仍须通过
   未完成、字节变化或读取失败不能跳过安装检查。
 - 后端安装成功后才发布 GPU 的 VP9 能力。核验或事务失败会撤回能力键；
   软件回退是否即时发生仍取决于客户端的解码器枚举和会话重建行为。
-- 支持 profile 0、NV12、最大 4096×4096。profile 2/HDR、官方全部向量、长时间播放和睡眠唤醒仍待实机验收。
+- 支持 4:2:0 Profile 0（8 位 NV12）和 Profile 2（10 位 P010），最大 4096×4096。12 位码流会被拒绝。
 
 ## 本地验证
 
@@ -43,7 +43,8 @@ python3 tools/test_vp9_compare.py
 记录 GPU 型号、完整系统构建号、缓存 UUID、加载 kext UUID 和启动参数。
 启动 GPU 客户端后检查 `NRedVP9Applied`／`NRedVP9Already` 及 `NRedVP9Probe=1`；
 只有 `NRedVP9State=2` 不能证明安装完成。
-先逐帧比较短 profile 0 片段，再检查浏览器、并行 H.264/HEVC、空闲恢复及睡眠唤醒。
+用 `tools/compare_vp9_decode.py` 逐帧比较 Profile 0 和 10 位 Profile 2 的亮度及色度，再检查浏览器 HDR 播放、
+并行 H.264/HEVC、空闲恢复及睡眠唤醒。
 保留首次 `.panic`／`.gpuRestart` 及 `NRedVP9*` 属性；离线测试与构建结果不代替这些实机结果。
 
 ## VideoToolbox 能力与会话选择

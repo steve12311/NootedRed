@@ -131,6 +131,7 @@ struct State {
     uint64_t magic;
     uint32_t maxWidth, maxHeight;      // session size: the DPB is sized once from these
     uint32_t width, height;            // last parsed frame, for getDecodeTargetArea
+    uint32_t bytesPerSample;
     Session session;
 };
 
@@ -147,7 +148,8 @@ struct DpbGeometry {
 
 DpbGeometry dpbGeometry(const State &s) {
     const uint32_t pitch = align(s.maxWidth, DpbAlignment), height = align(s.maxHeight, DpbAlignment);
-    return {pitch, height, pitch * height, pitch * height / 2};
+    const uint32_t bytes = pitch * height * s.bytesPerSample;
+    return {pitch, height, bytes, bytes / 2};
 }
 
 uint8_t configFlags(void *processor, size_t offset) {
@@ -180,13 +182,14 @@ extern "C" int vp9ProcessCreateDecodeSession(void *processor, void *build) {
 extern "C" uint32_t vp9CalculateDPBSize(void *processor) {
     const State *s = state(processor);
     if (!s) { return 0; }
+    if (!s->bytesPerSample) { return 0; }
     const auto g = dpbGeometry(*s);
     return DpbSlots * (g.lumaSize + g.chromaSize);
 }
 
-//! CalculateContextSize: calc_ctx_size_vp9 for VCN 2 and 8 bit.
-extern "C" uint32_t vp9CalculateContextSize(void *) {
-    return contextSize(8);
+extern "C" uint32_t vp9CalculateContextSize(void *processor) {
+    const State *s = state(processor);
+    return contextSize(s && s->bytesPerSample == 2 ? 10 : 8);
 }
 
 //! initHWContext: called by VADecoder when it (re)allocates the context buffer.
@@ -250,12 +253,10 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
         return 1;
     }
 
-    // Sizes first: VADecoder allocates the DPB and the context after Process, from these and the dirty flag.
-    const uint32_t dpbSize = vp9CalculateDPBSize(processor), ctxSize = vp9CalculateContextSize(processor);
-    if (dpbSize > field<uint32_t>(session, Sess::DpbSize) || ctxSize > field<uint32_t>(session, Sess::ContextSize)) {
-        field<uint8_t>(session, Sess::Dirty) = 1;
-        field<uint32_t>(session, Sess::DpbSize) = dpbSize;
-        field<uint32_t>(session, Sess::ContextSize) = ctxSize;
+    const uint32_t pitchBytes = field<uint32_t>(target, Tex::Pitch), rows = field<uint32_t>(target, Tex::Height);
+    const uint32_t bytesPerSample = field<uint32_t>(target, Tex::BytesPerElement);
+    if (bytesPerSample - 1 > 1 || (s->bytesPerSample && s->bytesPerSample != bytesPerSample)) {
+        return 1;
     }
 
     auto *msg = field<uint8_t *>(session, Sess::Message);
@@ -272,10 +273,21 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
     Header h;
     const Status status = s->session.build(field<const uint8_t *>(session, Sess::Bitstream),
                                            field<uint32_t>(session, Sess::BitstreamSize),
-                                           field<Surface>(params, Pic::Target), refs, false,
-                                           *reinterpret_cast<Message *>(msg + OffsetVp9), *probs, &h);
-    if (status != Status::Ok || h.bitDepth != 8 || h.width > s->maxWidth || h.height > s->maxHeight) {
+                                           field<Surface>(params, Pic::Target), refs, bytesPerSample == 2,
+                                           *reinterpret_cast<Message *>(msg + OffsetVp9), *probs, &h,
+                                           bytesPerSample == 2 ? 10 : 8);
+    if (status != Status::Ok || h.width > s->maxWidth || h.height > s->maxHeight ||
+        rows < h.height || pitchBytes < h.width * bytesPerSample) {
         return 1;
+    }
+    s->bytesPerSample = bytesPerSample;
+    const auto g = dpbGeometry(*s);
+    const uint32_t dpbSize = DpbSlots * (g.lumaSize + g.chromaSize);
+    const uint32_t ctxSize = vp9CalculateContextSize(processor);
+    if (dpbSize > field<uint32_t>(session, Sess::DpbSize) || ctxSize > field<uint32_t>(session, Sess::ContextSize)) {
+        field<uint8_t>(session, Sess::Dirty) = 1;
+        field<uint32_t>(session, Sess::DpbSize) = dpbSize;
+        field<uint32_t>(session, Sess::ContextSize) = ctxSize;
     }
     s->width = h.width, s->height = h.height;
     field<uint32_t>(decoder, Dec::Width) = h.width;
@@ -294,12 +306,6 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
     header->index[2] = {MessageDynamicDpb, OffsetDpb, sizeof(DynamicDpb), 0};
 
     // Generic decode message: the decode target as the driver fills it for HEVC on VCN 2, the DPB as Mesa's Tier 1.
-    const auto g = dpbGeometry(*s);
-    const uint32_t pitchBytes = field<uint32_t>(target, Tex::Pitch), rows = field<uint32_t>(target, Tex::Height);
-    const uint32_t bytesPerElement = field<uint32_t>(target, Tex::BytesPerElement);
-    if (!bytesPerElement || rows < h.height || pitchBytes < h.width) {
-        return 1;
-    }
     auto *decode = reinterpret_cast<DecodeMessage *>(msg + OffsetDecode);
     decode->streamType = CodecVP9;
     decode->decodeFlags = FlagUseDynamicDpb | FlagUsePal;
@@ -312,7 +318,7 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
     decode->dbPitch = g.pitch;
     decode->dbAlignedHeight = g.height;
     decode->dbPitchUv = g.pitch / 2;
-    decode->dtPitch = pitchBytes / bytesPerElement;
+    decode->dtPitch = pitchBytes >> (bytesPerSample - 1);
     decode->dtUvPitch = decode->dtPitch / 2;
     decode->dtLumaTopOffset = 0;
     decode->dtLumaBottomOffset = h.height * pitchBytes - 1;
@@ -421,7 +427,7 @@ _vp9DecodePictureEntry:
 
 //! Called instead of AvdCapability::getAVDFuncSubId from setupStaticCoreFunctions. Function 6 is the AV1 decoder
 //! (kind 1, type 0x1000000), which VCN 2 cannot run; it is advertised as VP9 (type 0x1000) so that AppleGVA's VP9
-//! capability lookup finds it. Its formats ('bwar' in, NV12 out) are the ones AppleGVA's VP9 decoder asks for.
+//! capability lookup finds it.
 asm(R"(
     .text
     .globl _vp9GetAVDFuncSubId
@@ -433,18 +439,31 @@ _vp9GetAVDFuncSubId:
 1:  jmp _nrGetAVDFuncSubId
 )");
 
-//! Called instead of AvdCapability::getAVDFuncOutputFormatInfo from setupStaticCoreFunctions. Function 6 keeps only
-//! NV12 (the AV1 list also has 10-bit formats): the backend decodes profile 0 only, so AppleGVA must refuse a 10-bit
-//! stream when it creates the context and VideoToolbox falls back to software. The driver's own NV12 case
-//! (_nrOutputFormatNV12, which ends with pop rbp) writes the single format.
+//! 函数 6 为 AppleGVA 提供 NV12 和 x420，分别对应 VP9 的 8 位和 10 位输出。
 asm(R"(
     .text
     .globl _vp9GetAVDFuncOutputFormatInfo
 _vp9GetAVDFuncOutputFormatInfo:
     cmpl $6, %esi
     jne 1f
-    pushq %rbp
-    movq %rsp, %rbp
-    jmp _nrOutputFormatNV12
+    movl $2, (%rdx)
+    movabsq $0x14e563132, %rax
+    movq %rax, (%rcx)
+    movabsq $0x178343230, %rax
+    movq %rax, 8(%rcx)
+    xorl %eax, %eax
+    retq
 1:  jmp _nrGetAVDFuncOutputFormatInfo
+
+    .section __TEXT,__nrhelpers
+    .globl _vp9BufferRequirement
+_vp9BufferRequirement:
+    cmpl $0x78343230, 0x18(%rsi)
+    jne 1f
+    cmpl $0, 0xc(%rsi)
+    je 1f
+    movl $3, %eax
+    movl $0x78343230, %ecx
+    jmp _nrBufferRequirementP010
+1:  jmp _nrBufferRequirementNV12
 )");

@@ -52,7 +52,8 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 | `-NRedRejectTrace` | 记录前 32 次被拒绝的共享缓存（pid、名称、基址、UUID） | `dmesg` |
 | `-NRedVCNPowerTrace` | 统计 PowerPlay 对 VCN 的关断／开启请求，原函数照常执行 | `NRedVCNPG*` |
 
-启用 `-NRedVideoFix` 后，支持的 VCN 2.2 核显默认启用 VP9 硬解，支持 profile 0／8 位，最大 4096×4096。
+启用 `-NRedVideoFix` 后，支持的 VCN 2.2 核显默认启用 VP9 硬解。Profile 0（8 位）输出 NV12，
+Profile 2（10 位）输出 P010，最大分辨率为 4096×4096。
 Darwin 23/24/25 共用动态核验和 COW 事务。后端核验完整函数、外部引用、数据节、构造函数及虚函数槽位。
 后端成功安装并恢复 RX 后，才发布 `IOGVAXDecode`、`IOGVAVP9Decode` 和 `IOGVAVP9DecodeCapabilities`。
 核验或安装失败会撤回已发布的能力。

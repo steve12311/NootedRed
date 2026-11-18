@@ -3,7 +3,7 @@
 // Build: clang -fobjc-arc -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework Foundation -framework CoreGraphics \
 //        tools/probe_vp9_decode.m -o build/vp9/probe_vp9_decode
 // Input: ffmpeg -i clip.webm -c copy -f ivf clip.ivf
-// VP9_DUMP=path writes the visible luma and CbCr (NV12) of each output frame, for comparison with ffmpeg -pix_fmt nv12.
+// VP9_DUMP=path 按 NV12 或 P010 格式写出每帧的可见亮度和色度数据。
 // VP9_PERF=1 decodes asynchronously without hashing the frames and prints the decode frame rate.
 // VP9_INPROCESS=1 runs the decoder inside this process (VTApplyRestrictions), so it can be debugged with lldb.
 #import <CoreMedia/CoreMedia.h>
@@ -21,6 +21,7 @@ static atomic_int  lastError;
 static uint64_t    digest = 1469598103934665603ULL;
 static FILE*       dump;    // VP9_DUMP=path: visible luma then CbCr of every output frame, in output order
 static bool        perf;    // VP9_PERF=1: asynchronous decoding, no hashing or dump, prints the frame rate
+static OSType      outputFormat;
 
 static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags flags, CVImageBufferRef image,
                     CMTime pts, CMTime duration)
@@ -31,7 +32,8 @@ static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags f
         atomic_store(&lastError, status ? status : -1);
         return;
     }
-    if (getenv("VP9_REQUIRE_IOSURFACE") && !CVPixelBufferGetIOSurface(image)) {
+    if (CVPixelBufferGetPixelFormatType(image) != outputFormat ||
+        (getenv("VP9_REQUIRE_IOSURFACE") && !CVPixelBufferGetIOSurface(image))) {
         atomic_fetch_add(&badFrames, 1);
         atomic_store(&lastError, -2);
         return;
@@ -52,15 +54,15 @@ static void decoded(void* ctx, void* frame, OSStatus status, VTDecodeInfoFlags f
     const uint8_t* base   = (const uint8_t*)CVPixelBufferGetBaseAddressOfPlane(image, 0);
     size_t         stride = CVPixelBufferGetBytesPerRowOfPlane(image, 0);
     size_t         w = CVPixelBufferGetWidthOfPlane(image, 0), h = CVPixelBufferGetHeightOfPlane(image, 0);
+    const size_t sampleBytes = outputFormat == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange ? 2 : 1;
     for (size_t y = 0; base && y < h; y++)
-        for (size_t x = 0; x < w; x++) digest = (digest ^ base[y * stride + x]) * 1099511628211ULL;
-    for (size_t y = 0; dump && base && y < h; y++) fwrite(base + y * stride, 1, w, dump);
-    // Then the interleaved CbCr plane (NV12), visible part only: the dump matches ffmpeg -pix_fmt nv12.
+        for (size_t x = 0; x < w * sampleBytes; x++) digest = (digest ^ base[y * stride + x]) * 1099511628211ULL;
+    for (size_t y = 0; dump && base && y < h; y++) fwrite(base + y * stride, 1, w * sampleBytes, dump);
     if (dump && CVPixelBufferGetPlaneCount(image) > 1) {
         const uint8_t* uv = (const uint8_t*)CVPixelBufferGetBaseAddressOfPlane(image, 1);
         size_t uvStride = CVPixelBufferGetBytesPerRowOfPlane(image, 1);
         size_t uvW = CVPixelBufferGetWidthOfPlane(image, 1), uvH = CVPixelBufferGetHeightOfPlane(image, 1);
-        for (size_t y = 0; uv && y < uvH; y++) fwrite(uv + y * uvStride, 1, uvW * 2, dump);
+        for (size_t y = 0; uv && y < uvH; y++) fwrite(uv + y * uvStride, 1, uvW * 2 * sampleBytes, dump);
     }
     CVPixelBufferUnlockBaseAddress(image, kCVPixelBufferLock_ReadOnly);
 }
@@ -132,9 +134,9 @@ int main(int argc, char** argv)
         } mutableCopy];
         if (kVTVideoDecoderSpecification_AllowVP9Decode)
             spec[(__bridge NSString*)kVTVideoDecoderSpecification_AllowVP9Decode] = @YES;
-        NSDictionary* pixels = @{
-            (__bridge NSString*)kCVPixelBufferPixelFormatTypeKey : @(kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange)
-        };
+        outputFormat = bitDepth > 8 ? kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange
+                                    : kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange;
+        NSDictionary* pixels = @{(__bridge NSString*)kCVPixelBufferPixelFormatTypeKey : @(outputFormat)};
         VTDecompressionOutputCallbackRecord callback = {decoded, NULL};
         VTDecompressionSessionRef session = NULL;
         status = VTDecompressionSessionCreate(NULL, format, (__bridge CFDictionaryRef)spec,

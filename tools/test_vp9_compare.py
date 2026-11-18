@@ -12,6 +12,7 @@ import compare_vp9_decode as compare
 
 CASES = {
     'delayed-writer': (1, 1, 0, 0, 0.1, True),
+    'p010': (2, 2, 0, 0, 0, True),
     'probe-fails-before-open': (0, 1, 1, 0, 0, False),
     'missing-reference-frame': (1, 2, 0, 0, 0, False),
     'extra-hardware-frame': (2, 1, 0, 0, 0, False),
@@ -22,6 +23,9 @@ CASES = {
 
 def run_case(name):
     hardware_frames, reference_frames, probe_error, reference_error, delay, expected = CASES[name]
+    frame_bytes = 12 if name == 'p010' else 6
+    source_format = 'yuv420p10le' if name == 'p010' else 'yuv420p'
+    output_format = 'p010le' if name == 'p010' else 'nv12'
     with tempfile.TemporaryDirectory() as work:
         probe = Path(work) / 'probe'
         probe.write_text(f'''#!/usr/bin/env python3
@@ -29,7 +33,7 @@ import os, sys, time
 time.sleep({delay})
 if {probe_error}: sys.exit({probe_error})
 with open(os.environ['VP9_DUMP'], 'wb') as out:
-    out.write(bytes([1]) * 6 * {hardware_frames})
+    out.write(bytes([1]) * {frame_bytes} * {hardware_frames})
 print('VTDecompressionSessionCreate = 0')
 print('decoded ok {hardware_frames}, bad 0')
 ''')
@@ -39,12 +43,14 @@ print('decoded ok {hardware_frames}, bad 0')
 
         def start(args, **kwargs):
             if args[0] == 'ffmpeg':
+                assert args[args.index('-pix_fmt') + 1] == output_format
                 args = [sys.executable, '-c',
-                        f'import sys;sys.stdout.buffer.write(bytes([1])*6*{reference_frames});'
+                        f'import sys;sys.stdout.buffer.write(bytes([1])*{frame_bytes}*{reference_frames});'
                         f'sys.stdout.flush();sys.exit({reference_error})']
             return popen(args, **kwargs)
 
-        with patch.object(compare.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, '2,2')):
+        with patch.object(compare.subprocess, 'run',
+                          return_value=subprocess.CompletedProcess([], 0, '2,2,' + source_format)):
             with patch.object(compare.subprocess, 'Popen', side_effect=start):
                 start_time = time.monotonic()
                 actual, summary = compare.compare('fixture.ivf', 0.5 if delay > 1 else 2)

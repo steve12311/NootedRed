@@ -247,11 +247,18 @@ def main():
         if cache.read(epilogue, 3) != bytes.fromhex("4489e0"):    # mov eax, r12d
             raise ValueError("AvdVAContext::DecodePicture epilogue not found")
         externals["_nrDecodePictureEpilogue"] = epilogue
-        # NV12 case of getAVDFuncOutputFormatInfo: *count = 1, formats[0] = {'NV12', 1}, return 0 (pops rbp).
-        nv12 = names[EXTERNALS["_nrGetAVDFuncOutputFormatInfo"]] + 0x5D923 - 0x5D8FA
-        if cache.read(nv12, 12) != bytes.fromhex("c70201000000c7013231564e"):
-            raise ValueError("getAVDFuncOutputFormatInfo NV12 case not found")
-        externals["_nrOutputFormatNV12"] = nv12
+        requirement, requirement_size = extent(GET_BUFFER_REQUIREMENT)
+        requirement_code = cache.read(requirement, requirement_size)
+        av1_requirement = bytes.fromhex("81fa000000010f84")
+        p010_requirement = bytes.fromhex("81f93032347875940fbae210738e837e2002")
+        if (requirement_code[buffer_requirement:buffer_requirement + len(av1_requirement)] != av1_requirement
+                or requirement_code.count(p010_requirement) != 1):
+            raise ValueError("未找到预期的 AV1 和 P010 布局分支")
+        nv12 = buffer_requirement + 12 + struct.unpack_from("<i", requirement_code, buffer_requirement + 8)[0]
+        if requirement_code[nv12:nv12 + 4] != bytes.fromhex("837e0c00"):
+            raise ValueError("未找到预期的 NV12 布局分支")
+        externals["_nrBufferRequirementNV12"] = requirement + nv12
+        externals["_nrBufferRequirementP010"] = requirement + requirement_code.index(p010_requirement) + 14
         chunks, defined, external_fields = link(sections, syms, placement, externals)
 
         patched = bytearray(region)
@@ -308,13 +315,15 @@ def main():
         original = b"\xe8" + rel32(call, 5, names[EXTERNALS["_nrGetAVDFuncSubId"]])
         hook(SETUP_CORE_FUNCTIONS, call - names[SETUP_CORE_FUNCTIONS], original,
              b"\xe8" + rel32(call, 5, defined["_vp9GetAVDFuncSubId"]))
-        # 9. Output formats: function 6 offers NV12 only, so AppleGVA refuses 10-bit streams at context creation.
+        # 函数 6 公布 NV12 和 x420。
         call = names[SETUP_CORE_FUNCTIONS] + capability_format
         hook(SETUP_CORE_FUNCTIONS, call - names[SETUP_CORE_FUNCTIONS],
              b"\xe8" + rel32(call, 5, names[EXTERNALS["_nrGetAVDFuncOutputFormatInfo"]]),
              b"\xe8" + rel32(call, 5, defined["_vp9GetAVDFuncOutputFormatInfo"]))
-        # 6. Output buffer layout for kind 1: type 0x1000 takes the NV12 path AV1 had (type 0x1000 was refused).
-        hook(GET_BUFFER_REQUIREMENT, buffer_requirement, bytes.fromhex("81fa00000001"), bytes.fromhex("81fa00100000"))
+        # VP9 复用驱动的 NV12 和 x420 平面布局。
+        branch = requirement + buffer_requirement
+        hook(GET_BUFFER_REQUIREMENT, buffer_requirement, requirement_code[buffer_requirement:buffer_requirement + 12],
+             bytes.fromhex("81fa001000000f84") + rel32(branch + 6, 6, defined["_vp9BufferRequirement"]))
         # 7. Context parameter 0xb (size limits): type 0x1000 reads the limits the kernel reports for AV1.
         hook(GET_CONTEXT_PARAMETER, context_parameter, bytes.fromhex("4981f900000001"),
              bytes.fromhex("4981f900100000"))

@@ -52,16 +52,16 @@ struct FakeSink {
 int main(){
     // Non idonea (ponte VCN non pronto): nessuna scrittura.
     {FakeSink s;assert(publish(s,false)==NotEligible&&s.empty());}
-    // Idonea: le tre chiavi, solo profilo 0.
+    // 就绪时发布 Profile 0 和 2。
     {FakeSink s;assert(publish(s,true)==Published);
      assert(s.strings["IOGVAXDecode"]=="2"&&s.strings["IOGVAVP9Decode"]=="1");
-     assert(s.dicts["IOGVAVP9DecodeCapabilities"]==std::vector<UInt32>{0});}
+     assert((s.dicts["IOGVAVP9DecodeCapabilities"]==std::vector<UInt32>{0,2}));}
     {FakeSink s;assert(publish(s,true)==Published);
      assert(publish(s,false)==NotEligible&&s.empty());}
     // Ogni errore toglie le chiavi già scritte.
     for(const char* k:{"IOGVAXDecode","IOGVAVP9Decode","IOGVAVP9DecodeCapabilities"}){
         FakeSink s;s.failOn=k;assert(publish(s,true)==Failed&&s.empty());}
-    puts("PASS VP9 probe: eligibility gate, three keys, profile 0 only, all-or-nothing rollback");
+    puts("PASS VP9 probe: eligibility gate, three keys, profiles 0 and 2, all-or-nothing rollback");
 }
 ''')
     exe = WORK / 'test'

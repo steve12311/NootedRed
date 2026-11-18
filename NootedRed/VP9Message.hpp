@@ -160,7 +160,7 @@ class Session {
     Surface renderPicList[9] {};
 
     void colorConfig(BitReader &br, Header &h) {
-        h.bitDepth = bitDepth = static_cast<uint8_t>(h.profile >= 2 ? (br.u(1) ? 12 : 10) : 8);
+        h.bitDepth = static_cast<uint8_t>(h.profile >= 2 ? (br.u(1) ? 12 : 10) : 8);
         if (br.u(3) != 7) {    // color_space != CS_RGB
             br.u(1);           // color_range
             if (h.profile == 1 || h.profile == 3) { br.u(3); }
@@ -178,7 +178,7 @@ class Session {
         if (br.u(1)) { br.u(32); }
     }
 
-    Status parse(const uint8_t *data, size_t size, Header &h) {
+    Status parse(const uint8_t *data, size_t size, Header &h, uint8_t expectedBitDepth) {
         BitReader br(data, size);
         h = {};
         if (br.u(2) != 2) { return Status::Malformed; }
@@ -189,8 +189,7 @@ class Session {
         h.frameType = static_cast<uint8_t>(br.u(1));
         h.showFrame = static_cast<uint8_t>(br.u(1));
         h.errorResilient = static_cast<uint8_t>(br.u(1));
-        if (h.profile == 0) { bitDepth = 8; }
-        h.bitDepth = bitDepth;
+        h.bitDepth = h.profile == 0 ? 8 : bitDepth;
         if (h.frameType == 0) {
             if (br.u(24) != 0x498342) { return Status::Malformed; }
             colorConfig(br, h);
@@ -227,7 +226,9 @@ class Session {
                 h.interpFilter = br.u(1) ? 4 : literalToType[br.u(2)];
             }
         }
-        if (h.bitDepth > 10) { return Status::Unsupported; }
+        if (h.bitDepth != (h.profile == 2 ? 10 : 8) || (expectedBitDepth && h.bitDepth != expectedBitDepth)) {
+            return Status::Unsupported;
+        }
         if (!h.errorResilient) {
             h.refreshFrameContext = static_cast<uint8_t>(br.u(1));
             h.frameParallel = static_cast<uint8_t>(br.u(1));
@@ -292,6 +293,7 @@ class Session {
         {
             return Status::Malformed;
         }
+        bitDepth = h.bitDepth;
         return Status::Ok;
     }
 
@@ -329,9 +331,9 @@ class Session {
     //! part keeps the last values when segmentation is off, as in Mesa. `p010` selects 10-bit output without
     //! dithering. Returns `Status::Ok` with `message` filled, or the reason the frame cannot go to the VCN.
     Status build(const uint8_t *frame, size_t size, Surface target, const Surface refs[8], bool p010,
-                 Message &message, ProbsSegment &probs, Header *headerOut = nullptr) {
+                 Message &message, ProbsSegment &probs, Header *headerOut = nullptr, uint8_t expectedBitDepth = 0) {
         Header h;
-        Status status = parse(frame, size, h);
+        Status status = parse(frame, size, h, expectedBitDepth);
         if (headerOut) { *headerOut = h; }
         if (status != Status::Ok) { return status; }
 

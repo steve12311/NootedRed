@@ -10,6 +10,7 @@ from contextlib import ExitStack
 import math
 import os
 import re
+import struct
 import subprocess
 import sys
 import tempfile
@@ -31,19 +32,28 @@ def read_exactly(stream, size):
     return bytes(data)
 
 
-def psnr(a, b):
-    mse = sum((x - y) ** 2 for x, y in zip(a, b)) / len(a)
-    return 99.0 if mse == 0 else 10 * math.log10(255 * 255 / mse)
+def psnr(a, b, sample_bytes):
+    if sample_bytes == 2:
+        left = (x >> 6 for (x,) in struct.iter_unpack("<H", a))
+        right = (x >> 6 for (x,) in struct.iter_unpack("<H", b))
+    else:
+        left, right = a, b
+    mse = sum((x - y) ** 2 for x, y in zip(left, right)) / (len(a) // sample_bytes)
+    peak = 1023 if sample_bytes == 2 else 255
+    return 99.0 if mse == 0 else 10 * math.log10(peak * peak / mse)
 
 
 def compare(clip, timeout):
-    size = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
-                           "-of", "csv=p=0", clip], capture_output=True, text=True, check=True).stdout.strip()
-    width, height = map(int, size.split(","))
-    luma = width * height
-    frame_size = luma + ((width + 1) // 2) * ((height + 1) // 2) * 2
+    info = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+                           "stream=width,height,pix_fmt", "-of", "csv=p=0", clip],
+                          capture_output=True, text=True, check=True, timeout=60).stdout.strip()
+    w, h, source_format = info.split(",")
+    width, height = int(w), int(h)
+    sample_bytes, output_format = {"yuv420p": (1, "nv12"), "yuv420p10le": (2, "p010le")}[source_format]
+    luma = width * height * sample_bytes
+    frame_size = luma + ((width + 1) // 2) * ((height + 1) // 2) * 2 * sample_bytes
     with tempfile.TemporaryDirectory() as work, ExitStack() as resources:
-        fifo = os.path.join(work, "hw.nv12")
+        fifo = os.path.join(work, "hw." + output_format)
         os.mkfifo(fifo)
         log = resources.enter_context(open(os.path.join(work, "probe.txt"), "w+"))
         probe = subprocess.Popen([str(PROBE), clip], env=dict(os.environ, VP9_DUMP=fifo), stdout=log,
@@ -68,7 +78,7 @@ def compare(clip, timeout):
         try:
             fd = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)
             reference = subprocess.Popen(
-                ["ffmpeg", "-v", "error", "-i", clip, "-f", "rawvideo", "-pix_fmt", "nv12", "-"],
+                ["ffmpeg", "-v", "error", "-i", clip, "-f", "rawvideo", "-pix_fmt", output_format, "-"],
                 stdout=subprocess.PIPE)
             watcher.start()
 
@@ -98,8 +108,8 @@ def compare(clip, timeout):
                 same_luma += out[:luma] == ref[:luma]
                 same_chroma += out[luma:] == ref[luma:]
                 if out != ref and len(diffs) < 3:
-                    diffs.append(f"{frames}: Y {psnr(out[:luma], ref[:luma]):.1f} dB, CbCr "
-                                 f"{psnr(out[luma:], ref[luma:]):.1f} dB")
+                    diffs.append(f"{frames}: Y {psnr(out[:luma], ref[:luma], sample_bytes):.1f} dB, CbCr "
+                                 f"{psnr(out[luma:], ref[luma:], sample_bytes):.1f} dB")
                 frames += 1
             if complete:
                 probe.wait()
