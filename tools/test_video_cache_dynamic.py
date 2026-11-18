@@ -372,14 +372,10 @@ int main(){
 }
 '''
     if LEGACY:
-        if SONOMA:
-            harness = harness.replace('cache(ResolverImages,ResolverFunctions,true)', 'cache(ResolverImages,ResolverFunctions,false)')
-            harness = harness.replace('UserVideoDecodeData::MaxPatchSize,1)', 'UserVideoDecodeData::MaxPatchSize,0)')
-        else:
-            harness = harness.replace('cache(ResolverImages,ResolverFunctions,true)',
-                'cache(ResolverImages,ResolverFunctions,true,SectionTargets,std::size(SectionTargets))')
-            harness = harness.replace('UserVideoDecodeData::MaxPatchSize,1)',
-                'UserVideoDecodeData::MaxPatchSize,true,UserVideoDecodeData::SectionTargets,std::size(UserVideoDecodeData::SectionTargets))')
+        harness = harness.replace('cache(ResolverImages,ResolverFunctions,true)',
+            'cache(ResolverImages,ResolverFunctions,true,SectionTargets,std::size(SectionTargets))')
+        harness = harness.replace('UserVideoDecodeData::MaxPatchSize,1)',
+            'UserVideoDecodeData::MaxPatchSize,true,UserVideoDecodeData::SectionTargets,std::size(UserVideoDecodeData::SectionTargets))')
         harness = harness.replace('UserVideoDecodeData::', 'UserSequoiaVideoData::')
         harness = harness.replace('using namespace UserVideoDecodeData;', 'using namespace UserSequoiaVideoData;')
         harness = harness.replace('devicePatches,plan)', f'devicePatches,plan,{23 if SONOMA else 24})')

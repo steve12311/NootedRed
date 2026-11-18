@@ -25,8 +25,6 @@ def main():
     args = parser.parse_args()
     if args.rdd_only and args.baseline_ref:
         parser.error('--rdd-only 需要当前解析器')
-    if args.major == 23 and not args.rdd_only:
-        parser.error('Darwin 23 当前仅支持 --rdd-only')
     WORK.mkdir(parents=True, exist_ok=True)
     with (args.cache / 'dyld_shared_cache_x86_64h').open('rb') as handle:
         handle.seek(88)
@@ -177,9 +175,10 @@ int main(){
 #endif
  for(auto&m:mappings)if(m.fd>=0)close(m.fd);
 }
-'''.replace('MAPPINGS', ',\n'.join(mappings)).replace('MAJOR',str(args.major)).replace('REPEAT', str(args.repeat)).replace('VIDEO_DATA','UserSequoiaVideoData' if args.major==24 else 'UserVideoDecodeData')
-    source = source.replace('SURFACE_DATA', 'UserSequoiaSurfaceData' if args.major == 24 else 'UserSurfaceSyncData')
-    source = source.replace('RESOLVER_DATA', 'UserSequoiaSurfaceData' if args.major == 24 else 'UserSurfaceSyncData::ScratchResolverData')
+'''.replace('MAPPINGS', ',\n'.join(mappings)).replace('MAJOR',str(args.major)).replace('REPEAT', str(args.repeat)).replace('VIDEO_DATA',{23: 'UserSonomaVideoData', 24: 'UserSequoiaVideoData', 25: 'UserVideoDecodeData'}[args.major])
+    source = source.replace('SURFACE_DATA', {23: 'UserSonomaSurfaceData', 24: 'UserSequoiaSurfaceData', 25: 'UserSurfaceSyncData'}[args.major])
+    source = source.replace('RESOLVER_DATA', {23: 'UserSonomaSurfaceData', 24: 'UserSequoiaSurfaceData',
+                                               25: 'UserSurfaceSyncData::ScratchResolverData'}[args.major])
     source = source.replace('DISPLAY_ONLY', str(int(args.display_only))).replace('RDD_ONLY', str(int(args.rdd_only)))
     if args.memory_reader:
         source = source.replace('#include <ctime>', '#include <ctime>\n#include <sys/mman.h>\n#include <sys/stat.h>')

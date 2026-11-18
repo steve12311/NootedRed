@@ -1521,6 +1521,17 @@ inline constexpr UserCacheResolver::Location ResolverLocations[] = {
     {18, 2161},
     {18, 2166},
 };
+inline constexpr UserCacheSectionData::Target SectionTargets[] = {
+    {"/System/Library/Extensions/AMDRadeonVADriver2.bundle/Contents/MacOS/AMDRadeonVADriver2", 0x3DA39840ULL, "__DATA", "__got", 0x220ULL, 664, 0},
+    {"/System/Library/Extensions/AMDRadeonVADriver2.bundle/Contents/MacOS/AMDRadeonVADriver2", 0x3DA4EEA0ULL, "__DATA", "__common", 0x0ULL, 664, 4},
+    {"/System/Library/Extensions/AMDRadeonVADriver2.bundle/Contents/MacOS/AMDRadeonVADriver2", 0x3DA4EEA4ULL, "__DATA", "__common", 0x4ULL, 664, 4},
+    {"/System/Library/PrivateFrameworks/AppleGVA.framework/Versions/A/AppleGVA", 0x3FD9B2C0ULL, "__DATA_CONST", "__cfstring", 0xE0ULL, 1144, 2},
+    {"/System/Library/PrivateFrameworks/AppleGVA.framework/Versions/A/AppleGVA", 0x3FD9B2E0ULL, "__DATA_CONST", "__cfstring", 0x100ULL, 1144, 2},
+    {"/System/Library/PrivateFrameworks/AppleGVA.framework/Versions/A/AppleGVA", 0x3FD9B300ULL, "__DATA_CONST", "__cfstring", 0x120ULL, 1144, 2},
+    {"/System/Library/PrivateFrameworks/AppleGVA.framework/Versions/A/AppleGVA", 0x3FD9B320ULL, "__DATA_CONST", "__cfstring", 0x140ULL, 1144, 2},
+    {"/System/Library/PrivateFrameworks/AppleGVA.framework/Versions/A/AppleGVA", 0x41C8D6F0ULL, "__DATA", "__common", 0x0ULL, 1936, 3},
+    {"/usr/lib/system/libsystem_c.dylib", 0x436A3E60ULL, "__DATA_DIRTY", "__common", 0x30ULL, 1368, 2},
+};
 inline constexpr UInt32 MaxPatchSize = 448;
 inline constexpr UInt32 PageCount = 12;
 }

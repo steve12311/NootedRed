@@ -2,7 +2,6 @@
 #pragma once
 #include <UserPatchProfiles.hpp>
 #include <UserSharedCache.hpp>
-#include <UserSonomaSurfaceData.hpp>
 #include <UserSurfaceConstructorData.hpp>
 #include <UserSurfaceSyncData.hpp>
 #include <VPF/FastResolution.hpp>
@@ -37,9 +36,10 @@ namespace UserSurfaceSyncResolver
             sizeof(UserPatchProfiles::Sequoia::SurfaceImages) / sizeof(UserPatchProfiles::Sequoia::SurfaceImages[0]);
         static_assert(ImageCapacity >= sizeof(UserPatchProfiles::Tahoe::SurfaceImages)
                                            / sizeof(UserPatchProfiles::Tahoe::SurfaceImages[0]));
+        static_assert(ImageCapacity >= sizeof(UserPatchProfiles::Sonoma::SurfaceImages)
+                                           / sizeof(UserPatchProfiles::Sonoma::SurfaceImages[0]));
         UserCacheResolver::ImageBounds scratchImages[ImageCapacity]{};
         UserCacheResolver::ImageBounds constructorImages[ImageCapacity]{};
-        UserCacheResolver::ImageBounds legacyImages[ImageCapacity]{};
     };
 
     struct InputBudget
@@ -164,6 +164,29 @@ namespace UserSurfaceSyncResolver
     }
 
     template<typename Data>
+    inline bool verifyCoreReferences(Input& input, const Plan& plan, UInt64 address,
+                                     const UserCacheResolver::Function& fn, UInt32 firstRef = 0)
+    {
+        for (UInt32 i = firstRef; i < fn.originalCount; ++i) {
+            const auto& ref = fn.originalRefs[i];
+            UInt8       field[4];
+            UInt64      actual, expected;
+            if (!input.read(address + ref.offset, field, sizeof(field))
+                || !relativeTarget(address + ref.offset, 0, field, actual)
+                || !UserCacheResolver::target(input, ref, plan.scratchImages,
+                                              sizeof(Data::SurfaceImages) / sizeof(Data::SurfaceImages[0]),
+                                              Data::SurfaceImages, nullptr, nullptr, 0, expected, true,
+                                              Data::SurfaceTargets, Data::SurfaceTargetCount)
+                || (ref.indirect ? !UserCacheResolver::binding(input, actual, ref.indirect, expected) :
+                                   actual != expected))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    template<typename Data>
     inline bool resolveCore(Input& input, UInt64 base, const DevicePatchSet& device, bool shared, bool blend,
                             Plan& plan, bool scratchMode = false, VPF::FastResolution* fast = nullptr)
     {
@@ -220,6 +243,34 @@ namespace UserSurfaceSyncResolver
             }
             return false;
         };
+        const auto matchSettingsAt = [&](UInt64 address)
+        {
+            if constexpr (Data::FullDisplayReferences) {
+                const auto& fn = Data::SurfaceFunctions[4];
+                using Patch    = UserSurfaceSyncData::Patch;
+                return UserCacheResolver::matches(input, address, fn, 0, false, static_cast<const Patch*>(nullptr),
+                                                  nullptr, 0)
+                       && verifyCoreReferences<Data>(input, plan, address, fn);
+            }
+            return matches(input, address, Data::NativeOverride, sizeof(Data::NativeOverride));
+        };
+        const auto findSettings = [&]
+        {
+            if constexpr (Data::FullDisplayReferences) {
+                const auto&               fn = Data::SurfaceFunctions[4];
+                UserCacheResolver::Prefix prefix;
+                for (UInt32 i = 0; i < 32; ++i) {
+                    prefix.set(i, fn.original[i], UserCacheResolver::skipped(i, fn.originalRefs, fn.originalCount));
+                }
+                UserCacheResolver::ScanAnchor anchor{};
+                return UserCacheResolver::scanFunction(
+                    input, image.text, fn.size, 32, [&](const UInt8* bytes) { return prefix.matches(bytes); },
+                    matchSettingsAt, settings, image.address + Data::NativeOverrideRVA,
+                    prefix.commonAnchor(prefix, anchor) ? &anchor : nullptr);
+            }
+            return findFunction(input, image.text, Data::NativeOverride, sizeof(Data::NativeOverride), settings, false,
+                                image.address + Data::NativeOverrideRVA);
+        };
         const auto matchOverrideAt = [&](UInt64 address)
         {
             UInt8 bytes[sizeof(Data::Original1)];
@@ -229,8 +280,24 @@ namespace UserSurfaceSyncResolver
             const bool original = memcmp(bytes, Data::Original1, 6) == 0;
             const bool patched  = bytes[0] == 0xE9 && memcmp(bytes + 5, Data::Patched1 + 5, 5) == 0;
             UInt64     target{0};
-            return (original || patched) && relativeTarget(address, original ? 6 : 1, bytes, target)
-                   && target == (original ? settings : init + Data::OverrideEntryInInit);
+            if ((!original && !patched) || !relativeTarget(address, original ? 6 : 1, bytes, target)
+                || target != (original ? settings : init + Data::OverrideEntryInInit))
+            {
+                return false;
+            }
+            if constexpr (Data::FullDisplayReferences) {
+                const auto& fn = Data::SurfaceFunctions[1];
+                if (!image.text.contains(address, fn.size)) { return false; }
+                return UserCacheResolver::matchBytes(input, address, fn.size,
+                                                     [&](UInt32 i, UInt8 value)
+                                                     {
+                                                         return i < sizeof(bytes) || value == fn.original[i]
+                                                                || UserCacheResolver::skipped(i, fn.originalRefs + 1,
+                                                                                              fn.originalCount - 1);
+                                                     })
+                       && verifyCoreReferences<Data>(input, plan, address, fn, 1);
+            }
+            return true;
         };
 
         UInt32                           functionImages[MaxCoreFunctions]{};
@@ -249,7 +316,7 @@ namespace UserSurfaceSyncResolver
                 const auto& settingsKnown = known[SettingsIndex];
                 if (settingsKnown.address == 0 || settingsKnown.patched
                     || !image.text.contains(settingsKnown.address, sizeof(Data::NativeOverride))
-                    || !matches(input, settingsKnown.address, Data::NativeOverride, sizeof(Data::NativeOverride)))
+                    || !matchSettingsAt(settingsKnown.address))
                 {
                     hot = false;
                 }
@@ -288,7 +355,7 @@ namespace UserSurfaceSyncResolver
                         hot = false;
                     }
                 }
-                if (hot) {
+                if (hot && !Data::FullDisplayReferences) {
                     const auto& constructorKnown = known[ConstructorIndex];
                     if (constructorKnown.address != 0) {
                         if (constructorKnown.patched
@@ -312,8 +379,7 @@ namespace UserSurfaceSyncResolver
         }
 
         if (!hot) {
-            if (!findFunction(input, image.text, Data::NativeOverride, sizeof(Data::NativeOverride), settings, false,
-                              image.address + Data::NativeOverrideRVA)
+            if (!findSettings()
                 || (!scratchMode
                     && !findFunction(input, image.text, ScratchOriginal, sizeof(ScratchOriginal), scratch, false,
                                      image.address + ScratchRVA)))
@@ -345,8 +411,9 @@ namespace UserSurfaceSyncResolver
                 return false;
             }
             constructorDirect =
-                findFunction(input, image.text, Data::BlendConstructor, sizeof(Data::BlendConstructor), constructor,
-                             true, image.address + Data::ConstructorRVA, Data::BlendGateInConstructor);
+                !Data::FullDisplayReferences
+                && findFunction(input, image.text, Data::BlendConstructor, sizeof(Data::BlendConstructor), constructor,
+                                true, image.address + Data::ConstructorRVA, Data::BlendGateInConstructor);
             if (fast) {
                 UserCacheResolver::KnownLocation locations[MaxCoreFunctions]{};
                 locations[SettingsIndex] = {settings, false};
@@ -357,12 +424,8 @@ namespace UserSurfaceSyncResolver
                 if (constructorDirect) { locations[ConstructorIndex] = {constructor, false}; }
                 fast->publish(VPF::FunctionGroup::DisplayCore, locations, functionImages, count);
             }
-            if (!constructorDirect) {
-                if (!resolveConstructor<Data>(input, base, plan, fast)) { return false; }
-                constructor = base + plan.patches[2].offset - Data::BlendGateInConstructor;
-            }
         }
-        else if (!constructorDirect) {
+        if (!constructorDirect) {
             if (!resolveConstructor<Data>(input, base, plan, fast)) { return false; }
             constructor = base + plan.patches[2].offset - Data::BlendGateInConstructor;
         }
@@ -414,85 +477,8 @@ namespace UserSurfaceSyncResolver
         return resolve(plan.input, base, device, shared, blend, plan, scratchMode, fast);
     }
 
-    template<size_t Images, size_t Functions, size_t Locations>
-    inline bool resolveLegacyProfile(Input& input, UInt64 base, const UserSurfaceSyncData::Patch* patches, Plan& plan,
-                                     const UserCacheResolver::ImageReference (&ResolverImages)[Images],
-                                     const UserCacheResolver::Function       (&ResolverFunctions)[Functions],
-                                     const UserCacheResolver::Location       (&ResolverLocations)[Locations],
-                                     VPF::FastResolution*                    fast)
-    {
-        if (!patches) { return false; }
-        static_assert(Locations == 4);
-        static_assert(Images <= sizeof(plan.legacyImages) / sizeof(plan.legacyImages[0]) && Functions <= 32);
-        auto& bounds = plan.legacyImages;
-        if (!UserCacheResolver::resolveImages(input, base, ResolverImages, bounds)) { return false; }
-        UInt32 functionImages[Functions]{};
-        for (UInt32 i = 0; i < Functions; ++i) { functionImages[i] = ResolverFunctions[i].image; }
-        UserCacheResolver::KnownLocation known[Functions]{};
-        UserCacheResolver::KnownLocation located[Functions]{};
-        const auto                       budget = saveBudget(input);
-        bool                             hot    = false;
-        if (fast) {
-            fast->restart();
-            hot = fast->observeImages(input.cache.address, input.cache.size, bounds, ResolverImages, Images)
-                  && fast->lookup(VPF::FunctionGroup::DisplayLegacy, functionImages, Functions, known);
-        }
-        bool resolved = hot
-                        && UserCacheResolver::resolveFunctions(input, base, ResolverImages, ResolverFunctions, patches,
-                                                               ResolverLocations, plan.patches, &plan.original[0][0],
-                                                               &plan.patched[0][0], Plan::BufferSize, bounds, false,
-                                                               nullptr, 0, known, nullptr);
-        if (!resolved && hot) {
-            restoreBudget(input, budget);
-            fast->rejectHot();
-            hot = false;
-        }
-        if (!resolved) {
-            resolved = UserCacheResolver::resolveFunctions(input, base, ResolverImages, ResolverFunctions, patches,
-                                                           ResolverLocations, plan.patches, &plan.original[0][0],
-                                                           &plan.patched[0][0], Plan::BufferSize, bounds, false,
-                                                           nullptr, 0, nullptr, located);
-        }
-        if (!resolved) { return false; }
-        const auto& init = ResolverFunctions[0];
-        UInt64      constant{0}, dump{0};
-        UInt8       value[4], dumpBytes[sizeof(NativeDump)];
-        const auto  address   = base + plan.patches[0].offset;
-        const auto  postCheck = [&]
-        {
-            return relativeTarget(address, init.originalRefs[0].offset, plan.original[0], constant)
-                   && input.read(constant, value, sizeof(value)) && word(value) == 0x40400000
-                   && relativeTarget(address, init.originalRefs[2].offset, plan.original[0], dump)
-                   && input.read(dump, dumpBytes, sizeof(dumpBytes))
-                   && memcmp(dumpBytes, NativeDump, sizeof(NativeDump)) == 0;
-        };
-        if (!postCheck()) {
-            if (!hot) { return false; }
-            restoreBudget(input, budget);
-            fast->rejectHot();
-            hot = false;
-            if (!UserCacheResolver::resolveFunctions(input, base, ResolverImages, ResolverFunctions, patches,
-                                                     ResolverLocations, plan.patches, &plan.original[0][0],
-                                                     &plan.patched[0][0], Plan::BufferSize, bounds, false, nullptr, 0,
-                                                     nullptr, located)
-                || !postCheck())
-            {
-                return false;
-            }
-        }
-        if (!hot && fast) { fast->publish(VPF::FunctionGroup::DisplayLegacy, located, functionImages, Functions); }
-        plan.reads = input.reads;
-        return true;
-    }
-
     inline bool selectMetalImages(Input& input, UInt64 base, UInt32 major)
     {
-        if (major == 23) {
-            input.selectImages(base, UserSonomaSurfaceData::ResolverImages,
-                               sizeof(UserSonomaSurfaceData::ResolverImages)
-                                   / sizeof(UserSonomaSurfaceData::ResolverImages[0]));
-            return true;
-        }
         return UserPatchProfiles::dispatch(major,
                                            [&](auto profile)
                                            {
@@ -507,11 +493,6 @@ namespace UserSurfaceSyncResolver
     inline bool resolveMetal(Input& input, UInt64 base, UInt32 deviceID, Plan& plan, UInt32 major,
                              VPF::FastResolution* fast = nullptr)
     {
-        if (major == 23) {
-            return resolveLegacyProfile(input, base, UserSonomaSurfaceData::findDevice(deviceID), plan,
-                                        UserSonomaSurfaceData::ResolverImages, UserSonomaSurfaceData::ResolverFunctions,
-                                        UserSonomaSurfaceData::ResolverLocations, fast);
-        }
         return UserPatchProfiles::dispatch(major,
                                            [&](auto profile)
                                            {
@@ -630,10 +611,6 @@ namespace UserSurfaceSyncResolver
     inline bool resolveSubmitForOS(Input& input, UInt64 base, UInt64& offset, UInt32 major,
                                    VPF::FastResolution* fast = nullptr)
     {
-        if (major == 23) {
-            return resolveSubmitProfile(input, base, offset, UserSonomaSurfaceData::Submit::ResolverFunctions[0],
-                                        UserSonomaSurfaceData::Submit::ResolverImages, false, fast);
-        }
         return UserPatchProfiles::dispatch(major,
                                            [&](auto profile)
                                            {

@@ -4,7 +4,7 @@ import argparse
 import re
 import subprocess
 
-from user_patch_memory_harness import with_memory_helpers, with_inactive_coordinator
+from user_patch_memory_harness import INACTIVE_DISPLAY_TIMING, with_memory_helpers, with_inactive_coordinator
 
 ROOT = Path(__file__).resolve().parents[1]
 WORK = ROOT / 'build/display-runtime-bridge'
@@ -127,7 +127,7 @@ def main():
                         'struct Transaction;using PatchCallback=int(*)(void*,void*,int,Transaction&);'
                         'inline void registerReader(UserSharedCache::Reader){}')
     prefix, suffix = text.split('BODY', 1)
-    text = with_inactive_coordinator(prefix, stubs, existing_locks=True) + body + suffix
+    text = with_inactive_coordinator(prefix, stubs, existing_locks=True) + INACTIVE_DISPLAY_TIMING + body + suffix
     text = text.replace('INIT', init).replace('MAIN', MAIN)
     path, exe = WORK / 'bridge.cpp', WORK / 'bridge'
     path.write_text(text)

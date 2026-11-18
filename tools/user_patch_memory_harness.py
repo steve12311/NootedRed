@@ -11,6 +11,15 @@ def with_memory_helpers(body):
     return helpers + "\n" + body
 
 
+INACTIVE_DISPLAY_TIMING = """
+namespace UserPhaseTiming {
+enum class Phase { DisplayResolve, DisplayPrepare, DisplayWrite };
+inline void setEnabled(bool) {}
+struct Timer { explicit Timer(Phase) {} void stop() {} };
+}
+"""
+
+
 def with_inactive_coordinator(preamble, stubs, existing_locks=False):
     """旧 Hook 入口测试也使用生产事务类型；协调器调度由独立的跨模块测试覆盖。"""
     iokit = stubs / 'IOKit'

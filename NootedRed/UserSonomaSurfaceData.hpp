@@ -1596,6 +1596,33 @@ inline constexpr UserCacheResolver::Location ResolverLocations[] = {
     {2, 4584},
     {3, 0},
 };
+inline constexpr UserCacheSectionData::Target SectionTargets[] = {
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6A4E0ULL, "__DATA_CONST", "__objc_selrefs", 0x18ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6A4E8ULL, "__DATA_CONST", "__objc_selrefs", 0x20ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6A990ULL, "__DATA_CONST", "__objc_selrefs", 0x4C8ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6AED8ULL, "__DATA_CONST", "__objc_selrefs", 0xA10ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6B178ULL, "__DATA_CONST", "__objc_selrefs", 0xCB0ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6B3E0ULL, "__DATA_CONST", "__objc_selrefs", 0xF18ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6B498ULL, "__DATA_CONST", "__objc_selrefs", 0xFD0ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6B9C0ULL, "__DATA_CONST", "__objc_selrefs", 0x14F8ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6BAC0ULL, "__DATA_CONST", "__objc_selrefs", 0x15F8ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6BAF8ULL, "__DATA_CONST", "__objc_selrefs", 0x1630ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6BB00ULL, "__DATA_CONST", "__objc_selrefs", 0x1638ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6C840ULL, "__DATA_CONST", "__objc_classrefs", 0x208ULL, 1064, 9},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6C978ULL, "__DATA_CONST", "__objc_superrefs", 0x50ULL, 1064, 10},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3D916538ULL, "__DATA", "__objc_ivar", 0xC8ULL, 2176, 1},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3D916580ULL, "__DATA", "__objc_ivar", 0x110ULL, 2176, 1},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3D9165C8ULL, "__DATA", "__objc_ivar", 0x158ULL, 2176, 1},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3D916660ULL, "__DATA", "__objc_ivar", 0x1F0ULL, 2176, 1},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3D9166A8ULL, "__DATA", "__objc_ivar", 0x238ULL, 2176, 1},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3D916700ULL, "__DATA", "__objc_ivar", 0x290ULL, 2176, 1},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3D916798ULL, "__DATA", "__objc_ivar", 0x328ULL, 2176, 1},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3D917A20ULL, "__DATA", "__data", 0x180ULL, 2176, 3},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3D91D630ULL, "__DATA", "__bss", 0xBF0ULL, 2176, 7},
+    {"/System/Library/Frameworks/Metal.framework/Versions/A/Metal", 0x378A4590ULL, "__DATA", "__objc_ivar", 0x1960ULL, 1224, 12},
+    {"/usr/lib/system/libsystem_c.dylib", 0x436A3E60ULL, "__DATA_DIRTY", "__common", 0x30ULL, 1368, 2},
+    {"/usr/lib/system/libsystem_kernel.dylib", 0x4358C278ULL, "__DATA_DIRTY", "__common", 0x48ULL, 1048, 1},
+};
 namespace Submit {
 inline constexpr UserCacheResolver::ImageReference ResolverImages[] = {
     {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", sizeof("/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver")},
@@ -1619,6 +1646,10 @@ inline constexpr UserCacheResolver::Function ResolverFunctions[] = {
     {0, 0x6D210ULL, ResolverOriginal0, sizeof(ResolverOriginal0), ResolverOriginalRefs0, 3, ResolverPatchedRefs0, 3},
 };
 inline constexpr UserCacheResolver::Location ResolverLocations[] = {
+};
+inline constexpr UserCacheSectionData::Target SectionTargets[] = {
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6C330ULL, "__DATA_CONST", "__objc_selrefs", 0x1E68ULL, 1064, 7},
+    {"/System/Library/Extensions/AMDRadeonX5000MTLDriver.bundle/Contents/MacOS/AMDRadeonX5000MTLDriver", 0x3CB6C9B8ULL, "__DATA_CONST", "__objc_superrefs", 0x90ULL, 1064, 10},
 };
 }
 }

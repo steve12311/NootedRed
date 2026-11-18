@@ -330,7 +330,7 @@ def main():
                    '    for (const auto& entry : DevicePatches) { if (entry.deviceID == deviceID) { return entry.patches; } }\n'
                    '    return nullptr;\n}\n')
         header += resolver.header(locations)
-        if args.sequoia_cache:
+        if profile:
             header += resolver.section_header()
         header += f"inline constexpr UInt32 MaxPatchSize = 448;\ninline constexpr UInt32 PageCount = {pages};\n}}\n"
         if profile:

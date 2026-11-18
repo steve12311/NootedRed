@@ -15,13 +15,11 @@ SrdShared、LegacyBlend、ComputeScratch 和视频补丁都复用这些基础能
 `UserVideoDecodeResolver.hpp` 保留视频计划；公共层不依赖任一生成数据头。
 `tools/cache_resolver_data.py` 共用生成完整函数、指令／数据分界及引用描述的逻辑。
 
-Darwin 24/25 的参考数据集中在 `UserPatchProfiles.hpp` 选择。Metal 共用 `resolveCore`，
-Scratch 和构造器共用 `resolvePart`；设备初始化使用同一套函数关系、常量和目标函数核验。
-视频、SubmitGuard 同样通过该数据入口进入公共解析器，节重定位由公共流程启用。
-OpenGL 共用页面解析与安装器；VCN 内核补丁共用 `VCN.cpp` 的验证和安装流程，
-`VCNKernelProfiles.hpp` 只选择 ABI 守卫与调用点数据。Darwin 23 保留原有兼容路径。
-`test_patch_profiles.py` 验证 24/25 实际发布相同的 Metal Core/Scratch FVRC 功能组、热重放与失败回退，
-防止再次引入仅属于 Darwin 24 的执行流程；解析证明版本为 2。
+Darwin 23–25 在 `UserPatchProfiles.hpp` 选择参考数据。Metal 共用 `resolveCore` 核验设备初始化和覆盖入口，
+并通过 `resolvePart` 解析 Scratch 和构造器。VCN、VideoToolbox 解码候选和 SubmitGuard 也通过同一入口选择数据。
+OpenGL 共用页面解析与安装器，VP9 按版本选择函数和 ABI 数据后共用解析器。
+`VCNKernelProfiles.hpp` 提供内核 ABI 守卫与调用点数据，由 `VCN.cpp` 核验并安装。
+`test_patch_profiles.py` 覆盖三版 Metal 的 FVRC 功能组、热重放、失败回退及目标拒绝。
 
 OpenGL 的独立驱动修复见 [OpenGL 修复](opengl-display-fix.md)。它复用公共相对位移工具及引用数据，
 只匹配当前校验页内的完整修复块，不执行文件准备或 Mach-O 扫描；跨页块和页内歧义均拒绝。
@@ -35,9 +33,9 @@ Tahoe 的 COW 映射判定、`HintOnly` 不得禁用可复用条目，以及跳�
 解析器仅读取并生成计划；桥接完成所有字节与 RX 权限检查后才写入私有 COW 页。
 
 动态路径重新计算 rel32 调用与 RIP 位移。已完整核验的目标函数允许搬迁；
-Sequoia 显示、提交守卫和视频与 Tahoe 共用 `sectionTarget`：按 Mach-O 段名、节名及节内偏移
-重新定位数据目标，命令位置和节序号只作提示。Sequoia 的节表由 15.8.3（24H241）真实缓存生成，
-通过同一公共解析器传入，不使用 Tahoe 的节坐标。其余外部目标仍要求处于原映像内的参考 RVA。
+三版的显示、提交守卫和视频共用 `sectionTarget`，按 Mach-O 段名、节名及节内偏移重新定位数据目标。
+命令位置和节序号只作提示。Sonoma 与 Sequoia 的节表分别来自 14.8.9（23J631）和 15.8.3（24H241）真缓存。
+未列入节表且无法关联到已核验函数的外部目标仍使用映像内参考 RVA。
 dyld 合并 GOT / 调用桩按当前绑定指针核对目标，保留同一绑定的不同引用位置，不能把所有引用改到第一个 GOT 槽。
 这支持相同实现的缓存重排，不能自动适配任意新函数实现、外部符号 RVA 或驱动 ABI。
 

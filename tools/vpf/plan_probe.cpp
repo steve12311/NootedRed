@@ -19,23 +19,29 @@ static std::map<std::string, unsigned> properties;
 // 生成数据以 namespace 组织，不能直接作为模板参数；用轻量 traits 暴露数组。
 struct VideoDarwin23
 {
-    static inline constexpr auto& devices   = UserSonomaVideoData::DevicePatches;
-    static inline constexpr auto& images    = UserSonomaVideoData::ResolverImages;
-    static inline constexpr auto& functions = UserSonomaVideoData::ResolverFunctions;
+    static inline constexpr auto& devices     = UserSonomaVideoData::DevicePatches;
+    static inline constexpr auto& images      = UserSonomaVideoData::ResolverImages;
+    static inline constexpr auto& functions   = UserSonomaVideoData::ResolverFunctions;
+    static inline constexpr auto& targets     = UserSonomaVideoData::SectionTargets;
+    static constexpr auto         targetCount = std::size(targets);
 };
 
 struct VideoDarwin24
 {
-    static inline constexpr auto& devices   = UserSequoiaVideoData::DevicePatches;
-    static inline constexpr auto& images    = UserSequoiaVideoData::ResolverImages;
-    static inline constexpr auto& functions = UserSequoiaVideoData::ResolverFunctions;
+    static inline constexpr auto& devices     = UserSequoiaVideoData::DevicePatches;
+    static inline constexpr auto& images      = UserSequoiaVideoData::ResolverImages;
+    static inline constexpr auto& functions   = UserSequoiaVideoData::ResolverFunctions;
+    static inline constexpr auto& targets     = UserSequoiaVideoData::SectionTargets;
+    static constexpr auto         targetCount = std::size(targets);
 };
 
 struct VideoDarwin25
 {
-    static inline constexpr auto& devices   = UserVideoDecodeData::DevicePatches;
-    static inline constexpr auto& images    = UserVideoDecodeData::ResolverImages;
-    static inline constexpr auto& functions = UserVideoDecodeData::ResolverFunctions;
+    static inline constexpr auto&                               devices     = UserVideoDecodeData::DevicePatches;
+    static inline constexpr auto&                               images      = UserVideoDecodeData::ResolverImages;
+    static inline constexpr auto&                               functions   = UserVideoDecodeData::ResolverFunctions;
+    static inline constexpr const UserCacheSectionData::Target* targets     = nullptr;
+    static constexpr auto                                       targetCount = 0;
 };
 
 using VPF::FeatureManifest;
@@ -161,13 +167,7 @@ template<typename Data>
 static void testVideo(const char* os, const UInt32 osMask, const UInt32 major)
 {
     for (const auto& device : Data::devices) {
-        if (major == 24) {
-            cache(Data::images, Data::functions, true, UserSequoiaVideoData::SectionTargets,
-                  std::size(UserSequoiaVideoData::SectionTargets));
-        }
-        else {
-            cache(Data::images, Data::functions, true);
-        }
+        cache(Data::images, Data::functions, true, Data::targets, Data::targetCount);
         UserSharedCache::Input input{reader, {}};
         UInt8                    scan[UserSharedCache::Input::ScanSize];
         input.scanBuffer = scan;
@@ -186,63 +186,32 @@ static void testVideo(const char* os, const UInt32 osMask, const UInt32 major)
     }
 }
 
-static void testSequoiaSurface()
+template<typename Data, typename Device, size_t Devices>
+static void testSectionSurface(const char* os, UInt32 osMask, UInt32 major, const Device (&devices)[Devices])
 {
-    using namespace UserSequoiaSurfaceData;
-    constexpr auto functionCount = sizeof(ResolverFunctions) / sizeof(ResolverFunctions[0]);
-    for (const auto& device : DevicePatches) {
-        cache(ResolverImages, ResolverFunctions, true, SectionTargets, std::size(SectionTargets));
+    const auto& functions = Data::SurfaceFunctions;
+    for (const auto& device : devices) {
+        cache(Data::SurfaceImages, functions, true, Data::SurfaceTargets, Data::SurfaceTargetCount);
         const auto constant = imageAddresses[0] + 0x71064;
-        put(functionAddresses[4], ResolverFunctions[4].original, ResolverFunctions[4].size);
-        rel(functionAddresses[0], ResolverFunctions[0].originalRefs[0].offset, constant);
+        rel(functionAddresses[0], functions[0].originalRefs[0].offset, constant);
         word32(constant, 0x40400000);
-        const auto dump = destination(ResolverFunctions[0].originalRefs[2], ResolverFunctions, functionCount);
-        put(dump, UserSurfaceSyncData::NativeDump, sizeof(UserSurfaceSyncData::NativeDump));
-
-        UserSurfaceSyncResolver::Plan legacy;
-        char                                label[128];
-        std::snprintf(label, sizeof(label), "surface Darwin24 device %04X", device.deviceID);
-        check(UserSurfaceSyncResolver::resolveSequoia(reader, base, device.deviceID, legacy), label);
-        const auto* manifest = VPF::ManifestData::find(VPF::FeatureId::DisplaySRD, VPF::OsDarwin24, device.deviceID);
-        check(manifest != nullptr, label);
-        if (!manifest) { continue; }
-        VerifiedPatchPlan plan;
-        check(VPF::adaptSurface(plan, *manifest, base, legacy.input.cache, legacy, 4, PlanState::AllOriginal), label);
-        checkPlan(plan, legacy.patches, 4, legacy.reads, label);
-        emitPlan("DisplaySRD", "Darwin24", device.deviceID, PlanState::AllOriginal, plan);
-    }
-}
-
-static void testSonomaSurface()
-{
-    using namespace UserSonomaSurfaceData;
-    constexpr auto functionCount = sizeof(ResolverFunctions) / sizeof(ResolverFunctions[0]);
-    for (const auto& device : DevicePatches) {
-        cache(ResolverImages, ResolverFunctions, false);
-        const auto constant = destination(ResolverFunctions[0].originalRefs[0], ResolverFunctions, functionCount);
-        blocks[constant].resize(16);
-        word32(constant, 0x40400000);
-        const auto dump = destination(ResolverFunctions[0].originalRefs[2], ResolverFunctions, functionCount);
+        const auto dump = imageAddresses[0] + 0x6e000;
+        rel(functionAddresses[0], functions[0].originalRefs[2].offset, dump);
         put(dump, UserSurfaceSyncData::NativeDump, sizeof(UserSurfaceSyncData::NativeDump));
 
         UserSurfaceSyncResolver::Plan legacy;
         char                          label[128];
-        std::snprintf(label, sizeof(label), "surface Darwin23 device %04X", device.deviceID);
-        check((
-                  [&]
-                  {
-                      legacy.input            = {reader, {}};
-                      legacy.input.scanBuffer = legacy.scan;
-                      return UserSurfaceSyncResolver::resolveMetal(legacy.input, base, device.deviceID, legacy, 23);
-                  }()),
-              label);
-        const auto* manifest = VPF::ManifestData::find(VPF::FeatureId::DisplaySRD, VPF::OsDarwin23, device.deviceID);
+        std::snprintf(label, sizeof(label), "surface %s device %04X", os, device.deviceID);
+        legacy.input            = {reader, {}};
+        legacy.input.scanBuffer = legacy.scan;
+        check(UserSurfaceSyncResolver::resolveMetal(legacy.input, base, device.deviceID, legacy, major), label);
+        const auto* manifest = VPF::ManifestData::find(VPF::FeatureId::DisplaySRD, osMask, device.deviceID);
         check(manifest != nullptr, label);
         if (!manifest) { continue; }
         VerifiedPatchPlan plan;
         check(VPF::adaptSurface(plan, *manifest, base, legacy.input.cache, legacy, 4, PlanState::AllOriginal), label);
         checkPlan(plan, legacy.patches, 4, legacy.reads, label);
-        emitPlan("DisplaySRD", "Darwin23", device.deviceID, PlanState::AllOriginal, plan);
+        emitPlan("DisplaySRD", os, device.deviceID, PlanState::AllOriginal, plan);
     }
 }
 
@@ -306,8 +275,10 @@ int main(int argc, char** argv)
     testVideo<VideoDarwin23>("Darwin23", VPF::OsDarwin23, 23);
     testVideo<VideoDarwin24>("Darwin24", VPF::OsDarwin24, 24);
     testVideo<VideoDarwin25>("Darwin25", VPF::OsDarwin25, 25);
-    testSequoiaSurface();
-    testSonomaSurface();
+    testSectionSurface<UserPatchProfiles::Sequoia>("Darwin24", VPF::OsDarwin24, 24,
+                                                   UserSequoiaSurfaceData::DevicePatches);
+    testSectionSurface<UserPatchProfiles::Sonoma>("Darwin23", VPF::OsDarwin23, 23,
+                                                  UserSonomaSurfaceData::DevicePatches);
     testScratch();
     testSiteOverlap();
     if (jsonMode) { std::printf("]}\n"); }

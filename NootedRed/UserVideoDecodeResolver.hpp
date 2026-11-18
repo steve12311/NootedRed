@@ -1,7 +1,6 @@
 // 仅生成当前视频缓存的补丁计划；UUID 不作为动态路径的兼容依据。
 #pragma once
 #include <UserPatchProfiles.hpp>
-#include <UserSonomaVideoData.hpp>
 #include <UserVideoDecodeData.hpp>
 #include <VPF/FastResolution.hpp>
 namespace UserVideoDecodeResolver
@@ -36,11 +35,11 @@ namespace UserVideoDecodeResolver
         UserCacheResolver::KnownLocation locations[Functions]{};
     };
 
-    using Plan = ResolvedPlan<ImageCount, MaxFunctionCount, PatchCount>;
-    using TahoeRDD = UserPatchProfiles::Tahoe::VTRDD;
+    using Plan                          = ResolvedPlan<ImageCount, MaxFunctionCount, PatchCount>;
+    using TahoeRDD                      = UserPatchProfiles::Tahoe::VTRDD;
     static constexpr auto RDDPatchCount = sizeof(TahoeRDD::Sites) / sizeof(TahoeRDD::Sites[0]);
     static constexpr auto RDDImageCount = sizeof(TahoeRDD::Images) / sizeof(TahoeRDD::Images[0]);
-    using RDDPlan = ResolvedPlan<RDDImageCount, RDDPatchCount, RDDPatchCount>;
+    using RDDPlan                       = ResolvedPlan<RDDImageCount, RDDPatchCount, RDDPatchCount>;
 
     template<typename Output, size_t Images, size_t Functions, size_t Locations>
     inline bool resolveSet(UserSharedCache::Input& input, UInt64 base, const UserVideoDecodeData::Patch* patches,
@@ -103,20 +102,13 @@ namespace UserVideoDecodeResolver
     inline bool resolveRDD(UserSharedCache::Input& input, UInt64 base, RDDPlan& plan, UInt32 major,
                            VPF::FastResolution* fast = nullptr)
     {
-        if (major == 23) {
-            return resolveRDDSet<UserVTRDDCandidateData::Sonoma::Profile>(input, base, plan, fast);
-        }
-        return UserPatchProfiles::dispatch(major,
-                                           [&](auto profile)
-                                           {
-                                               return resolveRDDSet<typename decltype(profile)::VTRDD>(
-                                                   input, base, plan, fast);
-                                           });
+        return UserPatchProfiles::dispatch(
+            major,
+            [&](auto profile) { return resolveRDDSet<typename decltype(profile)::VTRDD>(input, base, plan, fast); });
     }
 
     inline const UserVideoDecodeData::Patch* findDevice(UInt32 deviceID, UInt32 major)
     {
-        if (major == 23) { return UserSonomaVideoData::findDevice(deviceID); }
         const UserVideoDecodeData::Patch* patches = nullptr;
         UserPatchProfiles::dispatch(major,
                                     [&](auto profile)
@@ -129,7 +121,6 @@ namespace UserVideoDecodeResolver
 
     inline UInt32 fairPlayMask(UInt32 major)
     {
-        if (major == 23) { return UserSonomaVideoData::FairPlayDecodeMask; }
         UInt32 mask = 0;
         UserPatchProfiles::dispatch(major,
                                     [&](auto profile)
@@ -144,11 +135,6 @@ namespace UserVideoDecodeResolver
                         Plan& plan, UInt32 major = 25, VPF::FastResolution* fast = nullptr)
     {
         if (!patches) { return false; }
-        if (major == 23) {
-            return resolveSet(input, base, patches, plan, UserSonomaVideoData::ResolverImages,
-                              UserSonomaVideoData::ResolverFunctions, UserSonomaVideoData::ResolverLocations, false,
-                              fast);
-        }
         return UserPatchProfiles::dispatch(major,
                                            [&](auto profile)
                                            {

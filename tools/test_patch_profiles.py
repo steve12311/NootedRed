@@ -1,4 +1,4 @@
-"""验证 Darwin 24/25 的公共解析流程、FVRC 功能组与失败拒绝。"""
+"""验证 Darwin 23/24/25 的公共解析流程、FVRC 功能组与失败拒绝。"""
 from pathlib import Path
 import subprocess
 
@@ -44,23 +44,25 @@ static bool surface(unsigned major,UserSurfaceSyncResolver::Plan& plan,VPF::Fast
  return UserSurfaceSyncResolver::resolveMetal(plan.input,M::base,0x1638,plan,major,&fast);
 }
 static void checkGroups(unsigned major){
- bool core=false,scratch=false;
+ bool core=false,scratch=false,constructor=false;
  for(auto&entry:VPF::resolutionCache.entries){
   if(entry.state!=1||entry.value.key.darwinMajor!=major)continue;
   const auto group=entry.value.key.functionGroupId;
-  assert(group!=unsigned(VPF::FunctionGroup::DisplayLegacy));
   if(group==unsigned(VPF::FunctionGroup::DisplayCore)){
    assert(entry.value.imageCount==1&&entry.value.functionCount>=3&&entry.value.functionCount<=4);core=true;
+  }
+  if(group==unsigned(VPF::FunctionGroup::DisplayConstructor)){
+   assert(entry.value.functionCount==1);constructor=true;
   }
   if(group==unsigned(VPF::FunctionGroup::DisplayScratch)){
    assert(entry.value.functionCount==1);scratch=true;
   }
  }
- assert(core&&scratch);
+ assert(core&&scratch&&(major==25||constructor));
 }
 int main(){
  VPF::ResolutionDiagnostics::setEnabled(true);
- for(unsigned major:{24U,25U}){
+ for(unsigned major:{23U,24U,25U}){
   VPF::resolutionCache={};VPF::resolutionCache.init();dirty=false;M::setupOS(0x1638,major);
   UserSurfaceSyncResolver::Plan cold{};auto first=begin(major);assert(surface(major,cold,first));checkGroups(major);
   UserSurfaceSyncResolver::Plan hot{};auto second=begin(major);assert(surface(major,hot,second));
@@ -76,13 +78,23 @@ int main(){
   UserSurfaceSyncResolver::Plan bad{};auto fourth=begin(major);assert(!surface(major,bad,fourth));
   assert(M::writes==0&&M::protects==0);
   printf("PASS Darwin%u: shared Metal core/scratch FVRC groups, hot replay, dirty fallback and constant rejection\n",major);
+  if(major<25){
+   M::setupOS(0x1638,major);
+   const auto& functions = major==23 ? UserSonomaSurfaceData::ResolverFunctions
+                                     : UserSequoiaSurfaceData::ResolverFunctions;
+   const auto& ref = functions[4].originalRefs[0];
+   const auto target = M::destination(ref,functions,std::size(functions));
+   M::rel(M::functionAddresses[4],ref.offset,target+4);
+   UserSurfaceSyncResolver::Plan wrongBinding{};auto proof=begin(major);
+   assert(!surface(major,wrongBinding,proof)&&M::writes==0&&M::protects==0);
+  }
   assert(UserVideoDecodeResolver::findDevice(0x1638,major));
   assert(!UserVideoDecodeResolver::findDevice(0x15DD,major));
   assert(UserVideoDecodeResolver::fairPlayMask(major)!=0);
  }
- assert(!UserPatchProfiles::dispatch(23,[](auto){return true;}));
+ assert(!UserPatchProfiles::dispatch(22,[](auto){return true;}));
  assert(!UserPatchProfiles::dispatch(26,[](auto){return true;}));
- puts("PASS common profiles: unsupported systems reject; no Darwin24-only execution group");
+ puts("PASS common profiles: unsupported systems reject; shared execution groups");
 }
 '''
     path, exe = WORK / 'test.cpp', WORK / 'test'

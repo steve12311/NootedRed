@@ -1,6 +1,6 @@
 """编译真实 Metal 桥接，验证六种核显的动态 Scratch。"""
 from pathlib import Path
-from user_patch_memory_harness import with_memory_helpers, with_inactive_coordinator
+from user_patch_memory_harness import INACTIVE_DISPLAY_TIMING, with_memory_helpers, with_inactive_coordinator
 import subprocess
 import sys
 
@@ -31,6 +31,7 @@ def main():
     preamble = preamble.replace('#include "UserVideoDecodeData.hpp"\n#include "UserVideoDecodeResolver.hpp"',
                                '#include <vector>\n#include <VPF/DisplayRuntime.hpp>\n'
                                '#include "UserSurfaceSyncData.hpp"\n#include "UserSurfaceSyncResolver.hpp"')
+    preamble += INACTIVE_DISPLAY_TIMING
     # 提交守卫闸门由协调器请求组驱动；测试直接请求 Tahoe 的 Metal 组。
     preamble += ('namespace UserPatchCoordinator { inline UInt32 requestedDisplayGroups()'
                  '{return VPF::requestedGroupsForDisplayFix(true,25);} }\n')
@@ -140,22 +141,23 @@ int main(){
             'static kern_return_t vm_deallocate(vm_map_t,vm_address_t page,unsigned){blocks.erase(page);protections.erase(page);return 0;}')
     if LEGACY:
         harness = harness.replace('renderRequested = computeScratch', f'Version::majorValue={23 if SONOMA else 24}; renderRequested = computeScratch')
-        if not SONOMA:
-            harness = harness.replace('preinstallSequoiaSubmit();',
-                'put(functionAddresses[4], ResolverFunctions[4].original, ResolverFunctions[4].size);'
-                'rel(functionAddresses[0], ResolverFunctions[0].originalRefs[0].offset, imageAddresses[0]+0x71064);'
-                'preinstallSequoiaSubmit();')
-            harness = harness.replace('const auto constant = destination(ResolverFunctions[0].originalRefs[0], ResolverFunctions, 5);',
-                'const auto constant = imageAddresses[0]+0x71064;')
-            harness = harness.replace('blocks[constant].resize(16);', '')
-            harness = harness.replace('cache(ResolverImages, ResolverFunctions);',
-                'std::vector<UserCacheSectionData::Target> targets(std::begin(SectionTargets), std::end(SectionTargets));'
-                'targets.insert(targets.end(), std::begin(Submit::SectionTargets), std::end(Submit::SectionTargets));'
-                'cache(ResolverImages, ResolverFunctions, true, targets.data(), targets.size());', 1)
-            harness = harness.replace('cache(ResolverImages, ResolverFunctions);',
-                'cache(ResolverImages, ResolverFunctions, true, SectionTargets, std::size(SectionTargets));')
-            harness = harness.replace('imageAddresses[ref.image] + ref.rva',
-                'destination(ref, UserSequoiaSurfaceData::ResolverFunctions, 5)')
+        harness = harness.replace('preinstallSequoiaSubmit();',
+            'rel(functionAddresses[0], ResolverFunctions[0].originalRefs[0].offset, imageAddresses[0]+0x71064);'
+            'preinstallSequoiaSubmit();')
+        harness = harness.replace('const auto constant = destination(ResolverFunctions[0].originalRefs[0], ResolverFunctions, 5);',
+            'const auto constant = imageAddresses[0]+0x71064;')
+        harness = harness.replace('blocks[constant].resize(16);', '')
+        harness = harness.replace('const auto dump = destination(ResolverFunctions[0].originalRefs[2], ResolverFunctions, 5);',
+            'const auto dump = imageAddresses[0]+0x6e000;'
+            'rel(functionAddresses[0], ResolverFunctions[0].originalRefs[2].offset, dump);')
+        harness = harness.replace('cache(ResolverImages, ResolverFunctions);',
+            'std::vector<UserCacheSectionData::Target> targets(std::begin(SectionTargets), std::end(SectionTargets));'
+            'targets.insert(targets.end(), std::begin(Submit::SectionTargets), std::end(Submit::SectionTargets));'
+            'cache(ResolverImages, ResolverFunctions, true, targets.data(), targets.size());', 1)
+        harness = harness.replace('cache(ResolverImages, ResolverFunctions);',
+            'cache(ResolverImages, ResolverFunctions, true, SectionTargets, std::size(SectionTargets));')
+        harness = harness.replace('imageAddresses[ref.image] + ref.rva',
+            'destination(ref, UserSequoiaSurfaceData::ResolverFunctions, 0)')
     if SONOMA:
         harness = harness.replace('UserSequoiaSurfaceData', 'UserSonomaSurfaceData')
         harness = harness.replace('UserSurfaceSyncResolver::resolveSequoia(reader, base, device.deviceID, plan)',

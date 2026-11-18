@@ -4,8 +4,8 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]
-SEQUOIA = '--sequoia' in sys.argv
-WORK = ROOT / ('build/fvrc-video/sequoia' if SEQUOIA else 'build/fvrc-video')
+SYSTEM, MAJOR = ('Sonoma', 23) if '--sonoma' in sys.argv else ('Sequoia', 24) if '--sequoia' in sys.argv else ('Tahoe', 25)
+WORK = ROOT / 'build/fvrc-video' / SYSTEM.lower()
 
 
 def main():
@@ -104,7 +104,7 @@ static void rejectedCaches(){
  UserVideoDecodeResolver::Plan recovered{};UserSharedCache::Input input{reader,{}};
  assert(UserVideoDecodeResolver::resolve(input,base,patches,recovered,25));
  // 损坏函数匹配字节，镜像表仍完整：这种进程相关失败也不缓存。
- for(unsigned f=0;f<UserVideoDecodeResolver::FunctionCount;f++){const uint8_t bad=0;put(functionAddresses[f],&bad,1);}
+ for(unsigned f=0;f<std::size(ResolverFunctions);f++){const uint8_t bad=0;put(functionAddresses[f],&bad,1);}
  for(unsigned i=0;i<2;i++){
   UserVideoDecodeResolver::Plan plan{};UserSharedCache::Input bad{reader,{}};
   assert(!UserVideoDecodeResolver::resolve(bad,base,patches,plan,25));
@@ -130,21 +130,22 @@ int main(){
  return 0;
 }
 '''
-    if SEQUOIA:
-        source = source.replace('UserVideoDecodeData::', 'UserSequoiaVideoData::')
-        source = source.replace('using namespace UserVideoDecodeData;', 'using namespace UserSequoiaVideoData;')
-        source = source.replace('fast.begin(uuid,25,', 'fast.begin(uuid,24,').replace(',25,', ',24,').replace(',25)', ',24)')
+    if MAJOR < 25:
+        namespace = f'User{SYSTEM}VideoData'
+        source = source.replace('UserVideoDecodeData::', f'{namespace}::')
+        source = source.replace('using namespace UserVideoDecodeData;', f'using namespace {namespace};')
+        source = source.replace(',25,', f',{MAJOR},').replace(',25)', f',{MAJOR})')
         source = source.replace('cache(ResolverImages,ResolverFunctions,true)',
             'cache(ResolverImages,ResolverFunctions,true,SectionTargets,std::size(SectionTargets))')
         source = source.replace('int main(){', r'''
 static void sectionTargets(){
- using namespace UserSequoiaVideoData;
+ using namespace VIDEO_DATA;
  const auto* patches=findDevice(device);assert(patches);
  cache(ResolverImages,ResolverFunctions,true,SectionTargets,std::size(SectionTargets));
  UserVideoDecodeResolver::Plan plan{};UserSharedCache::Input fixed{reader,{}};
  assert(!UserVideoDecodeResolver::resolveSet(fixed,base,patches,plan,ResolverImages,ResolverFunctions,ResolverLocations,false,nullptr));
  UserSharedCache::Input relocated{reader,{}};
- assert(UserVideoDecodeResolver::resolve(relocated,base,patches,plan,24));
+ assert(UserVideoDecodeResolver::resolve(relocated,base,patches,plan,DARWIN_MAJOR));
  unsigned rejected=0;
  for(auto&target:SectionTargets){
   bool tested=false;
@@ -156,16 +157,16 @@ static void sectionTargets(){
    assert(UserSharedCache::relativeTarget(functionAddresses[f]+ref.offset,0,field,actual));
    if(ref.indirect)word64(actual+(ref.indirect==2?8:0),destination(ref,ResolverFunctions,std::size(ResolverFunctions))+4);
    else rel(functionAddresses[f],ref.offset,actual+4);
-   UserSharedCache::Input bad{reader,{}};assert(!UserVideoDecodeResolver::resolve(bad,base,patches,plan,24));
+   UserSharedCache::Input bad{reader,{}};assert(!UserVideoDecodeResolver::resolve(bad,base,patches,plan,DARWIN_MAJOR));
    assert(writes==0&&protects==0);tested=true;rejected++;break;
   }
   assert(tested);
  }
  assert(rejected==std::size(SectionTargets));
- printf("PASS Sequoia sections: fixed-RVA regression reproduced, relocation succeeds, all %u section targets reject wrong bindings\n",rejected);
+ printf("PASS Darwin DARWIN_MAJOR sections: fixed-RVA regression reproduced, relocation succeeds, all %u section targets reject wrong bindings\n",rejected);
 }
 int main(){sectionTargets();
-''')
+'''.replace('VIDEO_DATA', namespace).replace('DARWIN_MAJOR', str(MAJOR)))
     path, executable = WORK / 'test.cpp', WORK / 'test'
     path.write_text(source)
     subprocess.run(['xcrun', 'clang++', '-std=c++23', '-O2', '-fsanitize=address,undefined',
