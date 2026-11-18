@@ -8,7 +8,8 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 SONOMA = '--sonoma' in sys.argv
 LEGACY = SONOMA or '--sequoia' in sys.argv
-WORK = ROOT / ('build/dynamic-cache/sonoma-video' if SONOMA else 'build/dynamic-cache/sequoia-video' if '--sequoia' in sys.argv else 'build/dynamic-cache/video')
+WORK = ROOT / 'build/dynamic-cache' / ('vp9' if '--vp9' in sys.argv else 'sonoma-video' if SONOMA
+                                      else 'sequoia-video' if '--sequoia' in sys.argv else 'video')
 
 
 def main():
@@ -52,7 +53,7 @@ template<class T>void settlePatched(Participant& p,const T& plan){p.outcome=Outc
 }
 ''' + preamble[end:]
     preamble = preamble.replace('assert(strcmp(s,"-NRedVideoFix")==0||strcmp(s,"-NRedNoFVRC")==0);',
-                                'if(strcmp(s,"-NRedVideoFix")&&strcmp(s,"-NRedNoFVRC"))return false;')
+                                'if(strcmp(s,"-NRedRejectTrace")==0)return false;assert(strcmp(s,"-NRedVideoFix")==0||strcmp(s,"-NRedNoFVRC")==0);')
     preamble = preamble.replace('bool allocated(){return active;}', 'static bool vp9Ready=false;bool allocated(){return active;}void setVP9Ready(bool v){vp9Ready=v;}')
     preamble = preamble.replace('#include "UserVideoDecodeData.hpp"', '#include <vector>\n#include "UserVideoDecodeData.hpp"\n#include "UserVideoDecodeResolver.hpp"')
     preamble += '#include "user-cache-dynamic.hpp"\n'
@@ -199,9 +200,11 @@ int main(){
  for(unsigned major:{23U,24U,25U}){
   Version::majorValue=major;NRed::device=0x1638;properties.clear();
   flag=false;KernelPatcher disabled;UserVideoDecode::init(disabled);assert(disabled.routes==0&&disabled.solves==0);
+  assert(!properties.contains("NRedVP9State"));
   flag=true;KernelPatcher enabled;UserVideoDecode::init(enabled);
   assert(enabled.routes==2&&properties.at("NRedVCNUserEnabled")==1);
   assert(properties.at("NRedDRMVideoRevision")==5);
+  assert(properties.at("NRedVP9State")==1&&VP9::lock&&VP9::plan);
   assert(devicePatches==(major==23?INIT_SONOMA::findDevice(0x1638):
                          major==24?INIT_SEQUOIA::findDevice(0x1638):INIT_TAHOE::findDevice(0x1638)));
   for(unsigned device:{0x15D8U,0x15DDU,0xFFFF1638U}){
@@ -321,13 +324,17 @@ int main(){
 template<class Images,class Functions,class Sections,class Slots>
 static void checkVP9Install(unsigned major,const Images& images,const Functions& functions,const Sections& sections,
                             const Slots& slots){
- setup(0x1638);vp9Cache(images,functions,sections,slots);cleanBlocks=blocks;darwinMajor=major;
- VP9::state=VP9::State::Off;VCN::vp9Ready=false;
+ VP9::state=VP9::State::Off;VCN::vp9Ready=false;properties.clear();
+ Version::majorValue=major;NRed::device=0x1638;
+ flag=false;KernelPatcher disabled;UserVideoDecode::init(disabled);
+ assert(disabled.routes==0&&!VP9::lock&&!VP9::plan&&!properties.contains("NRedVP9State"));
+ flag=true;KernelPatcher enabled;UserVideoDecode::init(enabled);
+ assert(enabled.routes==2&&VP9::lock&&VP9::plan&&properties.at("NRedVP9State")==1);
+ setup(0x1638);vp9Cache(images,functions,sections,slots);cleanBlocks=blocks;
  static UserVP9DecodeResolver::Plan resolved;
  UserSharedCache::Input input{reader,{}};UInt8 scan[UserSharedCache::Input::ScanSize];input.scanBuffer=scan;
  assert(UserVP9DecodeResolver::resolve(input,base,resolved,major));
  pages(resolved.patches,resolved.count);
- VP9::enabled=true;VP9::lock=IOLockAlloc();VP9::plan=IONew(UserVP9DecodeResolver::Plan,1);
  UInt8 uuid[16];assert(reader(base+88,uuid,16)==0);
  auto initial=blocks;
  UserPatchCoordinator::Participant first;

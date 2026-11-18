@@ -1,4 +1,4 @@
-// VP9 (piano V3, -NRedVP9): risolve i siti del backend VP9 nella cache condivisa corrente.
+// VP9: risolve i siti del backend VP9 nella cache condivisa corrente.
 // Tutte le funzioni toccate sono verificate per intero (byte e riferimenti rel32); i bersagli dati
 // fuori da __TEXT passano dalla tabella SectionTargets generata insieme alle patch.
 #pragma once

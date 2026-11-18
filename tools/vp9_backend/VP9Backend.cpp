@@ -46,19 +46,6 @@ inline void *operator new(size_t, void *where) noexcept { return where; }
 
 namespace {
 
-//! Progress report for -NRedVP9Trace: shared_region_check_np with a tagged argument, which NootedRed's syscall hook
-//! records (NRedVP9T<code>N/V in ioreg) and answers with EINVAL without running the real call. Harmless without the
-//! kext: the kernel rejects the bogus address.
-enum TraceCode : uint32_t {
-    TraceCreate = 1, TraceCreateResult, TraceDpbSize, TraceContextSize, TraceInitContext, TraceTargetArea,
-    TraceBitstream, TraceMessage, TraceDecodeEntry, TraceDecodeResult, TraceDecoderResult
-};
-__attribute__((noinline, section("__TEXT,__nrhelpers"))) void trace(uint32_t code, uint64_t value)
-{
-    uint64_t arg = (0x5639ULL << 48) | (static_cast<uint64_t>(code) << 40) | (value & 0xFFFFFFFFFFULL);
-    asm volatile("syscall" : "+D"(arg) : "a"(0x2000126) : "rcx", "rdx", "r11", "memory", "cc");
-}
-
 template<typename T>
 T &field(void *base, size_t offset) {
     return *reinterpret_cast<T *>(static_cast<uint8_t *>(base) + offset);
@@ -182,7 +169,6 @@ extern "C" int vp9ProcessCreateDecodeSession(void *processor, void *build) {
     new (&s->session) Session();
     s->maxWidth = field<uint32_t>(decoder, Dec::Width);
     s->maxHeight = field<uint32_t>(decoder, Dec::Height);
-    trace(TraceCreate, (s->maxWidth << 16) | (s->maxHeight & 0xFFFF));
     // Up to 4096x4096 for now (VCN 2 decodes up to 8192x4352; the DPB below grows with the size). A larger stream is
     // refused here: without a session every frame would fail, and the frames would still reach the client.
     if (s->maxWidth - 1 >= 4096 || s->maxHeight - 1 >= 4096) { return 1; }
@@ -233,7 +219,6 @@ extern "C" int vp9SetBitstreamFields(void *processor, void *params, void *source
     // Direct: the frame must lie inside the source buffer (AppleGVA passes its start, offset 0).
     if (!state(processor) || !frame || size == 0 || size > field<uint32_t>(decoder, Dec::MaxBitstream) || !cpu ||
         (direct && frame < cpu)) {
-        trace(TraceBitstream, 0x100);
         return 1;
     }
     void *session = field<void *>(decoder, Dec::Session);
@@ -246,10 +231,8 @@ extern "C" int vp9SetBitstreamFields(void *processor, void *params, void *source
     field<uint8_t *>(session, Sess::Bitstream) = cpu;
     field<uint32_t>(session, Sess::BitstreamSize) = static_cast<uint32_t>(size);
     if (nrPrepareBitStream(processor, static_cast<uint8_t *>(decoder) + Dec::Decrypt)) {
-        trace(TraceBitstream, 0x200);
         return 1;
     }
-    trace(TraceBitstream, size);
     field<uint32_t>(build, Build::BitstreamOn) = 1;
     field<void *>(build, Build::Bitstream) = texture;
     field<uint32_t>(build, Build::BitstreamOffset) = direct ? offset : 0;
@@ -264,7 +247,6 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
     void *session = field<void *>(decoder, Dec::Session);
     field<uint8_t>(session, Sess::Dirty) = 0;
     if (!s || !target) {
-        trace(TraceMessage, 0x100);
         return 1;
     }
 
@@ -293,7 +275,6 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
                                            field<Surface>(params, Pic::Target), refs, false,
                                            *reinterpret_cast<Message *>(msg + OffsetVp9), *probs, &h);
     if (status != Status::Ok || h.bitDepth != 8 || h.width > s->maxWidth || h.height > s->maxHeight) {
-        trace(TraceMessage, 0x200 | static_cast<uint32_t>(status));
         return 1;
     }
     s->width = h.width, s->height = h.height;
@@ -317,7 +298,6 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
     const uint32_t pitchBytes = field<uint32_t>(target, Tex::Pitch), rows = field<uint32_t>(target, Tex::Height);
     const uint32_t bytesPerElement = field<uint32_t>(target, Tex::BytesPerElement);
     if (!bytesPerElement || rows < h.height || pitchBytes < h.width) {
-        trace(TraceMessage, 0x300);
         return 1;
     }
     auto *decode = reinterpret_cast<DecodeMessage *>(msg + OffsetDecode);
@@ -367,7 +347,6 @@ extern "C" int vp9SetDecodeMessageFields(void *processor, void *params, void *ta
         field<uint32_t>(build, Build::ItOn) = 1;
         field<void *>(build, Build::It) = field<void *>(session, Sess::ItTexture);
     }
-    trace(TraceMessage, (h.width << 16) | h.height);
     return 0;
 }
 
@@ -401,28 +380,23 @@ void *poolTexture(void *context, const uint8_t *frame, uint64_t size) {
 extern "C" int vp9DecodePicture(void *context, void *command, void *refCon) {
     void *decoder = field<void *>(command, Cmd::Decoder);
     void *params = field<void *>(command, Cmd::Params);
-    trace(TraceDecodeEntry, params ? field<uint32_t>(params, Pic::FrameSize) : 0);
     if (!decoder || !params) {
-        trace(TraceDecodeResult, 0x105);
         return 5;
     }
     void *bitstream =
         poolTexture(context, field<const uint8_t *>(params, Pic::Frame), field<uint64_t>(params, Pic::FrameSize));
     void *surface = field<void *>(params, Pic::Target);
     if (!bitstream || !surface) {
-        trace(TraceDecodeResult, 0x200 | (bitstream ? 0 : 1) | (surface ? 0 : 2));
         return 5;
     }
     void *va = field<void *>(context, Ctx::Va);
     void *output = nullptr;
     if (nrGetIOSurfaceBuffer(va, surface, &output, 0, nullptr, true)) {
-        trace(TraceDecodeResult, 0x301);
         return 1;
     }
     using DecodeFn = int (*)(void *, void *, void *, void *);
     const int decoded =
         (*reinterpret_cast<DecodeFn *>(field<uint8_t *>(decoder, 0) + 0x48))(decoder, params, bitstream, output);
-    trace(TraceDecoderResult, static_cast<uint32_t>(decoded));
     // The AV1 branch ignores this result and completes the frame, whose surface the VCN never wrote. Fail it instead
     // with the branch's own 5 (no refCon then): VideoToolbox reports kVTVideoDecoderMalfunctionErr for it and later
     // frames, so the client recreates the session or falls back to software instead of showing corrupt frames.

@@ -1,5 +1,7 @@
 # VP9 in hardware — risultati della fase V0
 
+Per l’attivazione nelle versioni correnti, vedi la [guida VP9](vp9-dynamic.md). I parametri delle prove qui sotto si riferiscono alle build di sviluppo.
+
 Fase V0 del [piano VP9](vp9-hw-decode-plan.md): solo lettura, nessuna modifica al sistema.
 Sistema: macOS 26.7.1 (Darwin 25), cache dyld `x86_64h`, Ryzen 5 4600H (Renoir `0x1636`). Data: 14/11/2026.
 

@@ -161,26 +161,26 @@ int main()
     expectedProvider = &other;expectedReady = true;originalResult = false;
     assert(!acceleratorStart(expectedSelf, &other));
     assert(loadCalls == 0 && loadCompleted && VCN::ready());
-    // Sonda VP9: solo con il boot-arg, chiavi solo se l'acceleratore parte e il ponte VCN è pronto.
-    for (unsigned major : {23U,24U,25U}) for (bool backend : {false,true})
-    for (bool verified : {false,true}) for (bool probe : {false, true})
-    for (bool prepared : {false, true}) for (bool started : {false, true}) {
+    // VideoFix 单独控制发布入口，后端和 VCN 就绪后才写入能力键。
+    for (unsigned major : {23U,24U,25U}) for (bool video : {false, true})
+    for (bool verified : {false, true}) for (bool prepared : {false, true})
+    for (bool started : {false, true}) {
         reset();device.vendor = 0x1002;device.device = 0x1638;expectedProvider = &device;
         version.majorValue=major;vp9BackendReady=verified;
-        bootArgs = {"-NRedVideoFix"};
-        if(backend)bootArgs.insert("-NRedVP9");
-        if (probe) { bootArgs.insert("-NRedVP9Probe"); }
-        callbackPrepared = prepared;originalResult = started;expectedReady = prepared;
+        bootArgs.clear();
+        if (video) { bootArgs.insert("-NRedVideoFix"); }
+        VCN::init();
+        callbackPrepared = prepared;originalResult = started;expectedReady = video && prepared;
         assert(acceleratorStart(expectedSelf, &device) == started);
         const auto& props = NRed::singleton().properties;
-        if (!probe) { assert(!props.contains("NRedVP9Probe") && vp9Keys.empty()); continue; }
-        const bool published = prepared && started && backend && verified;
+        if (!video) { assert(!props.contains("NRedVP9Probe") && vp9Keys.empty()); continue; }
+        const bool published = prepared && started && verified;
         assert(props.at("NRedVP9Probe") == (published ? VP9Probe::Published : VP9Probe::NotEligible));
         assert(vp9Keys.size() == (published ? 3U : 0U));
     }
     reset();loadCompleted=has6000=hooks=true;
-    bootArgs={"-NRedVideoFix","-NRedVP9Probe","-NRedVP9"};
+    bootArgs={"-NRedVideoFix"};
     vp9BackendReady=true;publishVP9Probe(expectedSelf,true);assert(vp9Keys.size()==3);
     vp9BackendReady=false;publishVP9Probe(expectedSelf,true);assert(vp9Keys.empty());
-    std::puts("PASS: native load precedes start; gates, deferred/error fallback, bounded requests, native result preserved, VP9 probe gated");
+    std::puts("PASS: native load precedes start; gates, deferred/error fallback, bounded requests, native result preserved, VP9 publication follows VideoFix and verified readiness");
 }

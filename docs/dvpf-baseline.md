@@ -40,7 +40,7 @@
 | `NootedRed/UserSurfaceSync.cpp` | `0990528d1833a88cbdea5a602c3388b66beddbf5437cb06e28eb904d546360bb` |
 | `NootedRed/UserSurfaceSyncData.hpp` | `76e288923a8750cd9bfdf7a495d05c3211b785b1af071b81d10431fb2d033ea4` |
 | `NootedRed/UserSurfaceSyncResolver.hpp` | `25ca1c7b9e406dd6fc4c2c8063dcdc64ebd48037a61ad2e99e9eb8c05a4a752e` |
-| `NootedRed/UserVideoDecode.cpp` | `5cfc78905b9e954908099c6197283b1a863fb4df58c5d4886730e72cb9a26b74` |
+| `NootedRed/UserVideoDecode.cpp` | `19669191628a5bd197fdd547d9e86f9f7a0abacabd02c4ed40cfa0c1890f266b` |
 | `NootedRed/VPF/DisplayManifestData.hpp` | `5df095e1efb4710824266fd108697c450c514701fc3fe87047da791d77ef53d9` |
 | `NootedRed/VPF/DisplayPlan.hpp` | `58af326be437dcf0fcf0b5eebc2b815a07ad440f2dcd6d8ac1c82d5e726a7006` |
 | `NootedRed/VPF/DisplayPlanAdapters.hpp` | `c811f717d97356c911a9bdb8c8921ac0a57ea4d27eb9e9a335d12b9bbe60288a` |

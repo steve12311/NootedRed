@@ -1,7 +1,7 @@
 """VP9 plan, phase V5: record what the hardware VP9 decoder does while browsers play video.
 
 Samples every few seconds, until stopped (Ctrl-C, SIGTERM or the file <out>/stop):
-- the -NRedVP9Trace counters (NRedVP9T<nn>N / V) and NRedVP9State from the registry;
+- NRedVP9State from the registry and per-frame counters from older builds when available;
 - the CPU time of VTDecoderXPCService and of the browsers' GPU, renderer and main processes;
 - gaps between samples longer than a minute (sleep).
 Streams VTDecoderXPCService errors, faults and VP9 messages, and kernel messages about NootedRed, the VCN or GPU
@@ -112,14 +112,15 @@ def summary(out):
     print(f"sleep or stall gaps over 60 s: {len(gaps)}" +
           "".join(f"\n  {time.strftime('%H:%M:%S', time.localtime(float(r['time'])))}: {float(r['gap']):.0f} s"
                   for r in gaps))
-    print(f"VP9 sessions requested: {delta('T01N')}, frames into DecodePicture: {delta('T09N')}, "
-          f"refused by DecodePicture: {delta('T10N')}")
-    failures = sorted({int(r["T11V"]) for r in rows if int(r["T11V"])})
-    print(f"VADecoder::DecodePicture failure values seen in samples: {failures or 'none'}")
-    # T08 is the frame size (width << 16 | height) on success, a code below 0x10000 on failure.
-    sizes = sorted({int(r["T08V"]) for r in rows[1:] if int(r["T08V"]) >= 0x10000})
-    print("decoded frame sizes seen in samples: " +
-          (", ".join(f"{v >> 16}x{v & 0xFFFF}" for v in sizes) if sizes else "none"))
+    if any(int(row.get("T09N") or 0) for row in rows):
+        print(f"VP9 sessions requested: {delta('T01N')}, frames into DecodePicture: {delta('T09N')}, "
+              f"refused by DecodePicture: {delta('T10N')}")
+        failures = sorted({int(r["T11V"]) for r in rows if int(r["T11V"])})
+        print(f"VADecoder::DecodePicture failure values seen in samples: {failures or 'none'}")
+        # T08 is the frame size (width << 16 | height) on success, a code below 0x10000 on failure.
+        sizes = sorted({int(r["T08V"]) for r in rows[1:] if int(r["T08V"]) >= 0x10000})
+        print("decoded frame sizes seen in samples: " +
+              (", ".join(f"{v >> 16}x{v & 0xFFFF}" for v in sizes) if sizes else "none"))
     print("CPU seconds during the recording:")
     for group in GROUPS:
         used = float(last[f"cpu_{group}"])

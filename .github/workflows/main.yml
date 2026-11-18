@@ -36,7 +36,7 @@ jobs:
           python3 tools/test_fvrc_video.py
           python3 tools/test_fvrc_video.py --sequoia
           python3 tools/test_fvrc_video.py --sonoma
-      - name: Test experimental VP9
+      - name: Test VP9
         run: |
           python3 tools/test_vp9_parser.py
           python3 tools/test_vp9_dynamic.py

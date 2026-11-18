@@ -1,5 +1,7 @@
 # Piano: decodifica VP9 in hardware sul VCN di Renoir
 
+Per l’attivazione nelle versioni correnti, vedi la [guida VP9](vp9-dynamic.md). I parametri delle prove qui sotto si riferiscono alle build di sviluppo.
+
 Obiettivo: far decodificare al VCN 2.2 di Renoir i video VP9 (YouTube, Chrome, Safari), oggi decodificati dalla CPU.
 Riferimento hardware: Ryzen 5 4600H, Radeon Renoir `0x1636` rev `0xC7`, macOS 26.7.1 (Darwin 25).
 

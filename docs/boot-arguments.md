@@ -5,7 +5,7 @@
 | 参数 | 功能 | 省略时 |
 | --- | --- | --- |
 | `-NRedDisplayFix` | 花屏／卡顿修复，包含 SubmitGuard；按系统选择渲染补丁 | 显示修复全部关闭 |
-| `-NRedVideoFix` | VCN 硬件视频加速，包含现有解码和编码路径 | VCN 桥接关闭 |
+| `-NRedVideoFix` | VCN 硬件视频加速，包含 VP9 硬解及现有解码和编码路径 | VCN 桥接关闭 |
 | `NRedECFix=1` | 使用固件报告的 EC 背光来源 | EC 服务关闭 |
 
 三项均启用的启动参数：
@@ -52,22 +52,14 @@ OpenGL 在当前已验证页面内匹配完整修复块及引用，不主动读�
 | `-NRedRejectTrace` | 记录前 32 次被拒绝的共享缓存（pid、名称、基址、UUID） | `dmesg` |
 | `-NRedVCNPowerTrace` | 统计 PowerPlay 对 VCN 的关断／开启请求，原函数照常执行 | `NRedVCNPG*` |
 
-实验性 VP9 使用 `-NRedVideoFix -NRedVP9Probe -NRedVP9`，默认关闭，仅 profile 0／8 位、最大 4096×4096。
-Darwin 23/24/25 共用动态核验和 COW 事务；UUID 用于诊断及计划身份，不作为兼容白名单。
-后端须匹配完整函数、外部引用、数据节、构造函数和虚函数槽位，未知实现拒绝写入。
-当前参考数据来自本机 macOS 26.7.3 / 25G342，详见 [VP9 动态适配与验收](vp9-dynamic.md)。
+启用 `-NRedVideoFix` 后，支持的 VCN 2.2 核显默认启用 VP9 硬解，支持 profile 0／8 位，最大 4096×4096。
+Darwin 23/24/25 共用动态核验和 COW 事务。后端核验完整函数、外部引用、数据节、构造函数及虚函数槽位。
+后端成功安装并恢复 RX 后，才发布 `IOGVAXDecode`、`IOGVAVP9Decode` 和 `IOGVAVP9DecodeCapabilities`。
+核验或安装失败会撤回已发布的能力。
 
-`-NRedVP9Probe` 只控制能力发布：后端在至少一个进程中成功安装并恢复 RX 后，才发布
-`IOGVAXDecode`、`IOGVAVP9Decode`、`IOGVAVP9DecodeCapabilities`。
-单独设置探针、核验拒绝或安装失败时不声明可用 VP9；已发布的能力会在后端失败时撤回。
-`NRedVP9Probe`：1 已发布，0 属性写入失败，2 后端或 VCN 尚未就绪。
-`NRedVP9State`：1 已启用，2 缓存已核验，3 核验失败，4 写入失败，5 系统不支持，6 内存不足；
-实际安装另查 `NRedVP9Applied`／`NRedVP9Already`。
-超过尺寸上限及 profile 2（10 位）仍在创建会话时拒绝；驱动解码失败时返回错误，不输出未解码表面。
-
-诊断参数 `-NRedVP9Trace`（需同时设置 `-NRedVP9`）：VP9 后端以带标记的 `shared_region_check_np` 调用报告各步骤，
-内核只记录 `VTDecoderXPC*` 进程的调用并返回 `EINVAL`。每个代码的次数与最后一个值发布为 `NRedVP9T<nn>N`／
-`NRedVP9T<nn>V`，同时显示 `NRedVP9Trace=1`。
+- `NRedVP9Probe` 为 1 表示已发布，为 0 表示属性写入失败，为 2 表示后端或 VCN 尚未就绪。
+- `NRedVP9State` 为 1 表示已启用，为 2 表示缓存已核验，为 3 表示核验失败，为 4 表示写入失败，为 6 表示内存不足。
+  实际安装另查 `NRedVP9Applied`／`NRedVP9Already`。参考缓存与验证方法见 [VP9 动态适配与验收](vp9-dynamic.md)。
 
 `NRedVCNPGGated=1` 表示 VCN 当前已由 PowerPlay（`PhwRenoir_PowerGateVCN`，SMU 消息 `0xB`/`0xC`）关断；
 计数在下一次进程启动时发布到 ioreg。Darwin 23/24 仅记录请求和返回值，

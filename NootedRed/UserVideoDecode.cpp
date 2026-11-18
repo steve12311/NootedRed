@@ -567,14 +567,13 @@ namespace
         return selectedCount != 0;
     }
 
-    // VP9 (piano V3, -NRedVP9): seconda transazione indipendente, solo dopo che la patch video è
-    // installata o già presente. La risoluzione completa si fa una volta per cache (sotto vp9Lock);
-    // ogni processo riverifica comunque tutti i byte dei siti prima di scrivere.
+    // VP9 在基础视频补丁就绪后单独安装。每个进程写入前重新核验全部站点。
     namespace VP9
     {
+
         using namespace UserVP9DecodeData;
-        constexpr UInt32 MaxSites  = UserVP9DecodeResolver::MaxSites;
-        constexpr UInt32 MaxPages  = MaxSites * 2;
+        constexpr UInt32 MaxSites = UserVP9DecodeResolver::MaxSites;
+        constexpr UInt32 MaxPages = MaxSites * 2;
         static_assert(PageCount <= MaxPages);
 
         enum class State : UInt32
@@ -584,13 +583,12 @@ namespace
             Ready,
             Failed
         };
-        bool                           enabled{false};
-        IOLock*                        lock{nullptr};
-        State                          state{State::Off};
-        UInt64                         resolvedBase{0};
-        UInt8                          resolvedUUID[16]{};
-        UserVP9DecodeResolver::Plan*   plan{nullptr};
-        UInt32                         appliedCount{0}, alreadyCount{0};
+        IOLock*                      lock{nullptr};
+        State                        state{State::Off};
+        UInt64                       resolvedBase{0};
+        UInt8                        resolvedUUID[16]{};
+        UserVP9DecodeResolver::Plan* plan{nullptr};
+        UInt32                       appliedCount{0}, alreadyCount{0};
 
         void publishState(const UInt32 value) { NRed::singleton().setProp32("NRedVP9State", value); }
 
@@ -662,7 +660,7 @@ namespace
 
         void install(vm_map_t map, const UInt64 base, const UInt8* uuid, UserPatchCoordinator::Participant* participant)
         {
-            if (!enabled || !lock || (darwinMajor != 23 && darwinMajor != 24 && darwinMajor != 25)) { return; }
+            if (!lock || !plan) { return; }
             if (participant) { participant->outcome = UserPatchCoordinator::Outcome::Pending; }
             if (!resolved(base, uuid)) {
                 VCN::setVP9Ready(false);
@@ -759,29 +757,6 @@ namespace
             if (count < 16) { NRed::singleton().setProp32("NRedVP9Applied", count + 1); }
         }
 
-        // Tracce del backend (-NRedVP9Trace): conteggio e ultimo valore per codice, solo dal processo decoder.
-        bool   traceEnabled{false};
-        UInt32 traceCounts[32]{};
-
-        bool trace(proc_t process, const UInt64 startAddress)
-        {
-            if ((startAddress >> 48) != 0x5639) { return false; }
-            if (!traceEnabled || !process) { return true; }
-            char name[32]{};
-            proc_name(proc_pid(process), name, sizeof(name));
-            name[sizeof(name) - 1] = '\0';
-            if (strncmp(name, "VTDecoderXPC", 12) != 0) { return true; }
-            const auto code  = static_cast<UInt32>((startAddress >> 40) & 0x1F);
-            const auto value = static_cast<UInt32>(startAddress & 0xFFFFFFFFULL);
-            const auto count = __atomic_add_fetch(&traceCounts[code], 1U, __ATOMIC_RELAXED);
-            char key[24];
-            snprintf(key, sizeof(key), "NRedVP9T%02uN", code);
-            NRed::singleton().setProp32(key, count);
-            snprintf(key, sizeof(key), "NRedVP9T%02uV", code);
-            NRed::singleton().setProp32(key, value);
-            if (count <= 2) { SYSLOG("UserVideoDecode", "VP9 trace %u = 0x%X (#%u)", code, value, count); }
-            return true;
-        }
     }    // namespace VP9
 
     __attribute__((noinline)) int patchSharedRegion(proc_t process, SharedRegionCheckArgs* args, const int result,
@@ -1116,7 +1091,6 @@ namespace
     __attribute__((noinline)) int wrappedSharedRegionCheck(proc_t process, SharedRegionCheckArgs* args,
                                                            int* returnValue)
     {
-        if (args && VP9::trace(process, args->startAddress)) { return EINVAL; }
         auto ticket = __atomic_load_n(&hookTraceCount, __ATOMIC_RELAXED);
         bool trace{false};
         while (ticket < 8) {
@@ -1255,19 +1229,9 @@ void UserVideoDecode::init(KernelPatcher& patcher)
     }
     devicePatches = candidates;
     NRed::singleton().setProp32("NRedVCNUserEnabled", 1);
-    // VP9 默认关闭；23/24/25 统一进入完整代码及 ABI 动态核验。
-    VP9::enabled = false;
-    if (checkKernelArgument("-NRedVP9")) {
-        if (darwinMajor != 23 && darwinMajor != 24 && darwinMajor != 25) { VP9::publishState(5); }
-        else {
-            if (!VP9::lock) { VP9::lock = IOLockAlloc(); }
-            if (!VP9::plan) { VP9::plan = IONew(UserVP9DecodeResolver::Plan, 1); }
-            VP9::enabled = VP9::lock && VP9::plan;
-            VP9::traceEnabled = VP9::enabled && checkKernelArgument("-NRedVP9Trace");
-            if (VP9::traceEnabled) { NRed::singleton().setProp32("NRedVP9Trace", 1); }
-            VP9::publishState(VP9::enabled ? 1 : 6);
-        }
-    }
+    if (!VP9::lock) { VP9::lock = IOLockAlloc(); }
+    if (VP9::lock && !VP9::plan) { VP9::plan = IONew(UserVP9DecodeResolver::Plan, 1); }
+    VP9::publishState(VP9::plan ? 1 : 6);
     NRed::singleton().setProp32("NRedVCNUserMapGateRevision", 1);
     NRed::singleton().setProp32("NRedVCNRegionQueryVersion", 1);
     // FairPlay 诊断只在视频 Hook 安装成功后发布。
