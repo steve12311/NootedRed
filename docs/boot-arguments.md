@@ -66,6 +66,17 @@ Darwin 23/24/25 共用动态核验和 COW 事务。后端核验完整函数、�
 计数在下一次进程启动时发布到 ioreg。Darwin 23/24 仅记录请求和返回值，
 不读取未核验的 PowerPlay 对象布局；实际后端和关断状态显示为 Unknown。
 
+`-NRedVideoFix` 同时启用 VCN 最短开启时间（Minimum on-time）。`AMDVCN2HWEngine::releaseHardware` 经 CAIL
+`vcn_stop_queue` → `engine_2_0_dpg_uninitialize` 解除 DPG 暂停，并等待 `UVD_POWER_STATUS` 进入门控状态（1）。
+播放器和浏览器探测解码能力时会创建会话后立即销毁；若停止紧跟在启动后数毫秒内，固件偶尔保持供电（状态 2），
+等待 5 秒超时，引擎停在半停止状态，之后的解码作业不再完成，VCN0Dec 挂起。amdgpu 从不在启动后这么快关断 VCN
+（空闲 1 秒后才门控）。距上一次 `initHardware` 不足 50 ms 的释放会先等待到 50 ms。
+
+| 属性 | 含义 |
+| --- | --- |
+| `NRedVCNMinOn` | 最短开启时间（ms）；0 已由 `-NRedNoVCNMinOn` 关闭；`0xFFFFFFFF` 安装失败（序言不匹配） |
+| `NRedVCNMinOnDelays` | 被推迟的释放次数 |
+
 插件全局关闭 `-NRedOff`、调试参数及上游的 `AMDBacklight` 设置不在本次更名范围内；
 `AMDBacklight=0` 仍会阻止 EC 服务启动。
 

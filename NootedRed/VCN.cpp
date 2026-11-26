@@ -2,7 +2,9 @@
 #include <Headers/kern_api.hpp>
 #include <Headers/kern_iokit.hpp>
 #include <Headers/kern_util.hpp>
+#include <IOKit/IOLib.h>
 #include <IOKit/pci/IOPCIDevice.h>
+#include <kern/clock.h>
 #include <Kexts.hpp>
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
@@ -220,9 +222,65 @@ namespace
             reinterpret_cast<void (*)(void*)>(signalOriginal)(hardware);
         }
     }
+
+    // Minimum on-time.
+    // releaseHardware stops a queue in CAIL (vcn_stop_queue -> engine_2_0_dpg_uninitialize), which unpauses DPG and
+    // waits for UVD_POWER_STATUS to report the tiles gated. When that comes a few ms after the queue was started
+    // (players and browsers open and immediately close decoder sessions while probing), the firmware sometimes keeps
+    // the tiles on: the wait times out after 5 s, the engine is left half stopped and the next decode job never
+    // completes. amdgpu never stops VCN that soon after starting it (it gates after 1 s idle). A release that comes
+    // less than MinOnMs after the last initHardware waits for the rest of that time first.
+    constexpr UInt32  MinOnMs = 50;
+    bool              minOnTime{false};
+    UInt64            lastHardwareInit{0};
+    UInt32            minOnDelays{0};
+    mach_vm_address_t releaseHardwareOriginal{0};
+
+    UInt64 nowNs()
+    {
+        UInt64 ns{0};
+        absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+        return ns;
+    }
+
+    bool releaseHardware(void* self, UInt32 channel)
+    {
+        if (minOnTime && VCN::allocated()) {
+            const auto since = nowNs() - __atomic_load_n(&lastHardwareInit, __ATOMIC_ACQUIRE);
+            if (since < MinOnMs * 1000000ULL) {
+                const auto delays = __atomic_add_fetch(&minOnDelays, 1U, __ATOMIC_RELAXED);
+                IOSleep(static_cast<UInt32>((MinOnMs * 1000000ULL - since + 999999ULL) / 1000000ULL));
+                NRed::singleton().setProp32("NRedVCNMinOnDelays", delays);
+            }
+        }
+        return reinterpret_cast<bool (*)(void*, UInt32)>(releaseHardwareOriginal)(self, channel);
+    }
+
+    void installMinOnTime(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size)
+    {
+        if (checkKernelArgument("-NRedNoVCNMinOn")) {
+            NRed::singleton().setProp32("NRedVCNMinOn", 0);
+            return;
+        }
+        constexpr const char* symbol = "__ZN30AMDRadeonX6000_AMDVCN2HWEngine15releaseHardwareE21eAMDAccelVideoChannel";
+        // Short jump: only `add esi, -8; cmp esi, 2` (6 bytes) go to the trampoline, not the relative `ja` after them,
+        // which a 14-byte jump would copy with a wrong target.
+        constexpr UInt8 prologue[] = {0x83, 0xC6, 0xF8, 0x83, 0xFE, 0x02, 0x77};
+        const auto      target     = patcher.solveSymbol(id, symbol, slide, size, true);
+        patcher.clearError();
+        KernelPatcher::RouteRequest route{symbol, releaseHardware, releaseHardwareOriginal};
+        minOnTime = target != 0 && size >= sizeof(prologue) && target >= slide
+                 && target - slide <= size - sizeof(prologue)
+                 && !memcmp(reinterpret_cast<const void*>(target), prologue, sizeof(prologue))
+                 && patcher.routeMultipleShort(id, &route, 1, slide, size);
+        patcher.clearError();
+        NRed::singleton().setProp32("NRedVCNMinOn", minOnTime ? MinOnMs : 0xFFFFFFFF);
+    }
+
     bool initHardware(void* self, UInt32 channel)
     {
         const auto result = reinterpret_cast<bool (*)(void*, UInt32)>(initHardwareOriginal)(self, channel);
+        if (result) { __atomic_store_n(&lastHardwareInit, nowNs(), __ATOMIC_RELEASE); }
         NRed::singleton().setProp32("NRedVCNLastHardwareInit", result);
         auto count = __atomic_fetch_add(&hardwareInitCount, 1U, __ATOMIC_RELAXED);
         if (count < 16) { SYSLOG("VCN", "initHardware channel=%u result=%u", channel, result); }
@@ -406,6 +464,7 @@ void VCN::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t slide
                       slide, size);
         ok &= resolve(patcher, id, "__ZN31AMDRadeonX6000_IAMDSMLInterface18createSMLInterfaceEj", sml6000, slide, size);
         if (ok) { ok = install(patcher, id, slide, size); }
+        if (ok) { installMinOnTime(patcher, id, slide, size); }
         has6000 = hooks = ok;
         NRed::singleton().setProp32("NRedVCNIdleGfxOffFix", ok);
     }
