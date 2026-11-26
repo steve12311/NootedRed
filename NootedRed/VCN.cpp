@@ -229,6 +229,189 @@ namespace
         return result;
     }
 
+    // Queue keep.
+    // AMDVCNHWEngine counts the users of each hardware queue group. stopQueue releases a group's ring
+    // (releaseHardware, which puts RBC_RB_RPTR/WPTR and the fw_shared copies back to 0) as soon as its count
+    // reaches 0, without waiting for the jobs already on that ring; only setSuspendResumeState waits for the last
+    // timestamp before the same call. While another group keeps the engine powered (screen recording on the
+    // encoder), a browser that opens and closes decoder sessions while a video starts resets the decode ring
+    // several times within milliseconds, a job written around such a reset never completes and the VCN hangs.
+    // Like amdgpu, which keeps the VCN rings for as long as the block is up, the last release of a group is
+    // deferred while another group is active, and done through the original path once the engine goes idle,
+    // which then also powers the engine down as before. Without another active group nothing changes.
+    constexpr const char* StartQueueSymbol = "__ZN29AMDRadeonX6000_AMDVCNHWEngine10startQueueE21eAMDAccelVideoChannel";
+    constexpr const char* StopQueueSymbol  = "__ZN29AMDRadeonX6000_AMDVCNHWEngine9stopQueueE21eAMDAccelVideoChannel";
+    constexpr size_t      QueueCounterCount = 6;    // per-group user counters, consecutive, decode first
+    constexpr size_t      QueueGroupCount   = 2;
+    // Channel used for the deferred release: decode (8) and encode (9; 9 and 10 share one counter and ring pair).
+    constexpr UInt32      QueueChannels[QueueGroupCount] = {8, 9};
+    size_t                queueCounters[QueueGroupCount]{};
+    size_t                queueCounterBase{0};
+    bool                  queueKeep{false};
+    bool                  queueKept[QueueGroupCount]{};
+    UInt32                queueKeptCount{0}, queueReleasedCount{0};
+    mach_vm_address_t     startQueueOriginal{0}, stopQueueOriginal{0};
+
+    int queueGroup(const UInt32 channel)
+    {
+        if (channel == 8) { return 0; }
+        if (channel == 9 || channel == 10) { return 1; }
+        return -1;
+    }
+
+    UInt32& queueUsers(void* engine, const size_t offset)
+    {
+        return *reinterpret_cast<UInt32*>(static_cast<UInt8*>(engine) + offset);
+    }
+
+    // Users of all groups, without the references held for kept rings.
+    UInt32 queueActive(void* engine)
+    {
+        UInt32 total{0}, kept{0};
+        for (size_t i = 0; i < QueueCounterCount; ++i) { total += queueUsers(engine, queueCounterBase + i * 4); }
+        for (const bool group : queueKept) { kept += group; }
+        return total > kept ? total - kept : 0;
+    }
+
+    void publishQueueKeep()
+    {
+        NRed::singleton().setProp32("NRedVCNQueueKept", __atomic_load_n(&queueKeptCount, __ATOMIC_RELAXED));
+        NRed::singleton().setProp32("NRedVCNQueueKeptReleased", __atomic_load_n(&queueReleasedCount, __ATOMIC_RELAXED));
+    }
+
+    // Callers serialise start/stop (the original counters are plain integers updated without atomics).
+    bool startQueue(void* engine, UInt32 channel)
+    {
+        const auto original = reinterpret_cast<bool (*)(void*, UInt32)>(startQueueOriginal);
+        const auto group    = queueGroup(channel);
+        const auto result   = original(engine, channel);
+        if (result && group >= 0 && engine && queueKept[group]) {
+            // The kept ring serves this session; the kept reference becomes the session's own one.
+            queueKept[group] = false;
+            auto& users      = queueUsers(engine, queueCounters[group]);
+            if (users > 1) { users -= 1; }
+        }
+        return result;
+    }
+
+    bool stopQueue(void* engine, UInt32 channel)
+    {
+        const auto original = reinterpret_cast<bool (*)(void*, UInt32)>(stopQueueOriginal);
+        const auto group    = queueGroup(channel);
+        if (!queueKeep || group < 0 || !engine || !VCN::allocated()) { return original(engine, channel); }
+        auto& users = queueUsers(engine, queueCounters[group]);
+        if (!queueKept[group] && users == 1 && queueActive(engine) > 1) {
+            // Last session of this group while another group is active: keep the ring.
+            queueKept[group] = true;
+            __atomic_add_fetch(&queueKeptCount, 1U, __ATOMIC_RELAXED);
+            publishQueueKeep();
+            return true;
+        }
+        const auto result = original(engine, channel);
+        if (users == 0) { queueKept[group] = false; }
+        if (queueActive(engine) == 0) {
+            // The engine goes idle: release the kept rings; the last release powers the engine down.
+            for (size_t i = 0; i < QueueGroupCount; ++i) {
+                if (!queueKept[i]) { continue; }
+                queueKept[i] = false;
+                original(engine, QueueChannels[i]);
+                __atomic_add_fetch(&queueReleasedCount, 1U, __ATOMIC_RELAXED);
+            }
+            publishQueueKeep();
+        }
+        return result;
+    }
+
+    const UInt8* findBytes(const UInt8* data, size_t length, const UInt8* pattern, size_t count)
+    {
+        for (size_t i = 0; i + count <= length; ++i) {
+            if (!memcmp(data + i, pattern, count)) { return data + i; }
+        }
+        return nullptr;
+    }
+
+    UInt32 read32(const UInt8* data)
+    {
+        UInt32 value;
+        memcpy(&value, data, sizeof(value));
+        return value;
+    }
+
+    // Reads the counter offsets from the code and checks that stopQueue's idle test covers exactly these six.
+    bool readQueueLayout(mach_vm_address_t start, mach_vm_address_t stop, mach_vm_address_t slide, size_t size)
+    {
+        constexpr size_t Window = 0x100;
+        if (size < Window || start < slide || stop < slide || start - slide > size - Window
+            || stop - slide > size - Window)
+        {
+            return false;
+        }
+        const auto* code = reinterpret_cast<const UInt8*>(start);
+        // cmp esi, 8; jne short; mov eax, [rbx + decode]
+        static const UInt8 decodeTest[] = {0x83, 0xFE, 0x08, 0x75};
+        const auto*        decode       = findBytes(code, 0x40, decodeTest, sizeof(decodeTest));
+        if (!decode || decode[5] != 0x8B || decode[6] != 0x83) { return false; }
+        // lea eax, [r14 - 9]; cmp eax, 1; ja near; mov eax, [rbx + encode]
+        static const UInt8 encodeTest[] = {0x41, 0x8D, 0x46, 0xF7, 0x83, 0xF8, 0x01, 0x0F, 0x87};
+        const auto*        encode       = findBytes(code, 0x80, encodeTest, sizeof(encodeTest));
+        if (!encode || encode[13] != 0x8B || encode[14] != 0x83) { return false; }
+        const size_t base = read32(decode + 7), encodeOffset = read32(encode + 15);
+        if (base < 0x20 || base > 0x10000 || encodeOffset < base || encodeOffset >= base + QueueCounterCount * 4
+            || (encodeOffset - base) % 4)
+        {
+            return false;
+        }
+        // mov eax, [rbx + a]; or eax, [rbx + b] (five times): the idle test over all groups.
+        const auto* idle = reinterpret_cast<const UInt8*>(stop);
+        for (size_t i = 0; i + QueueCounterCount * 6 <= Window; ++i) {
+            UInt32 seen = 0;
+            for (size_t k = 0; k < QueueCounterCount; ++k) {
+                const auto* op = idle + i + k * 6;
+                if (op[0] != (k ? 0x0B : 0x8B) || op[1] != 0x83) { break; }
+                const size_t offset = read32(op + 2);
+                if (offset < base || offset >= base + QueueCounterCount * 4 || (offset - base) % 4) { break; }
+                seen |= 1U << ((offset - base) / 4);
+            }
+            if (seen == (1U << QueueCounterCount) - 1) {
+                queueCounterBase = base;
+                queueCounters[0] = base;
+                queueCounters[1] = encodeOffset;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    void installQueueKeep(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size)
+    {
+        if (checkKernelArgument("-NRedNoVCNQueueKeep")) {
+            NRed::singleton().setProp32("NRedVCNQueueKeep", 0);
+            return;
+        }
+        mach_vm_address_t start{0}, stop{0};
+        if (!resolve(patcher, id, StartQueueSymbol, start, slide, size)
+            || !resolve(patcher, id, StopQueueSymbol, stop, slide, size) || !readQueueLayout(start, stop, slide, size))
+        {
+            NRed::singleton().setProp32("NRedVCNQueueKeep", 2);
+            SYSLOG("VCN", "queue keep: unknown AMDVCNHWEngine layout");
+            return;
+        }
+        KernelPatcher::RouteRequest routes[] = {
+            {StartQueueSymbol, startQueue, startQueueOriginal},
+            {StopQueueSymbol, stopQueue, stopQueueOriginal},
+        };
+        if (!patcher.routeMultiple(id, routes, arrsize(routes), slide, size)) {
+            patcher.clearError();
+            NRed::singleton().setProp32("NRedVCNQueueKeep", 3);
+            SYSLOG("VCN", "queue keep: route failed");
+            return;
+        }
+        queueKeep = true;
+        NRed::singleton().setProp32("NRedVCNQueueKeep", 1);
+        NRed::singleton().setProp32("NRedVCNQueueCounters", static_cast<UInt32>(queueCounterBase));
+        publishQueueKeep();
+    }
+
     bool install(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size)
     {
         if (size < 6 || slide > ~mach_vm_address_t{0} - size) { return false; }
@@ -406,6 +589,7 @@ void VCN::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t slide
                       slide, size);
         ok &= resolve(patcher, id, "__ZN31AMDRadeonX6000_IAMDSMLInterface18createSMLInterfaceEj", sml6000, slide, size);
         if (ok) { ok = install(patcher, id, slide, size); }
+        if (ok) { installQueueKeep(patcher, id, slide, size); }
         has6000 = hooks = ok;
         NRed::singleton().setProp32("NRedVCNIdleGfxOffFix", ok);
     }

@@ -66,6 +66,21 @@ Darwin 23/24/25 共用动态核验和 COW 事务。后端核验完整函数、�
 计数在下一次进程启动时发布到 ioreg。Darwin 23/24 仅记录请求和返回值，
 不读取未核验的 PowerPlay 对象布局；实际后端和关断状态显示为 Unknown。
 
+`-NRedVideoFix` 同时启用 VCN 队列保持（Queue keep）。原生 `AMDVCNHWEngine::stopQueue` 在某队列组
+（解码 8；编码 9/10）的用户计数归零时立即调用 `releaseHardware`，不等待环上已提交的作业
+（只有 `setSuspendResumeState` 会先 `waitForTimestamp`）。另一队列组保持引擎开启时（例如屏幕录制占用编码器），
+浏览器在视频开始时反复创建／销毁解码会话，解码环在数毫秒内被多次复位，复位前后提交的作业不会完成，VCN 挂起。
+队列保持参照 amdgpu 的做法：引擎开启期间保留环；另一队列组仍活跃时推迟该组的最后一次释放，
+引擎空闲时再经原路径释放，原有的引擎关断不变。没有其他活跃队列组时行为与原生一致。
+计数器偏移从 `startQueue` 代码读取，并与 `stopQueue` 的空闲判断（六个计数器）交叉核验；不匹配时不安装。
+
+| 属性 | 含义 |
+| --- | --- |
+| `NRedVCNQueueKeep` | 1 已启用；0 已由 `-NRedNoVCNQueueKeep` 关闭；2 引擎布局不匹配；3 路由失败 |
+| `NRedVCNQueueCounters` | 读取到的首个计数器偏移（Darwin 25：`0x2B8`） |
+| `NRedVCNQueueKept` | 被推迟（保留环）的释放次数 |
+| `NRedVCNQueueKeptReleased` | 引擎空闲时补做的释放次数 |
+
 插件全局关闭 `-NRedOff`、调试参数及上游的 `AMDBacklight` 设置不在本次更名范围内；
 `AMDBacklight=0` 仍会阻止 EC 服务启动。
 
