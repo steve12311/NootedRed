@@ -58,6 +58,7 @@ struct OSMetaClassBase {const OSMetaClass* meta;const OSMetaClass* getMetaClass(
 struct Pair {const OSMetaClass* oldClass;const OSMetaClass* newClass;};
 Pair pairs[4]{};
 OSMetaClass engine;OSMetaClass* engineClass=&engine;
+static void bindEngine(void*){}
 mach_vm_address_t safeCastOriginal=0,sml5000=0,sml6000=0,signalOriginal=0;
 void (*notifyAccess)(void*)=nullptr;
 namespace VCN {bool ready();bool allocated();void* allocateEngine();}

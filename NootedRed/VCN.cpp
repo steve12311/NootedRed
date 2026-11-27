@@ -2,8 +2,10 @@
 #include <Headers/kern_api.hpp>
 #include <Headers/kern_iokit.hpp>
 #include <Headers/kern_util.hpp>
+#include <IOKit/IOLib.h>
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/pci/IOPCIDevice.h>
+#include <kern/clock.h>
 #include <Kexts.hpp>
 #include <NRed.hpp>
 #include <PenguinWizardry/KernelVersion.hpp>
@@ -35,7 +37,7 @@ namespace
     mach_vm_address_t       safeCastOriginal{0}, newSharedOriginal{0}, newClientOriginal{0}, newVideoOriginal{0};
     mach_vm_address_t       newVideo6000{0};
     mach_vm_address_t       clientStart5000{0}, clientStop5000{0}, clientStart6000{0}, clientStop6000{0};
-    mach_vm_address_t       copy5000{0}, copy6000{0}, sml5000{0}, sml6000{0}, initHardwareOriginal{0};
+    mach_vm_address_t       copy5000{0}, copy6000{0}, sml5000{0}, sml6000{0};
     mach_vm_address_t       signalOriginal{0};
     void                    (*notifyAccess)(void*){nullptr};
     OSMetaClass*            engineClass{nullptr};
@@ -233,15 +235,6 @@ namespace
             reinterpret_cast<void (*)(void*)>(signalOriginal)(hardware);
         }
     }
-    bool initHardware(void* self, UInt32 channel)
-    {
-        const auto result = reinterpret_cast<bool (*)(void*, UInt32)>(initHardwareOriginal)(self, channel);
-        NRed::singleton().setProp32("NRedVCNLastHardwareInit", result);
-        auto count = __atomic_fetch_add(&hardwareInitCount, 1U, __ATOMIC_RELAXED);
-        if (count < 16) { SYSLOG("VCN", "initHardware channel=%u result=%u", channel, result); }
-        return result;
-    }
-
     template<typename T>
     const T& queueField(const void* object, size_t offset)
     {
@@ -454,6 +447,161 @@ namespace
             && queueDrainLayout.submitted + sizeof(UInt32) <= pairs[2].oldClass->getClassSize();
     }
 
+    constexpr UInt32 MinOnMs = 50;
+    constexpr UInt64 NsPerMs = 1000000;
+    constexpr size_t FreeSlot = 0x90, InitSlot = 0x2D0, ReleaseSlot = 0x2D8;
+    constexpr UInt8 StopReleaseCall[] = {0xFF, 0x90, 0xD8, 0x02, 0, 0};
+    using HardwareAction = bool (*)(void*, UInt32);
+    HardwareAction initHardwareOriginal{nullptr}, releaseHardwareOriginal{nullptr};
+    void (*freeEngineOriginal)(void*){nullptr};
+    using ThreadCheck = boolean_t (*)();
+    ThreadCheck interruptsEnabled{nullptr}, onInterrupt{nullptr}, preemptionEnabled{nullptr};
+    mach_vm_address_t engineVtable{0}, stopQueueStart{0}, stopQueueEnd{0};
+    void* bridgedEngine{nullptr};
+    UInt64 lastHardwareInit{0};
+    UInt32 minOnDelays{0};
+
+    UInt64 nowNs()
+    {
+        UInt64 ns{0};
+        absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
+        return ns;
+    }
+
+    void bindEngine(void* engine)
+    {
+        if (!engine || !engineVtable || *static_cast<const mach_vm_address_t*>(engine) != engineVtable) { return; }
+        void* empty{nullptr};
+        __atomic_compare_exchange_n(&bridgedEngine, &empty, engine, false, __ATOMIC_RELEASE, __ATOMIC_RELAXED);
+    }
+
+    void freeEngine(void* self)
+    {
+        if (self == __atomic_load_n(&bridgedEngine, __ATOMIC_ACQUIRE)) {
+            __atomic_store_n(&lastHardwareInit, 0, __ATOMIC_RELAXED);
+            __atomic_store_n(&bridgedEngine, nullptr, __ATOMIC_RELEASE);
+        }
+        freeEngineOriginal(self);
+    }
+
+    bool initHardware(void* self, UInt32 channel)
+    {
+        const auto result = initHardwareOriginal(self, channel);
+        if (self != __atomic_load_n(&bridgedEngine, __ATOMIC_ACQUIRE)) { return result; }
+        if (result && releaseHardwareOriginal) {
+            const auto stamp = nowNs();
+            auto previous = __atomic_load_n(&lastHardwareInit, __ATOMIC_RELAXED);
+            while (previous < stamp
+                   && !__atomic_compare_exchange_n(&lastHardwareInit, &previous, stamp, true,
+                                                   __ATOMIC_RELEASE, __ATOMIC_RELAXED)) {}
+        }
+        NRed::singleton().setProp32("NRedVCNLastHardwareInit", result);
+        const auto count = __atomic_fetch_add(&hardwareInitCount, 1U, __ATOMIC_RELAXED);
+        if (count < 16) { SYSLOG("VCN", "initHardware channel=%u result=%u", channel, result); }
+        return result;
+    }
+
+    bool stopQueueRelease(mach_vm_address_t caller, mach_vm_address_t start, mach_vm_address_t end)
+    {
+        return caller >= start && caller - start >= sizeof(StopReleaseCall) && caller < end
+            && !memcmp(reinterpret_cast<const void*>(caller - sizeof(StopReleaseCall)), StopReleaseCall,
+                       sizeof(StopReleaseCall));
+    }
+
+    bool waitForMinOn(void* self, UInt32 channel, mach_vm_address_t caller)
+    {
+        // 原生系统休眠路径也会直接调用 releaseHardware。只在常规 stopQueue 路径等待。
+        if (channel < 8 || channel > 10 || self != __atomic_load_n(&bridgedEngine, __ATOMIC_ACQUIRE)
+            || !stopQueueRelease(caller, stopQueueStart, stopQueueEnd)
+            || !interruptsEnabled() || onInterrupt() || !preemptionEnabled()) { return false; }
+
+        bool delayed{false};
+        for (;;) {
+            const auto lastInit = __atomic_load_n(&lastHardwareInit, __ATOMIC_ACQUIRE);
+            const auto now = nowNs();
+            if (!lastInit || now < lastInit || now - lastInit >= MinOnMs * NsPerMs) { return delayed; }
+            IOSleep(static_cast<UInt32>((MinOnMs * NsPerMs - (now - lastInit) + NsPerMs - 1) / NsPerMs));
+            delayed = true;
+        }
+    }
+
+    bool releaseHardware(void* self, UInt32 channel)
+    {
+        const auto caller = reinterpret_cast<mach_vm_address_t>(__builtin_return_address(0));
+        const auto delayed = waitForMinOn(self, channel, caller);
+        const auto result = releaseHardwareOriginal(self, channel);
+        if (delayed) {
+            const auto count = __atomic_add_fetch(&minOnDelays, 1U, __ATOMIC_RELAXED);
+            NRed::singleton().setProp32("NRedVCNMinOnDelays", count);
+        }
+        return result;
+    }
+
+    UInt32 installMinOnTime(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size, bool disabled)
+    {
+        constexpr char Table[] = "__ZTV30AMDRadeonX6000_AMDVCN2HWEngine";
+        constexpr char Free[] = "__ZN30AMDRadeonX6000_AMDVCN2HWEngine4freeEv";
+        constexpr char Init[] = "__ZN30AMDRadeonX6000_AMDVCN2HWEngine12initHardwareE21eAMDAccelVideoChannel";
+        constexpr char Release[] = "__ZN30AMDRadeonX6000_AMDVCN2HWEngine15releaseHardwareE21eAMDAccelVideoChannel";
+        constexpr char Stop[] = "__ZN29AMDRadeonX6000_AMDVCNHWEngine9stopQueueE21eAMDAccelVideoChannel";
+        constexpr char Suspend[] = "__ZN29AMDRadeonX6000_AMDVCNHWEngine21setSuspendResumeStateEb";
+        constexpr size_t TableHeader = 2 * sizeof(mach_vm_address_t);
+        constexpr size_t TableSize = TableHeader + ReleaseSlot + sizeof(mach_vm_address_t);
+        constexpr size_t DecodeReleaseReturn = 0x36;
+        const UInt32 fallback = disabled ? 0 : ~UInt32{0};
+
+        mach_vm_address_t table{0}, free{0}, init{0}, release{0}, stop{0}, suspend{0};
+        if (size < TableSize || slide > ~mach_vm_address_t{0} - size
+            || !resolve(patcher, id, Table, table, slide, size)
+            || table < slide || table - slide > size - TableSize || table % sizeof(mach_vm_address_t)
+            || !resolve(patcher, id, Free, free, slide, size) || !resolve(patcher, id, Init, init, slide, size)) {
+            return fallback;
+        }
+
+        // 直接核对原生虚表槽。`initHardware` 和 `releaseHardware` 的入口都含相对跳转。
+        const auto vt = table + TableHeader;
+        auto& freeSlot = *reinterpret_cast<mach_vm_address_t*>(vt + FreeSlot);
+        auto& initSlot = *reinterpret_cast<mach_vm_address_t*>(vt + InitSlot);
+        auto& releaseSlot = *reinterpret_cast<mach_vm_address_t*>(vt + ReleaseSlot);
+        if (freeSlot != free || initSlot != init) { return fallback; }
+
+        bool enable = !disabled && resolve(patcher, id, Release, release, slide, size) && releaseSlot == release
+            && resolve(patcher, id, Stop, stop, slide, size) && resolve(patcher, id, Suspend, suspend, slide, size)
+            && suspend > stop && suspend - stop > DecodeReleaseReturn && suspend - stop <= 0x200
+            && stopQueueRelease(stop + DecodeReleaseReturn, stop, suspend);
+        if (enable) {
+            const auto resolveCheck = [&patcher](const char* symbol) {
+                const auto check = reinterpret_cast<ThreadCheck>(patcher.solveSymbol(KernelPatcher::KernelID, symbol));
+                patcher.clearError();
+                return check;
+            };
+            interruptsEnabled = resolveCheck("_ml_get_interrupts_enabled");
+            onInterrupt = resolveCheck("_ml_at_interrupt_context");
+            preemptionEnabled = resolveCheck("_preemption_enabled");
+            enable = interruptsEnabled && onInterrupt && preemptionEnabled;
+        }
+
+        if (MachInfo::setKernelWriting(true, KernelPatcher::kernelWriteLock) != KERN_SUCCESS) { return fallback; }
+        // 写入前再次核对槽位，以免覆盖其他补丁。
+        if (freeSlot != free || initSlot != init || (enable && releaseSlot != release)) {
+            MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock);
+            return fallback;
+        }
+        freeEngineOriginal = reinterpret_cast<decltype(freeEngineOriginal)>(free);
+        initHardwareOriginal = reinterpret_cast<HardwareAction>(init);
+        freeSlot = reinterpret_cast<mach_vm_address_t>(freeEngine);
+        initSlot = reinterpret_cast<mach_vm_address_t>(initHardware);
+        if (enable) {
+            stopQueueStart = stop;
+            stopQueueEnd = suspend;
+            releaseHardwareOriginal = reinterpret_cast<HardwareAction>(release);
+            releaseSlot = reinterpret_cast<mach_vm_address_t>(releaseHardware);
+        }
+        MachInfo::setKernelWriting(false, KernelPatcher::kernelWriteLock);
+        engineVtable = vt;
+        return enable ? MinOnMs : fallback;
+    }
+
     bool install(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size)
     {
         if (size < 6 || slide > ~mach_vm_address_t{0} - size) { return false; }
@@ -506,8 +654,6 @@ namespace
             {"__ZN39AMDRadeonX6000_AMDAccelSharedUserClient5startEP9IOService", clientStart, clientStart6000},
             {"__ZN39AMDRadeonX6000_AMDAccelSharedUserClient4stopEP9IOService", clientStop, clientStop6000},
             {"__ZN29AMDRadeonX6000_AMDAccelShared11SurfaceCopyEPjyP12IOAccelEvent", surfaceCopy, copy6000},
-            {"__ZN30AMDRadeonX6000_AMDVCN2HWEngine12initHardwareE21eAMDAccelVideoChannel", initHardware,
-             initHardwareOriginal},
         };
         if (!patcher.routeMultiple(id, routes, arrsize(routes), slide, size)) {
             patcher.clearError();
@@ -565,6 +711,7 @@ void* VCN::allocateEngine()
     }
     auto* engine    = engineClass->alloc();
     engineAllocated = engine != nullptr;
+    bindEngine(engine);
     if (queueDrainRouted) {
         // kext 加载回调早于元类初始化，在分配引擎时校验对象大小。
         const auto enabled = engine && queueDrainLayoutFits();
@@ -644,6 +791,10 @@ void VCN::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t slide
                       slide, size);
         ok &= resolve(patcher, id, "__ZN31AMDRadeonX6000_IAMDSMLInterface18createSMLInterfaceEj", sml6000, slide, size);
         if (ok) { ok = install(patcher, id, slide, size); }
+        if (ok) {
+            const auto minOn = installMinOnTime(patcher, id, slide, size, checkKernelArgument("-NRedNoVCNMinOn"));
+            NRed::singleton().setProp32("NRedVCNMinOn", minOn);
+        }
         has6000 = hooks = ok;
         NRed::singleton().setProp32("NRedVCNIdleGfxOffFix", ok);
         queueDrainRouted = ok && installQueueDrain(patcher, id, slide, size);

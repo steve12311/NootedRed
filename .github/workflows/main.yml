@@ -45,6 +45,7 @@ jobs:
           python3 tools/test_vp9_probe.py --offline
           python3 tools/test_vp9_compare.py
           python3 tools/test_vcn_native_load.py
+          python3 tools/test_vcn_min_on.py
           python3 tools/test_phase_timing.py
           python3 tools/test_vcn_power_trace.py
       - name: Test EC backlight service

@@ -42,9 +42,9 @@ struct KernelPatcher{
 struct MachInfo{static int setKernelWriting(bool value,int){
  if(value&&denyWrite)return 42;assert(writable!=value);writable=value;transitions++;return 0;
 }};
-static void signalWork(){}static void clientStart(){}static void clientStop(){}static void initHardware(){}
+static void signalWork(){}static void clientStart(){}static void clientStop(){}
 static void surfaceCopy(){}
-static uintptr_t signalOriginal=0,clientStart6000=0,clientStop6000=0,initHardwareOriginal=0,copy6000=0;
+static uintptr_t signalOriginal=0,clientStart6000=0,clientStop6000=0,copy6000=0;
 CODE
 int main(){
  for(unsigned host:{23U,24U,25U}){
