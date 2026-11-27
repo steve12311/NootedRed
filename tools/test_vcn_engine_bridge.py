@@ -11,10 +11,13 @@ def main():
     WORK.mkdir(parents=True, exist_ok=True)
     stubs = WORK / 'stubs/IOKit'
     stubs.mkdir(parents=True, exist_ok=True)
-    (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;\n')
+    (stubs / 'IOTypes.h').write_text('#pragma once\n#include <cstdint>\nusing UInt8=uint8_t;using UInt32=uint32_t;using UInt64=uint64_t;using SInt32=int32_t;\n')
+    libkern = WORK / 'stubs/libkern'
+    libkern.mkdir(exist_ok=True)
+    (libkern / 'libkern.h').write_text('#pragma once\n#include <cstring>\n')
     vcn = (ROOT / 'NootedRed/VCN.cpp').read_text()
     functions = '\n'.join(function(vcn, prefix) for prefix in [
-        'bool supported()', 'bool VCN::ready()', 'bool  VCN::allocated()', 'void* VCN::allocateEngine()',
+        'bool supported()', 'bool VCN::ready()', 'bool  VCN::allocated()', 'bool queueDrainLayoutFits()', 'void* VCN::allocateEngine()',
         'OSMetaClassBase* safeCast(', 'void* createSML(', 'void signalWork('])
     allocation = function((ROOT / 'NootedRed/X5000.cpp').read_text(), 'bool X5000::allocateHWEngines(')
     fixture = r'''
@@ -28,6 +31,7 @@ def main():
 #include <map>
 #include <string>
 #include <VCNCapabilities.hpp>
+#include <VCNQueueDrain.hpp>
 #define SYSLOG(...) ((void)0)
 using mach_vm_address_t=uintptr_t;
 struct NRed {
@@ -40,6 +44,10 @@ struct NRed {
 unsigned kernelMinor=6;
 const PenguinWizardry::KernelVersion& currentKernelVersion(){static std::optional<PenguinWizardry::KernelVersion> current;return current.emplace(25,kernelMinor);}
 bool requested=true,loadCompleted=true,has5000=true,has6000=true,hooks=true,engineAllocated=false;
+bool queueDrainRouted=false;
+void* queueDrainEngine=nullptr;
+VCNQueueDrain::Layout queueDrainLayout{{0x60, 0x64}, 0x28, {0x30, 0x38, 0x40}, 0x120, 0x1A0, 0xB0};
+UInt32 hardwareWorkLoopOwner=0x380;
 struct Object {unsigned releases=0;void release(){releases++;}};
 struct OSMetaClass {
     unsigned size=64,allocations=0;Object* object=nullptr;
@@ -132,6 +140,19 @@ int main(){
     for(bool* state:{&requested,&loadCompleted,&has5000,&has6000,&hooks}){
         *state=false;assert(!VCN::ready());*state=true;
     }
+    OSMetaClass acceleratorClass, channelClass;
+    acceleratorClass.size=0x1fe8;channelClass.size=0x5d8;
+    pairs[0].oldClass=&acceleratorClass;pairs[2].oldClass=&channelClass;
+    engine.object=&engineObject;queueDrainRouted=true;
+    engine.size=0;
+    assert(!queueDrainLayoutFits());
+    engine.size=0x2d8;
+    assert(VCN::allocateEngine()==&engineObject&&queueDrainEngine==&engineObject);
+    channelClass.size=0xB0;
+    assert(VCN::allocateEngine()==&engineObject&&queueDrainEngine==nullptr);
+    channelClass.size=0x5d8;
+    engine.object=nullptr;
+    assert(VCN::allocateEngine()==nullptr&&queueDrainEngine==nullptr);
     puts("PASS: four VCN2 engine slots, core and VCN allocation failure, SML selection, cast size checks and GFX access routing");
 }
 '''.replace('FUNCTIONS', functions).replace('ALLOCATION', allocation)

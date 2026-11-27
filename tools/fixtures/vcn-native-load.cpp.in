@@ -52,9 +52,10 @@ struct VP9ServiceSink {
     void remove(const char* k) { vp9Keys.erase(k); }
 };
 static int x6000 = 0;
-static unsigned forceLoads = 0;
+static int ioAccel = 0;
+static std::multiset<int*> forceLoads;
 struct FakeLilu {
-    void onKextLoadForce(int* kext) { assert(kext == &x6000); ++forceLoads; }
+    void onKextLoadForce(int* kext) { forceLoads.insert(kext); }
 } lilu;
 OSReturn loadResult = 0;
 bool callbackPrepared = true, originalResult = true;
@@ -97,9 +98,11 @@ int main()
         bootArgs = {"-NRedVCN"};
         if (display) { bootArgs.insert("-NRedDisplayFix"); }
         if (video) { bootArgs.insert("-NRedVideoFix"); }
-        forceLoads = 0;
+        forceLoads.clear();
         VCN::init();
-        assert(requested == video && forceLoads == unsigned(video));
+        assert(requested == video);
+        const auto expected = video ? std::multiset<int*>{&x6000, &ioAccel} : std::multiset<int*>{};
+        assert(forceLoads == expected);
     }
     IOPCIDevice device;
     IOService other;

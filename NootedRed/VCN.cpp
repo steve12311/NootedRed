@@ -2,6 +2,7 @@
 #include <Headers/kern_api.hpp>
 #include <Headers/kern_iokit.hpp>
 #include <Headers/kern_util.hpp>
+#include <IOKit/IOWorkLoop.h>
 #include <IOKit/pci/IOPCIDevice.h>
 #include <Kexts.hpp>
 #include <NRed.hpp>
@@ -10,6 +11,7 @@
 #include <VCNCapabilities.hpp>
 #include <VCNKernelData.hpp>
 #include <VCNKernelProfiles.hpp>
+#include <VCNQueueDrain.hpp>
 #include <VP9Probe.hpp>
 #include <libkern/OSKextLib.h>
 #include <libkern/c++/OSArray.h>
@@ -24,6 +26,9 @@ namespace
     static const char*      path = "/System/Library/Extensions/AMDRadeonX6000.kext/Contents/MacOS/AMDRadeonX6000";
     KernelPatcher::KextInfo x6000{"com.apple.kext.AMDRadeonX6000",  &path, 1, {true}, {},
                                   KernelPatcher::KextInfo::Unloaded};
+    const char* ioAccelPath = "/System/Library/Extensions/IOAcceleratorFamily2.kext/Contents/MacOS/IOAcceleratorFamily2";
+    KernelPatcher::KextInfo ioAccel{"com.apple.iokit.IOAcceleratorFamily2", &ioAccelPath, 1, {true}, {},
+                                    KernelPatcher::KextInfo::Unloaded};
     bool                    requested{false}, has5000{false}, has6000{false}, hooks{false}, engineAllocated{false};
     bool                    loadAttempted{false}, loadCompleted{false};
     mach_vm_address_t       acceleratorStartOriginal{0};
@@ -47,6 +52,14 @@ namespace
     constexpr unsigned    lengths[] = {37, 35, 30, 28};
     UInt32                hardwareInitCount{0};
     bool                  vp9BackendReady{false};
+    bool                  queueDrainRouted{false};
+    void*                 queueDrainEngine{nullptr};
+    VCNQueueDrain::Layout queueDrainLayout{};
+    mach_vm_address_t     stopQueueOriginal{0}, replay5000{0}, wait5000{0}, accelLookup{0};
+    size_t                replay5000Size{0};
+    UInt32                hardwareWorkLoopOwner{0};
+    IOWorkLoop*           (*hardwareWorkLoop)(const IOService*){nullptr};
+    constexpr char        StopQueueSymbol[] = "__ZN29AMDRadeonX6000_AMDVCNHWEngine9stopQueueE21eAMDAccelVideoChannel";
 
     bool supported()
     {
@@ -229,6 +242,218 @@ namespace
         return result;
     }
 
+    template<typename T>
+    const T& queueField(const void* object, size_t offset)
+    {
+        return *reinterpret_cast<const T*>(static_cast<const UInt8*>(object) + offset);
+    }
+
+    mach_vm_address_t queueSlot(const void* object, size_t slot)
+    {
+        return queueField<mach_vm_address_t>(queueField<void*>(object, 0), slot);
+    }
+
+    enum class QueueDrainResult
+    {
+        Skipped,
+        Completed,
+        TimestampChanged
+    };
+
+    // 原生 stop 的调用方可能持有 accelerator 的 busy 锁，取得硬件 gate 时不能阻塞。
+    struct QueueWorkLoop : IOWorkLoop
+    {
+        static bool tryEnter(IOWorkLoop* loop)
+        {
+            return (loop->*&QueueWorkLoop::tryCloseGate)();
+        }
+        static void leave(IOWorkLoop* loop) { (loop->*&QueueWorkLoop::openGate)(); }
+    };
+
+    struct QueueGate
+    {
+        IOWorkLoop* loop;
+        bool        entered{false};
+
+        bool enter() { return loop && (loop->inGate() || (entered = QueueWorkLoop::tryEnter(loop))); }
+        void leave()
+        {
+            if (entered) { QueueWorkLoop::leave(loop); }
+            entered = false;
+        }
+    };
+
+    OSMetaClassBase* getQueueChannel(void* engine, IOService* accelerator, UInt32 slot)
+    {
+        const auto& layout = queueDrainLayout;
+        auto* hw = queueField<void*>(engine, layout.channels[slot]);
+        if (!hw) { return nullptr; }
+        const auto getIndex = reinterpret_cast<SInt32 (*)(void*)>(queueSlot(hw, layout.getChannelIndex));
+        if (!getIndex) { return nullptr; }
+        const auto index = getIndex(hw);
+        if (index < 0) { return nullptr; }
+        const auto lookup = reinterpret_cast<OSMetaClassBase* (*)(void*, UInt32)>(accelLookup);
+        auto* candidate = lookup(accelerator, static_cast<UInt32>(index));
+        if (!candidate) { return nullptr; }
+        const auto cast = reinterpret_cast<OSMetaClassBase* (*)(const OSMetaClassBase*, const OSMetaClass*)>(
+            safeCastOriginal);
+        return cast(candidate, pairs[2].oldClass);
+    }
+
+    QueueDrainResult waitForQueue(void* engine, IOService* accelerator, UInt32 channel, QueueGate& gate)
+    {
+        const auto& layout = queueDrainLayout;
+        const auto first = channel == VCNQueueDrain::DecodeChannel ? 0U : 1U;
+        if (queueField<UInt8>(engine, 0x10) != 1 || queueField<UInt32>(engine, layout.users[first]) != 1) {
+            return QueueDrainResult::Skipped;
+        }
+        const auto end = first == 0 ? 1U : 3U;
+        const auto wait = reinterpret_cast<bool (*)(void*, UInt32)>(wait5000);
+        OSObject* channels[3]{};
+        UInt32 submitted[3]{};
+        for (auto i = first; i < end; ++i) {
+            channels[i] = static_cast<OSObject*>(getQueueChannel(engine, accelerator, i));
+            if (!channels[i]) { return QueueDrainResult::Skipped; }
+            submitted[i] = queueField<UInt32>(channels[i], layout.submitted);
+        }
+        // 等待期间让硬件工作循环处理完成事件。原生调用方已持有的 gate 仍由调用方管理。
+        for (auto i = first; i < end; ++i) { channels[i]->retain(); }
+        gate.leave();
+        auto drain = QueueDrainResult::Completed;
+        for (auto i = first; i < end; ++i) {
+            if (!wait(channels[i], submitted[i])) {
+                drain = QueueDrainResult::Skipped;
+                break;
+            }
+        }
+        if (drain == QueueDrainResult::Completed) {
+            if (!gate.enter()) { drain = QueueDrainResult::Skipped; }
+            else if (engine != __atomic_load_n(&queueDrainEngine, __ATOMIC_ACQUIRE)
+                     || queueField<IOService*>(engine, layout.accelerator) != accelerator
+                     || !queueField<void*>(accelerator, hardwareWorkLoopOwner)
+                     || hardwareWorkLoop(accelerator) != gate.loop) { drain = QueueDrainResult::Skipped; }
+            else {
+                for (auto i = first; i < end; ++i) {
+                    if (getQueueChannel(engine, accelerator, i) != channels[i]) {
+                        drain = QueueDrainResult::Skipped;
+                        break;
+                    }
+                    if (queueField<UInt32>(channels[i], layout.submitted) != submitted[i]) {
+                        drain = QueueDrainResult::TimestampChanged;
+                        break;
+                    }
+                }
+            }
+        }
+        for (auto i = first; i < end; ++i) { channels[i]->release(); }
+        return drain;
+    }
+
+    bool stopQueue(void* engine, UInt32 channel)
+    {
+        const auto original = reinterpret_cast<bool (*)(void*, UInt32)>(stopQueueOriginal);
+        if (channel < VCNQueueDrain::DecodeChannel || channel > VCNQueueDrain::EncodeChannel + 1
+            || !engine || engine != __atomic_load_n(&queueDrainEngine, __ATOMIC_ACQUIRE)) {
+            return original(engine, channel);
+        }
+        auto* accelerator = queueField<IOService*>(engine, queueDrainLayout.accelerator);
+        const auto cast = reinterpret_cast<OSMetaClassBase* (*)(const OSMetaClassBase*, const OSMetaClass*)>(
+            safeCastOriginal);
+        QueueGate gate{nullptr};
+        if (hardwareWorkLoop && accelerator && cast(accelerator, pairs[0].oldClass)
+            && queueField<void*>(accelerator, hardwareWorkLoopOwner)
+            && queueSlot(accelerator, queueDrainLayout.getAccelChannel) == accelLookup) {
+            gate.loop = hardwareWorkLoop(accelerator);
+        }
+        if (gate.loop && accelerator) {
+            gate.loop->retain();
+            accelerator->retain();
+        }
+        auto drain = gate.enter() ? waitForQueue(engine, accelerator, channel, gate) : QueueDrainResult::Skipped;
+        if (drain == QueueDrainResult::TimestampChanged) { drain = waitForQueue(engine, accelerator, channel, gate); }
+        if (drain != QueueDrainResult::Completed) { gate.leave(); }
+        const auto result = original(engine, channel);
+        gate.leave();
+        if (gate.loop && accelerator) {
+            gate.loop->release();
+            accelerator->release();
+        }
+        return result;
+    }
+
+    void prepareQueueDrain5000(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size)
+    {
+        resolve(patcher, id, "__ZN30AMDRadeonX5000_AMDAccelChannel16waitForTimestampEj", wait5000, slide, size);
+        if (wait5000 < slide || wait5000 - slide >= size) { wait5000 = 0; }
+        if (resolve(patcher, id, "__ZN30AMDRadeonX5000_AMDAccelChannel22resetHardwareAndReplayEv", replay5000, slide, size)
+            && replay5000 >= slide && replay5000 - slide < size) {
+            const auto available = size - (replay5000 - slide);
+            replay5000Size = available < 0x280 ? available : 0x280;
+        }
+    }
+
+    void prepareQueueDrainWorkLoop(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size)
+    {
+        constexpr UInt8 loadOwner[] = {0x55, 0x48, 0x89, 0xE5, 0x48, 0x8B, 0x87};
+        constexpr UInt8 loadLoop[] = {0x48, 0x8B, 0x40, 0x58, 0x5D, 0xC3};
+        constexpr size_t GetterSize = sizeof(loadOwner) + sizeof(UInt32) + sizeof(loadLoop);
+        mach_vm_address_t getter{0};
+        if (size < GetterSize
+            || !resolve(patcher, id, "__ZNK22IOGraphicsAccelerator219getHardwareWorkLoopEv", getter, slide, size)
+            || getter < slide || getter - slide > size - GetterSize) { return; }
+        const auto* code = reinterpret_cast<const UInt8*>(getter);
+        const auto owner = VCNQueueDrain::read32(code + sizeof(loadOwner));
+        if (memcmp(code, loadOwner, sizeof(loadOwner)) || memcmp(code + GetterSize - sizeof(loadLoop), loadLoop,
+                                                               sizeof(loadLoop))
+            || owner < sizeof(void*) || owner > 0xFFF8 || owner % sizeof(void*)) { return; }
+        hardwareWorkLoopOwner = owner;
+        hardwareWorkLoop = reinterpret_cast<decltype(hardwareWorkLoop)>(getter);
+    }
+
+    bool installQueueDrain(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size)
+    {
+        constexpr size_t StopSize = 0x100, SuspendSize = 0x1CA, LookupSlot = 0x1A0;
+        mach_vm_address_t stop{0}, suspend{0}, wait6000{0}, acceleratorTable{0};
+        if (!hardwareWorkLoop || !wait5000 || !replay5000Size || size < SuspendSize) {
+            return false;
+        }
+        if (!resolve(patcher, id, StopQueueSymbol, stop, slide, size)
+            || !resolve(patcher, id, "__ZN29AMDRadeonX6000_AMDVCNHWEngine21setSuspendResumeStateEb", suspend, slide, size)
+            || !resolve(patcher, id, "__ZN30AMDRadeonX6000_AMDAccelChannel16waitForTimestampEj", wait6000, slide, size)
+            || !resolve(patcher, id, "__ZTV42AMDRadeonX6000_AMDGFX10GraphicsAccelerator", acceleratorTable, slide, size)
+            || stop < slide || stop - slide > size - StopSize
+            || suspend < slide || suspend - slide > size - SuspendSize
+            || acceleratorTable < slide || acceleratorTable - slide > size - LookupSlot - 3 * sizeof(void*)) {
+            return false;
+        }
+        VCNQueueDrain::Layout layout{};
+        const auto* wait = reinterpret_cast<const UInt8*>(wait6000);
+        if (!VCNQueueDrain::readStop(reinterpret_cast<const UInt8*>(stop), StopSize, layout)
+            || !VCNQueueDrain::readSuspend(reinterpret_cast<const UInt8*>(suspend), SuspendSize, wait, layout)
+            || !VCNQueueDrain::readsSubmittedStamp(reinterpret_cast<const UInt8*>(replay5000), replay5000Size,
+                                                  reinterpret_cast<const UInt8*>(wait5000), layout.submitted)) {
+            return false;
+        }
+        queueDrainLayout = layout;
+        accelLookup = queueField<mach_vm_address_t>(reinterpret_cast<const void*>(acceleratorTable),
+                                                   2 * sizeof(void*) + LookupSlot);
+        if (!accelLookup) { return false; }
+        KernelPatcher::RouteRequest route{StopQueueSymbol, stopQueue, stopQueueOriginal};
+        const auto installed = patcher.routeMultiple(id, &route, 1, slide, size);
+        patcher.clearError();
+        return installed;
+    }
+
+    bool queueDrainLayoutFits()
+    {
+        const auto engineSize = engineClass->getClassSize();
+        return queueDrainLayout.accelerator + sizeof(void*) <= engineSize
+            && queueDrainLayout.channels[2] + sizeof(void*) <= engineSize
+            && queueDrainLayout.users[1] + sizeof(UInt32) <= engineSize
+            && hardwareWorkLoopOwner + sizeof(void*) <= pairs[0].oldClass->getClassSize()
+            && queueDrainLayout.submitted + sizeof(UInt32) <= pairs[2].oldClass->getClassSize();
+    }
+
     bool install(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size)
     {
         if (size < 6 || slide > ~mach_vm_address_t{0} - size) { return false; }
@@ -322,7 +547,10 @@ void VCN::setVP9Ready(const bool available)
 void VCN::init()
 {
     requested = checkKernelArgument("-NRedVideoFix");
-    if (requested) { lilu.onKextLoadForce(&x6000); }
+    if (requested) {
+        lilu.onKextLoadForce(&x6000);
+        lilu.onKextLoadForce(&ioAccel);
+    }
 }
 bool VCN::ready()
 {
@@ -337,6 +565,11 @@ void* VCN::allocateEngine()
     }
     auto* engine    = engineClass->alloc();
     engineAllocated = engine != nullptr;
+    if (queueDrainRouted) {
+        // kext 加载回调早于元类初始化，在分配引擎时校验对象大小。
+        const auto enabled = engine && queueDrainLayoutFits();
+        __atomic_store_n(&queueDrainEngine, enabled ? engine : nullptr, __ATOMIC_RELEASE);
+    }
     if (!engineAllocated) { __atomic_store_n(&loadCompleted, false, __ATOMIC_RELEASE); }
     NRed::singleton().setProp32("NRedVCNEngineAllocated", engineAllocated);
     return engine;
@@ -345,6 +578,10 @@ void* VCN::allocateEngine()
 void VCN::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t slide, size_t size)
 {
     if (!supported()) { return; }
+    if (id == ioAccel.loadIndex) {
+        prepareQueueDrainWorkLoop(patcher, id, slide, size);
+        return;
+    }
     const auto old = id == kextRadeonX5000.loadIndex;
     if (!old && id != x6000.loadIndex) { return; }
     if (!verifyKernelABI(patcher, id, slide, size, old)) {
@@ -396,6 +633,7 @@ void VCN::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t slide
             patcher.clearError();
             has5000 = ok;
         }
+        if (ok) { prepareQueueDrain5000(patcher, id, slide, size); }
     }
     else {
         ok &= resolve(patcher, id, "__ZN30AMDRadeonX6000_AMDVCN2HWEngine10gMetaClassE", engineClass, slide, size);
@@ -408,6 +646,7 @@ void VCN::processKext(KernelPatcher& patcher, size_t id, mach_vm_address_t slide
         if (ok) { ok = install(patcher, id, slide, size); }
         has6000 = hooks = ok;
         NRed::singleton().setProp32("NRedVCNIdleGfxOffFix", ok);
+        queueDrainRouted = ok && installQueueDrain(patcher, id, slide, size);
     }
     NRed::singleton().setProp32(old ? "NRedVCNX5000Prepared" : "NRedVCNX6000Prepared", ok);
     SYSLOG("VCN", "%s prepared=%u ready=%u", old ? "X5000" : "X6000", ok, ready());
